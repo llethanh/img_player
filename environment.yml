@@ -1,0 +1,13 @@
+name: img_player
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - openimageio
+  - opencolorio
+  - pyside6
+  - numpy
+  - pyopengl
+  - pip
+  - pip:
+      - -e .[dev]

@@ -1,0 +1,1 @@
+"""Sequence detection and metadata."""
