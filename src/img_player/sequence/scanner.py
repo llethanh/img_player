@@ -99,9 +99,7 @@ def scan_all(directory: Path | str, *, probe: bool = True) -> list[SequenceInfo]
     sequences: list[SequenceInfo] = []
     for (base, padding, ext), frames in groups.items():
         frames.sort(key=lambda f: f.frame_number)
-        width, height, channels = (
-            _probe_first_frame(tuple(frames)) if probe else (None, None, ())
-        )
+        width, height, channels = _probe_first_frame(tuple(frames)) if probe else (None, None, ())
         sequences.append(
             SequenceInfo(
                 base_name=base,

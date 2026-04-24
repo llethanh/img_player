@@ -51,6 +51,11 @@ class ImgPlayerApp:
         self._wait_timer.setInterval(50)
         self._wait_timer.timeout.connect(self._try_display_current_frame)
 
+        # Refresh the timeline's cache-fill bar a few times per second.
+        self._cache_bar_timer = QTimer(self._window)
+        self._cache_bar_timer.setInterval(200)
+        self._cache_bar_timer.timeout.connect(self._refresh_cache_bar)
+
         self._wire()
 
         # Push the initial color params so the GL shader is ready before any
@@ -62,6 +67,7 @@ class ImgPlayerApp:
     def run(self, initial_path: Path | None = None) -> int:
         self._window.show()
         self._status_timer.start()
+        self._cache_bar_timer.start()
         # Defer the initial load: show the window first so the event loop
         # can paint it, *then* kick off the (potentially slow) scan +
         # prefetch. With no deferral, the window stays invisible during a
@@ -75,6 +81,7 @@ class ImgPlayerApp:
     def _shutdown(self) -> None:
         self._status_timer.stop()
         self._wait_timer.stop()
+        self._cache_bar_timer.stop()
         self._controller.shutdown()
         self._cache.shutdown()
 
@@ -196,6 +203,11 @@ class ImgPlayerApp:
             cs = _first_existing(self._ocio, ["Cineon", "Log Film"])
         if cs:
             self._window.color_panel.set_source_colorspace(cs)
+
+    def _refresh_cache_bar(self) -> None:
+        if self._controller.sequence is None:
+            return
+        self._window.timeline.set_cached_frames(self._cache.cached_frames())
 
     def _refresh_status(self) -> None:
         if self._controller.sequence is None:

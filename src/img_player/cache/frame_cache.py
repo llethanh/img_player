@@ -124,6 +124,11 @@ class FrameCache:
         with self._lock:
             return frame in self._frames
 
+    def cached_frames(self) -> frozenset[int]:
+        """Snapshot of the currently cached frame numbers (thread-safe)."""
+        with self._lock:
+            return frozenset(self._frames.keys())
+
     def request(self, frame: int, priority: int = 0) -> bool:
         """Enqueue async decode. Returns True if submitted, False if already
         cached or already pending."""

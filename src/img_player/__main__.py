@@ -52,16 +52,12 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("--scan requires a PATH.")
         return _cmd_scan(args.path, list_all=args.all)
 
-    if args.gui or args.path is not None:
-        from img_player.app import run_gui
+    # Default: launch the GUI (empty if no path, opening the given
+    # sequence otherwise). Users can still drag & drop once the window
+    # is open.
+    from img_player.app import run_gui
 
-        return run_gui(initial_path=args.path)
-
-    print(
-        f"img_player {__version__} — pass --gui to launch the window, "
-        "a PATH to open one, or --scan PATH for a CLI summary."
-    )
-    return 0
+    return run_gui(initial_path=args.path)
 
 
 def _cmd_scan(path: Path, *, list_all: bool) -> int:
