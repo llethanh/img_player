@@ -1,8 +1,9 @@
 #version 410 core
 
-// Fragment shader template. The `@@OCIO_INJECT@@` line below is replaced at
-// runtime with the GLSL that OCIO generates (a function named `OCIOMain`
-// plus any helpers, samplers and uniforms it needs).
+// Fragment shader template. The placeholder line below is replaced at
+// runtime with GLSL that OCIO generates (a function named OCIOMain plus
+// any helpers, samplers and uniforms it needs). It is kept on its own
+// line so the splicing cannot accidentally break surrounding comments.
 
 in vec2 vTexCoord;
 out vec4 fragColor;

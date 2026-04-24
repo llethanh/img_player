@@ -98,6 +98,12 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
     # ------------------------------------------------------------------ QOpenGLWidget overrides
 
     def initializeGL(self) -> None:
+        log.info(
+            "GL context: %s | %s | GLSL %s",
+            GL.glGetString(GL.GL_VERSION).decode("utf-8", errors="replace"),
+            GL.glGetString(GL.GL_RENDERER).decode("utf-8", errors="replace"),
+            GL.glGetString(GL.GL_SHADING_LANGUAGE_VERSION).decode("utf-8", errors="replace"),
+        )
         GL.glClearColor(*self.DEFAULT_BG)
         self._make_fullscreen_quad()
         self._make_image_texture()
