@@ -44,6 +44,13 @@ class ImgPlayerApp:
         self._status_timer.setInterval(500)
         self._status_timer.timeout.connect(self._refresh_status)
 
+        # Polling timer that retries displaying the current frame while the
+        # cache is still decoding it (used when not playing — the controller's
+        # own QTimer handles drop-and-move-on while playing).
+        self._wait_timer = QTimer(self._window)
+        self._wait_timer.setInterval(50)
+        self._wait_timer.timeout.connect(self._try_display_current_frame)
+
         self._wire()
 
         # Push the initial color params so the GL shader is ready before any
@@ -55,14 +62,19 @@ class ImgPlayerApp:
     def run(self, initial_path: Path | None = None) -> int:
         self._window.show()
         self._status_timer.start()
+        # Defer the initial load: show the window first so the event loop
+        # can paint it, *then* kick off the (potentially slow) scan +
+        # prefetch. With no deferral, the window stays invisible during a
+        # slow first scan (e.g. Google Drive Stream lazy downloads).
         if initial_path is not None:
-            self._open_path(initial_path)
+            QTimer.singleShot(0, lambda: self._open_path(initial_path))
         exit_code = int(self._qapp.exec())
         self._shutdown()
         return exit_code
 
     def _shutdown(self) -> None:
         self._status_timer.stop()
+        self._wait_timer.stop()
         self._controller.shutdown()
         self._cache.shutdown()
 
@@ -88,12 +100,34 @@ class ImgPlayerApp:
     # ------------------------------------------------------------------ Handlers
 
     def _on_frame_changed(self, frame: int) -> None:
+        self._window.timeline.set_current_frame(frame)
         arr = self._cache.get(frame)
         if arr is not None:
-            if arr.shape[2] > 4:
-                arr = arr[:, :, :4]  # viewport only handles RGB/RGBA today
-            self._window.viewer.gl.set_frame(arr)
-        self._window.timeline.set_current_frame(frame)
+            self._display_array(arr)
+            self._wait_timer.stop()
+        elif not self._controller.state.is_playing:
+            # Parked on this frame but cache hasn't decoded it yet —
+            # poll until it lands. During playback we drop instead.
+            if not self._wait_timer.isActive():
+                self._wait_timer.start()
+
+    def _try_display_current_frame(self) -> None:
+        frame = self._controller.state.current_frame
+        arr = self._cache.get(frame)
+        if arr is not None:
+            self._display_array(arr)
+            self._wait_timer.stop()
+            # Populate channel panel lazily from the first decoded frame
+            # when probe was skipped at scan time.
+            seq = self._controller.sequence
+            if seq is not None and not seq.channel_names and arr.shape[2] > 0:
+                fallback = ("R", "G", "B", "A")[: arr.shape[2]]
+                self._window.channel_panel.set_channels(fallback)
+
+    def _display_array(self, arr) -> None:  # type: ignore[no-untyped-def]
+        if arr.shape[2] > 4:
+            arr = arr[:, :, :4]  # viewport only handles RGB/RGBA today
+        self._window.viewer.gl.set_frame(arr)
 
     def _on_state_changed(self, state: PlaybackState) -> None:
         self._window.transport.update_from_state(state)
@@ -124,17 +158,24 @@ class ImgPlayerApp:
         self._window.viewer.gl.set_color_params(bundle=bundle, exposure=exposure, gamma=gamma)
 
     def _open_path(self, path: Path) -> None:
+        self._window.set_status(f"Scanning {path}…")
         try:
-            seq = scan(path)
+            # probe=False: don't open the first file just to read width/
+            # height/channels. On Google Drive or other lazy filesystems
+            # this download can take tens of seconds and would freeze the
+            # app. The UI fills those fields in from the first decoded
+            # frame instead.
+            seq = scan(path, probe=False)
         except SequenceNotFoundError as err:
             QMessageBox.warning(self._window, "Cannot open", str(err))
+            self._window.set_status("Ready.")
             return
         log.info("loaded sequence: %s (%d frames)", seq.display_pattern(), seq.frame_count)
         self._window.update_sequence_info(seq)
         self._guess_source_colorspace(seq)
         self._controller.load_sequence(seq)
         self._window.set_status(
-            f"Loaded {seq.display_pattern()} ({seq.frame_count} frames, {seq.width}x{seq.height})"
+            f"Loaded {seq.display_pattern()} ({seq.frame_count} frames) — decoding first frame…"
         )
 
     def _guess_source_colorspace(self, seq: SequenceInfo) -> None:

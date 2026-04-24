@@ -46,12 +46,21 @@ def _probe_first_frame(
     return (spec.width, spec.height, tuple(spec.channelnames))
 
 
-def scan(path: Path | str) -> SequenceInfo:
+def scan(path: Path | str, *, probe: bool = True) -> SequenceInfo:
     """Detect a sequence at `path`.
 
     - If `path` is a single file, returns the sequence it belongs to
       (same base + padding + extension) in its parent directory.
     - If `path` is a directory, returns the largest sequence in it.
+
+    Parameters
+    ----------
+    probe:
+        When True (default) opens the first frame's header to fill
+        ``width``, ``height`` and ``channel_names``. Set to False to skip
+        this: useful on slow / lazy filesystems (Google Drive Stream,
+        NAS) where the first read triggers a full file download. The UI
+        can populate those fields later from the first decoded frame.
 
     Raises
     ------
@@ -60,14 +69,17 @@ def scan(path: Path | str) -> SequenceInfo:
     """
     path = Path(path)
     if path.is_file():
-        return _scan_from_file(path)
+        return _scan_from_file(path, probe=probe)
     if path.is_dir():
-        return _scan_from_dir(path)
+        return _scan_from_dir(path, probe=probe)
     raise SequenceNotFoundError(f"Path does not exist: {path}")
 
 
-def scan_all(directory: Path | str) -> list[SequenceInfo]:
-    """Return every distinct sequence found in `directory`, largest first."""
+def scan_all(directory: Path | str, *, probe: bool = True) -> list[SequenceInfo]:
+    """Return every distinct sequence found in `directory`, largest first.
+
+    See :func:`scan` for the ``probe`` flag.
+    """
     directory = Path(directory)
     if not directory.is_dir():
         raise SequenceNotFoundError(f"Not a directory: {directory}")
@@ -87,7 +99,9 @@ def scan_all(directory: Path | str) -> list[SequenceInfo]:
     sequences: list[SequenceInfo] = []
     for (base, padding, ext), frames in groups.items():
         frames.sort(key=lambda f: f.frame_number)
-        width, height, channels = _probe_first_frame(tuple(frames))
+        width, height, channels = (
+            _probe_first_frame(tuple(frames)) if probe else (None, None, ())
+        )
         sequences.append(
             SequenceInfo(
                 base_name=base,
@@ -105,7 +119,7 @@ def scan_all(directory: Path | str) -> list[SequenceInfo]:
     return sequences
 
 
-def _scan_from_file(file: Path) -> SequenceInfo:
+def _scan_from_file(file: Path, *, probe: bool = True) -> SequenceInfo:
     parsed = _parse(file.name)
     if parsed is None:
         raise SequenceNotFoundError(f"Filename is not a sequence frame: {file.name}")
@@ -129,7 +143,9 @@ def _scan_from_file(file: Path) -> SequenceInfo:
         raise SequenceNotFoundError(f"No frames matching {file.name} in {directory}")
 
     matching_frames.sort(key=lambda f: f.frame_number)
-    width, height, channels = _probe_first_frame(tuple(matching_frames))
+    width, height, channels = (
+        _probe_first_frame(tuple(matching_frames)) if probe else (None, None, ())
+    )
     return SequenceInfo(
         base_name=parsed.base,
         extension=f".{parsed.extension}",
@@ -142,8 +158,8 @@ def _scan_from_file(file: Path) -> SequenceInfo:
     )
 
 
-def _scan_from_dir(directory: Path) -> SequenceInfo:
-    sequences = scan_all(directory)
+def _scan_from_dir(directory: Path, *, probe: bool = True) -> SequenceInfo:
+    sequences = scan_all(directory, probe=probe)
     if not sequences:
         raise SequenceNotFoundError(f"No sequence found in {directory}")
     return sequences[0]
