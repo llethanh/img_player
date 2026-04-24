@@ -26,7 +26,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--gui",
         action="store_true",
-        help="Launch the Qt GUI (smoke test at this stage).",
+        help="Launch the Qt GUI.",
+    )
+    parser.add_argument(
+        "path",
+        type=Path,
+        nargs="?",
+        default=None,
+        help="Optional file or directory to open (launches the GUI automatically).",
     )
 
     subparsers = parser.add_subparsers(dest="command")
@@ -45,12 +52,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "scan":
         return _cmd_scan(args.path, list_all=args.all)
 
-    if args.gui:
+    if args.gui or args.path is not None:
         from img_player.app import run_gui
 
-        return run_gui()
+        return run_gui(initial_path=args.path)
 
-    print(f"img_player {__version__} — CLI placeholder. Use --gui or `scan` subcommand.")
+    print(
+        f"img_player {__version__} — pass --gui to launch the window, "
+        "a PATH to open one, or `scan PATH` for a CLI summary."
+    )
     return 0
 
 
