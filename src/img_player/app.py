@@ -17,4 +17,4 @@ def run_gui() -> int:
     window.show()
 
     QTimer.singleShot(2000, app.quit)
-    return app.exec()
+    return int(app.exec())
