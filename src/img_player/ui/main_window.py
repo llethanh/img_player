@@ -7,6 +7,7 @@ Signals from controls are routed to the :class:`PlayerController` and
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -53,6 +54,10 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
     frame_requested = Signal(int)
     exposure_step = Signal(float)  # +/- keyboard adjustment
     fps_changed = Signal(float)
+    direction_play_requested = Signal(int)  # +1 forward, -1 reverse (J/L)
+    mark_in_requested = Signal()  # set in-point at current frame (I)
+    mark_out_requested = Signal()  # set out-point at current frame (O)
+    clear_in_out_requested = Signal()  # reset in/out range (Shift+R)
 
     def __init__(self, ocio_manager: OCIOManager, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -134,6 +139,12 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
     # --------------------------------------------------------------- Menu / shortcuts
 
     def _build_menu(self) -> None:
+        # Recent-paths callback provider. The app module installs real
+        # callbacks via install_recent_provider(); we seed empty defaults
+        # so the menu can render before that happens.
+        self._recent_paths_provider: Callable[[], list[Path]] = lambda: []
+        self._clear_recent_callback: Callable[[], None] = lambda: None
+
         menu_bar = self.menuBar()
         file_menu = menu_bar.addMenu("&File")
 
@@ -141,6 +152,11 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         open_act.setShortcut(QKeySequence.StandardKey.Open)
         open_act.triggered.connect(self._on_open_action)
         file_menu.addAction(open_act)
+
+        self._recent_menu = file_menu.addMenu("Open &Recent")
+        self._recent_menu.aboutToShow.connect(self._refresh_recent_menu)
+        # Pre-populate so the submenu is never empty on first open.
+        self._refresh_recent_menu()
 
         file_menu.addSeparator()
         quit_act = QAction("&Quit", self)
@@ -153,10 +169,62 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         about_act.triggered.connect(self._show_about)
         help_menu.addAction(about_act)
 
+    def install_recent_provider(
+        self,
+        provider: Callable[[], list[Path]],
+        clear_callback: Callable[[], None],
+    ) -> None:
+        """Let the app inject the functions that list / clear recent paths."""
+        self._recent_paths_provider = provider
+        self._clear_recent_callback = clear_callback
+        self._refresh_recent_menu()
+
+    def _refresh_recent_menu(self) -> None:
+        self._recent_menu.clear()
+        paths = list(self._recent_paths_provider())
+        if not paths:
+            empty = QAction("(no recent sequences)", self)
+            empty.setEnabled(False)
+            self._recent_menu.addAction(empty)
+            return
+        for path in paths:
+            act = QAction(self._shorten_path_label(path), self)
+            act.setToolTip(str(path))
+            act.triggered.connect(lambda _=False, p=path: self.open_requested.emit(p))
+            self._recent_menu.addAction(act)
+        self._recent_menu.addSeparator()
+        clear = QAction("Clear list", self)
+        clear.triggered.connect(self._on_clear_recent_clicked)
+        self._recent_menu.addAction(clear)
+
+    def _on_clear_recent_clicked(self) -> None:
+        self._clear_recent_callback()
+        self._refresh_recent_menu()
+
+    @staticmethod
+    def _shorten_path_label(path: Path, max_len: int = 60) -> str:
+        s = str(path)
+        if len(s) <= max_len:
+            return s
+        # Keep the beginning + end, shrink the middle.
+        head = s[:20]
+        tail = s[-(max_len - 23) :]
+        return f"{head}…{tail}"
+
     def _install_shortcuts(self) -> None:
-        # Playback
-        QShortcut(QKeySequence(Qt.Key.Key_Space), self, activated=self.play_toggled.emit)
+        # Classic VFX shuttle: J reverse, K pause, L forward
+        QShortcut(
+            QKeySequence(Qt.Key.Key_J),
+            self,
+            activated=lambda: self.direction_play_requested.emit(-1),
+        )
         QShortcut(QKeySequence(Qt.Key.Key_K), self, activated=self.play_toggled.emit)
+        QShortcut(
+            QKeySequence(Qt.Key.Key_L),
+            self,
+            activated=lambda: self.direction_play_requested.emit(1),
+        )
+        QShortcut(QKeySequence(Qt.Key.Key_Space), self, activated=self.play_toggled.emit)
 
         # Frame stepping
         QShortcut(QKeySequence(Qt.Key.Key_Left), self, activated=lambda: self.step_clicked.emit(-1))
@@ -165,6 +233,11 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         QShortcut(QKeySequence("Shift+Right"), self, activated=lambda: self.step_clicked.emit(10))
         QShortcut(QKeySequence(Qt.Key.Key_Home), self, activated=lambda: self.jump_to_ends.emit(-1))
         QShortcut(QKeySequence(Qt.Key.Key_End), self, activated=lambda: self.jump_to_ends.emit(1))
+
+        # In / out points
+        QShortcut(QKeySequence(Qt.Key.Key_I), self, activated=self.mark_in_requested.emit)
+        QShortcut(QKeySequence(Qt.Key.Key_O), self, activated=self.mark_out_requested.emit)
+        QShortcut(QKeySequence("Shift+R"), self, activated=self.clear_in_out_requested.emit)
 
         # Exposure nudges — these map to the color panel's spin box
         QShortcut(

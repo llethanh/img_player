@@ -15,6 +15,7 @@ from img_player.color.gpu_processor import build_shader_bundle
 from img_player.color.ocio_manager import OCIOManager
 from img_player.player.controller import PlayerController
 from img_player.player.state import PlaybackState
+from img_player.preferences import Preferences
 from img_player.sequence.models import SequenceInfo
 from img_player.sequence.scanner import SequenceNotFoundError, scan
 from img_player.ui.main_window import MainWindow
@@ -58,6 +59,10 @@ class ImgPlayerApp:
         num_workers: int = DEFAULT_NUM_WORKERS,
     ) -> None:
         self._qapp = QApplication.instance() or QApplication(argv)
+        self._qapp.setOrganizationName("img_player")
+        self._qapp.setApplicationName("img_player")
+
+        self._prefs = Preferences()
 
         self._ocio = OCIOManager()
         self._cache = FrameCache(
@@ -105,6 +110,10 @@ class ImgPlayerApp:
 
         self._wire()
 
+        # Restore user preferences (colorspace, FPS, window geometry, recent
+        # files) from previous sessions.
+        self._apply_preferences()
+
         # Push the initial color params so the GL shader is ready before any
         # frame arrives.
         self._window.color_panel.emit_current()
@@ -125,7 +134,12 @@ class ImgPlayerApp:
         self._shutdown()
         return exit_code
 
+    def _apply_preferences(self) -> None:
+        _apply_preferences_to_window(self)
+
     def _shutdown(self) -> None:
+        # Persist window geometry so it reopens at the same size/position.
+        self._prefs.window_geometry = bytes(self._window.saveGeometry())
         self._status_timer.stop()
         self._wait_timer.stop()
         self._cache_bar_timer.stop()
@@ -148,7 +162,17 @@ class ImgPlayerApp:
         self._window.frame_requested.connect(self._on_scrub_requested)
         self._window.open_requested.connect(self._open_path)
         self._window.exposure_step.connect(self._window.color_panel.bump_exposure)
-        self._window.fps_changed.connect(self._controller.set_fps)
+        self._window.fps_changed.connect(self._on_fps_changed)
+        self._window.direction_play_requested.connect(self._on_direction_play)
+        self._window.mark_in_requested.connect(self._on_mark_in)
+        self._window.mark_out_requested.connect(self._on_mark_out)
+        self._window.clear_in_out_requested.connect(lambda: self._controller.set_in_out(None, None))
+
+        # Recent-files menu uses callbacks into preferences.
+        self._window.install_recent_provider(
+            provider=self._prefs.recent_paths,
+            clear_callback=self._prefs.clear_recent,
+        )
 
         # ColorPanel -> GL viewport
         self._window.color_panel.color_params_changed.connect(self._on_color_params)
@@ -272,6 +296,31 @@ class ImgPlayerApp:
             log.exception("failed to build color shader (%s -> %s/%s)", src, display, view)
             return
         self._window.viewer.gl.set_color_params(bundle=bundle, exposure=exposure, gamma=gamma)
+        # Persist the colorspace triple so the next launch starts with the
+        # same look. Exposure / gamma are per-image adjustments and aren't
+        # saved.
+        self._prefs.source_colorspace = src
+        self._prefs.display = display
+        self._prefs.view = view
+
+    def _on_fps_changed(self, fps: float) -> None:
+        self._controller.set_fps(fps)
+        self._prefs.fps = fps
+
+    def _on_direction_play(self, direction: int) -> None:
+        self._controller.set_direction(direction)
+        if not self._controller.state.is_playing:
+            self._controller.play()
+
+    def _on_mark_in(self) -> None:
+        cur = self._controller.state.current_frame
+        self._controller.set_in_out(cur, self._controller.state.out_frame)
+        self._window.set_status(f"In point set to frame {cur}")
+
+    def _on_mark_out(self) -> None:
+        cur = self._controller.state.current_frame
+        self._controller.set_in_out(self._controller.state.in_frame, cur)
+        self._window.set_status(f"Out point set to frame {cur}")
 
     def _open_path(self, path: Path) -> None:
         """Scan `path` off the main thread so the UI stays responsive."""
@@ -312,6 +361,9 @@ class ImgPlayerApp:
         self._window.set_status(
             f"Loaded {seq.display_pattern()} ({seq.frame_count} frames) — decoding first frame…"
         )
+        # Remember this path for next launch and for the Recent menu.
+        self._prefs.last_path = path
+        self._prefs.push_recent(path)
 
     def _guess_source_colorspace(self, seq: SequenceInfo) -> None:
         """Heuristic: EXR -> scene_linear, PNG/JPG/TGA -> sRGB display encoded.
@@ -357,6 +409,31 @@ def _first_existing(manager: OCIOManager, candidates: list[str]) -> str | None:
         if name in available:
             return name
     return None
+
+
+# ---------------------------------------------------------------------- Preferences glue
+
+
+def _apply_preferences_to_window(app: ImgPlayerApp) -> None:
+    """Separated so we can call it after the window exists but before show()."""
+    prefs = app._prefs
+    geom = prefs.window_geometry
+    if geom is not None:
+        app._window.restoreGeometry(geom)
+
+    # Color defaults — only apply if they still exist in the current OCIO config.
+    cs_list = set(app._ocio.list_colorspaces())
+    displays = set(app._ocio.list_displays())
+    if prefs.source_colorspace and prefs.source_colorspace in cs_list:
+        app._window.color_panel.set_source_colorspace(prefs.source_colorspace)
+    if prefs.display and prefs.display in displays:
+        # Selecting a display also repopulates the view combo, so set view after.
+        app._window.color_panel._display_combo.setCurrentText(prefs.display)
+    if prefs.view and prefs.display and prefs.view in set(app._ocio.list_views(prefs.display)):
+        app._window.color_panel._view_combo.setCurrentText(prefs.view)
+
+    # FPS
+    app._window.transport._fps_spin.setValue(prefs.fps)
 
 
 def run_gui(
