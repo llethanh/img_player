@@ -39,6 +39,18 @@ def main(argv: list[str] | None = None) -> int:
         help="Force the Qt GUI (implied when a PATH is given and --scan is not).",
     )
     parser.add_argument(
+        "--cache-gb",
+        type=float,
+        default=None,
+        help="RAM cache budget in GiB (default: 8). Bigger = more frames kept.",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help="Number of decode workers (default: 6). Bump for heavy-disk loads.",
+    )
+    parser.add_argument(
         "path",
         type=Path,
         nargs="?",
@@ -55,9 +67,13 @@ def main(argv: list[str] | None = None) -> int:
     # Default: launch the GUI (empty if no path, opening the given
     # sequence otherwise). Users can still drag & drop once the window
     # is open.
-    from img_player.app import run_gui
+    from img_player.app import DEFAULT_CACHE_BUDGET_BYTES, DEFAULT_NUM_WORKERS, run_gui
 
-    return run_gui(initial_path=args.path)
+    budget = (
+        int(args.cache_gb * 1024**3) if args.cache_gb is not None else DEFAULT_CACHE_BUDGET_BYTES
+    )
+    workers = args.workers if args.workers is not None else DEFAULT_NUM_WORKERS
+    return run_gui(initial_path=args.path, cache_budget_bytes=budget, num_workers=workers)
 
 
 def _cmd_scan(path: Path, *, list_all: bool) -> int:

@@ -22,8 +22,8 @@ from img_player.ui.main_window import MainWindow
 log = logging.getLogger(__name__)
 
 # Reasonable defaults for an HD VFX perso workstation — tune later via settings.
-DEFAULT_CACHE_BUDGET_BYTES = 4 * 1024**3  # 4 GB
-DEFAULT_NUM_WORKERS = 4
+DEFAULT_CACHE_BUDGET_BYTES = 8 * 1024**3  # 8 GB
+DEFAULT_NUM_WORKERS = 6
 
 
 class _ScanRunner(QObject):  # type: ignore[misc]
@@ -50,13 +50,19 @@ class _ScanRunner(QObject):  # type: ignore[misc]
 class ImgPlayerApp:
     """Owns every long-lived object (cache, controller, window) and their wiring."""
 
-    def __init__(self, argv: list[str]) -> None:
+    def __init__(
+        self,
+        argv: list[str],
+        *,
+        cache_budget_bytes: int = DEFAULT_CACHE_BUDGET_BYTES,
+        num_workers: int = DEFAULT_NUM_WORKERS,
+    ) -> None:
         self._qapp = QApplication.instance() or QApplication(argv)
 
         self._ocio = OCIOManager()
         self._cache = FrameCache(
-            budget_bytes=DEFAULT_CACHE_BUDGET_BYTES,
-            num_workers=DEFAULT_NUM_WORKERS,
+            budget_bytes=cache_budget_bytes,
+            num_workers=num_workers,
         )
         self._controller = PlayerController(self._cache)
         self._window = MainWindow(self._ocio)
@@ -353,10 +359,20 @@ def _first_existing(manager: OCIOManager, candidates: list[str]) -> str | None:
     return None
 
 
-def run_gui(argv: list[str] | None = None, initial_path: Path | None = None) -> int:
+def run_gui(
+    argv: list[str] | None = None,
+    initial_path: Path | None = None,
+    *,
+    cache_budget_bytes: int = DEFAULT_CACHE_BUDGET_BYTES,
+    num_workers: int = DEFAULT_NUM_WORKERS,
+) -> int:
     """Public entry point used by ``python -m img_player``."""
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )
-    app = ImgPlayerApp(argv or sys.argv)
+    app = ImgPlayerApp(
+        argv or sys.argv,
+        cache_budget_bytes=cache_budget_bytes,
+        num_workers=num_workers,
+    )
     return app.run(initial_path=initial_path)

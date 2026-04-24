@@ -24,8 +24,15 @@ def test_read_exr_returns_rgba(exr_path: Path) -> None:
     assert arr.dtype == np.float32
 
 
-def test_read_multichannel_exr_full(exr_multichannel_path: Path) -> None:
+def test_read_multichannel_exr_default_is_rgba(exr_multichannel_path: Path) -> None:
+    # By default we only pull the beauty (R, G, B, A) — AOVs are skipped to
+    # keep RAM and decode cheap on multichannel files.
     arr = read_frame(exr_multichannel_path)
+    assert arr.shape[2] == 4
+
+
+def test_read_multichannel_exr_explicit_full(exr_multichannel_path: Path) -> None:
+    arr = read_frame(exr_multichannel_path, channels=["R", "G", "B", "A", "Z", "AO"])
     assert arr.shape[2] == 6  # R, G, B, A, Z, AO
 
 
