@@ -1,0 +1,13 @@
+name: img_player
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - openimageio          # conda-forge only — not reliably on PyPI for Windows
+  - py-openimageio       # Python bindings (shipped separately on conda-forge)
+  - pyside6
+  - numpy
+  - pip
+  - pip:
+      - opencolorio>=2.3  # ASWF wheels — not available on conda-forge win-64 as of 2026-04
+      - -e .[dev]
