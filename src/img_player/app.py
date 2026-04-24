@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import logging
 import sys
+import threading
 from pathlib import Path
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from img_player.cache.frame_cache import FrameCache
@@ -23,6 +24,27 @@ log = logging.getLogger(__name__)
 # Reasonable defaults for an HD VFX perso workstation — tune later via settings.
 DEFAULT_CACHE_BUDGET_BYTES = 4 * 1024**3  # 4 GB
 DEFAULT_NUM_WORKERS = 4
+
+
+class _ScanRunner(QObject):  # type: ignore[misc]
+    """Runs ``scan(path, probe=False)`` in a worker thread and emits the result.
+
+    The ``done`` signal carries either a :class:`SequenceInfo` or an
+    :class:`Exception`. Qt delivers it on the main thread automatically
+    since emit happens from the worker thread.
+    """
+
+    done = Signal(object)
+
+    def run_async(self, path: Path) -> None:
+        def worker() -> None:
+            try:
+                seq = scan(path, probe=False)
+                self.done.emit(seq)
+            except Exception as err:
+                self.done.emit(err)
+
+        threading.Thread(target=worker, name="scan-worker", daemon=True).start()
 
 
 class ImgPlayerApp:
@@ -55,6 +77,11 @@ class ImgPlayerApp:
         self._cache_bar_timer = QTimer(self._window)
         self._cache_bar_timer.setInterval(200)
         self._cache_bar_timer.timeout.connect(self._refresh_cache_bar)
+
+        # Track active scan requests so a newer drag&drop supersedes an older
+        # one still running in a background thread.
+        self._scan_generation = 0
+        self._scan_runner: _ScanRunner | None = None
 
         self._wire()
 
@@ -100,6 +127,7 @@ class ImgPlayerApp:
         self._window.frame_requested.connect(self._controller.seek)
         self._window.open_requested.connect(self._open_path)
         self._window.exposure_step.connect(self._window.color_panel.bump_exposure)
+        self._window.fps_changed.connect(self._controller.set_fps)
 
         # ColorPanel -> GL viewport
         self._window.color_panel.color_params_changed.connect(self._on_color_params)
@@ -165,18 +193,37 @@ class ImgPlayerApp:
         self._window.viewer.gl.set_color_params(bundle=bundle, exposure=exposure, gamma=gamma)
 
     def _open_path(self, path: Path) -> None:
+        """Scan `path` off the main thread so the UI stays responsive."""
         self._window.set_status(f"Scanning {path}…")
-        try:
-            # probe=False: don't open the first file just to read width/
-            # height/channels. On Google Drive or other lazy filesystems
-            # this download can take tens of seconds and would freeze the
-            # app. The UI fills those fields in from the first decoded
-            # frame instead.
-            seq = scan(path, probe=False)
-        except SequenceNotFoundError as err:
-            QMessageBox.warning(self._window, "Cannot open", str(err))
+
+        self._scan_generation += 1
+        gen = self._scan_generation
+
+        runner = _ScanRunner()
+        self._scan_runner = runner  # keep a reference so the QObject stays alive
+
+        def on_done(result: object) -> None:
+            if gen != self._scan_generation:
+                # Superseded by a newer drop — ignore this result.
+                return
+            self._apply_scan_result(path, result)
+
+        runner.done.connect(on_done)
+        # probe=False: don't open any image file just to read metadata.
+        # On lazy filesystems (Google Drive Stream) a single header read
+        # can trigger a full file download (tens of seconds).
+        runner.run_async(path)
+
+    def _apply_scan_result(self, path: Path, result: object) -> None:
+        if isinstance(result, Exception):
+            if isinstance(result, SequenceNotFoundError):
+                QMessageBox.warning(self._window, "Cannot open", str(result))
+            else:
+                log.exception("scan failed for %s: %s", path, result)
+                QMessageBox.critical(self._window, "Scan failed", str(result))
             self._window.set_status("Ready.")
             return
+        seq: SequenceInfo = result  # type: ignore[assignment]
         log.info("loaded sequence: %s (%d frames)", seq.display_pattern(), seq.frame_count)
         self._window.update_sequence_info(seq)
         self._guess_source_colorspace(seq)

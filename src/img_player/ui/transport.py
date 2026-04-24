@@ -1,4 +1,4 @@
-"""Transport bar: play/pause, stop, prev/next frame, first/last frame."""
+"""Transport bar: play/pause, stop, prev/next frame, first/last frame, fps."""
 
 from __future__ import annotations
 
@@ -6,7 +6,14 @@ from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import QHBoxLayout, QPushButton, QStyle, QWidget
+from PySide6.QtWidgets import (
+    QDoubleSpinBox,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QStyle,
+    QWidget,
+)
 
 if TYPE_CHECKING:
     from img_player.player.state import PlaybackState
@@ -19,6 +26,7 @@ class TransportBar(QWidget):  # type: ignore[misc]
     stop_clicked = Signal()
     step_clicked = Signal(int)  # +1 or -1
     jump_to_ends = Signal(int)  # -1 = first frame, +1 = last
+    fps_changed = Signal(float)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -51,6 +59,19 @@ class TransportBar(QWidget):  # type: ignore[misc]
         self._next_btn.clicked.connect(lambda: self.step_clicked.emit(1))
         self._last_btn.clicked.connect(lambda: self.jump_to_ends.emit(1))
 
+        self._fps_spin = QDoubleSpinBox()
+        self._fps_spin.setRange(1.0, 120.0)
+        self._fps_spin.setDecimals(2)
+        self._fps_spin.setSingleStep(1.0)
+        self._fps_spin.setValue(24.0)
+        self._fps_spin.setSuffix(" fps")
+        self._fps_spin.setFixedWidth(96)
+        self._fps_spin.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+        self._fps_spin.setToolTip(
+            "Playback rate. The controller waits on the cache, so slower cache → slower effective playback."
+        )
+        self._fps_spin.valueChanged.connect(self.fps_changed.emit)
+
         layout = QHBoxLayout(self)
         layout.setContentsMargins(6, 4, 6, 4)
         layout.setSpacing(4)
@@ -64,6 +85,9 @@ class TransportBar(QWidget):  # type: ignore[misc]
             self._last_btn,
         ):
             layout.addWidget(btn)
+        layout.addSpacing(12)
+        layout.addWidget(QLabel("FPS:"))
+        layout.addWidget(self._fps_spin)
         layout.addStretch(1)
 
     def update_from_state(self, state: PlaybackState) -> None:
@@ -75,6 +99,10 @@ class TransportBar(QWidget):  # type: ignore[misc]
             else QStyle.StandardPixmap.SP_MediaPlay
         )
         self._play_btn.setIcon(icon)
+        if abs(state.fps - self._fps_spin.value()) > 1e-6:
+            self._fps_spin.blockSignals(True)
+            self._fps_spin.setValue(state.fps)
+            self._fps_spin.blockSignals(False)
 
 
 def _icon_button(icon: QIcon, tooltip: str) -> QPushButton:

@@ -52,6 +52,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
     jump_to_ends = Signal(int)  # -1 first, +1 last
     frame_requested = Signal(int)
     exposure_step = Signal(float)  # +/- keyboard adjustment
+    fps_changed = Signal(float)
 
     def __init__(self, ocio_manager: OCIOManager, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -181,6 +182,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self._transport.stop_clicked.connect(self.stop_clicked.emit)
         self._transport.step_clicked.connect(self.step_clicked.emit)
         self._transport.jump_to_ends.connect(self.jump_to_ends.emit)
+        self._transport.fps_changed.connect(self.fps_changed.emit)
         self._timeline.frame_requested.connect(self.frame_requested.emit)
 
     # --------------------------------------------------------------- Menu handlers
