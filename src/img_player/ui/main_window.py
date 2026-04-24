@@ -281,6 +281,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self._transport.fps_changed.connect(self.fps_changed.emit)
         self._transport.mark_in_clicked.connect(self.mark_in_requested.emit)
         self._transport.mark_out_clicked.connect(self.mark_out_requested.emit)
+        self._transport.clear_in_out_clicked.connect(self.clear_in_out_requested.emit)
         self._transport.loop_mode_requested.connect(self.loop_mode_requested.emit)
         self._timeline.frame_requested.connect(self.frame_requested.emit)
 

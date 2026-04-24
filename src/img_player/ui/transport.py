@@ -40,6 +40,7 @@ class TransportBar(QWidget):  # type: ignore[misc]
     fps_changed = Signal(float)
     mark_in_clicked = Signal()
     mark_out_clicked = Signal()
+    clear_in_out_clicked = Signal()
     loop_mode_requested = Signal(object)  # LoopMode
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -54,6 +55,9 @@ class TransportBar(QWidget):  # type: ignore[misc]
 
         self._mark_out_btn = _text_button(" O ", "Mark OUT at current frame (O)")
         self._mark_out_btn.clicked.connect(self.mark_out_clicked.emit)
+
+        self._clear_io_btn = _text_button("⌫", "Clear IN/OUT range (Shift+R)")
+        self._clear_io_btn.clicked.connect(self.clear_in_out_clicked.emit)
 
         # --- Loop mode ------------------------------------------------------
         self._loop_btn = _text_button("↻", "Loop mode (click to cycle)")
@@ -110,6 +114,7 @@ class TransportBar(QWidget):  # type: ignore[misc]
 
         layout.addWidget(self._mark_in_btn)
         layout.addWidget(self._mark_out_btn)
+        layout.addWidget(self._clear_io_btn)
         layout.addWidget(_separator())
         layout.addWidget(self._loop_btn)
         layout.addWidget(_separator())
