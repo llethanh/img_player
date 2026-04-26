@@ -99,6 +99,18 @@ _TEMPLATES: dict[str, str] = {
         '<polygon points="2,2 10,8 2,14" fill="{color}"/>'
         "</svg>"
     ),
+    # Hamburger / dock toggle. Three horizontal bars at y=3, y=7, y=11
+    # (height 2 each → centres at 4 / 8 / 12), so the gaps above/below
+    # each bar are identical. The Unicode glyph U+2630 we used to
+    # render here had inconsistent spacing across system fonts; an
+    # SVG primitive is the only way to guarantee even bars.
+    "menu": (
+        '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">'
+        '<rect x="3" y="3" width="10" height="2" rx="1" fill="{color}"/>'
+        '<rect x="3" y="7" width="10" height="2" rx="1" fill="{color}"/>'
+        '<rect x="3" y="11" width="10" height="2" rx="1" fill="{color}"/>'
+        "</svg>"
+    ),
 }
 
 
