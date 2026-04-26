@@ -70,6 +70,15 @@ class FrameCache:
         # the reader broadcasts a single-channel readout to RGB so the
         # GL viewport renders it as monochrome.
         self._active_channels: list[str] | None = None
+        # Bumped every time the channel selection (or sequence, via
+        # ``attach``) changes. Each in-flight decode captures the epoch
+        # under which it started; if the epoch has moved on by the time
+        # the worker tries to store its result, we drop it. Without
+        # this, a channel switch issued mid-decode lets the worker
+        # store a stale-channel array into the freshly-cleared cache —
+        # the cache bar then shows a phantom run of frames that decode
+        # to the *previous* channel.
+        self._epoch = 0
         self._pool = WorkerPool(num_workers=num_workers, name="decode")
 
         # Counters (guarded by _lock)
@@ -89,6 +98,9 @@ class FrameCache:
             self._sequence = sequence
             self._paths_by_frame = {f.frame_number: f.path for f in sequence.frames}
             self._current_frame = sequence.first_frame
+            # Any decode that was in flight against the previous
+            # sequence is now meaningless — fence them out.
+            self._epoch += 1
 
     def clear(self) -> None:
         """Remove cached frames and drop pending decodes. Sequence stays attached."""
@@ -96,6 +108,9 @@ class FrameCache:
         with self._lock:
             self._frames.clear()
             self._bytes_used = 0
+            # Workers currently mid-decode can't be cancelled; bump
+            # the epoch so their store-time check drops the result.
+            self._epoch += 1
 
     def clear_pending(self) -> int:
         """Drop only the pending decode queue (keep cached frames)."""
@@ -147,6 +162,13 @@ class FrameCache:
             self._active_channels = list(channels) if channels else None
             self._frames.clear()
             self._bytes_used = 0
+            # Any decode currently in flight was started against the
+            # previous channel selection. ``pool.clear()`` only drops
+            # *queued* tasks; running workers continue to completion.
+            # We can't cancel their ``read_frame`` call, but we can
+            # make them drop the result at store time by bumping the
+            # epoch (see ``_decode_and_store``).
+            self._epoch += 1
 
     def get(self, frame: int) -> np.ndarray | None:
         """Non-blocking fetch. Returns None if the frame is not cached."""
@@ -220,8 +242,11 @@ class FrameCache:
         # Capture the active channels under the lock — set_channels can
         # be called from the Qt thread while a decode is in flight,
         # but we want this single decode to use a stable selection.
+        # The epoch is captured at the same moment so we can detect at
+        # store time whether the world has shifted under us.
         with self._lock:
             channels = list(self._active_channels) if self._active_channels else None
+            epoch = self._epoch
         try:
             arr = read_frame(path, channels=channels)
         except FrameReadError as err:
@@ -237,6 +262,14 @@ class FrameCache:
             )
 
         with self._lock:
+            # The epoch moved while we were decoding — channels were
+            # switched (or sequence re-attached, or cache cleared).
+            # Storing the array now would re-pollute the freshly
+            # cleared cache with a frame decoded under the *previous*
+            # selection, and the cache bar would show a phantom run
+            # the user can't account for. Drop it.
+            if epoch != self._epoch:
+                return
             if frame in self._frames:
                 return  # raced with another worker; keep the existing one
             self._frames[frame] = arr
