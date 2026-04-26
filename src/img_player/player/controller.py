@@ -104,7 +104,14 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
             dropped_frames=0,
         )
         self._cache.set_current_frame(first)
-        self._cache.request_range(first, first + self.PREFETCH_AHEAD, direction=1)
+        # Schedule the *whole* sequence to be filled in the background,
+        # prioritised by distance from the playhead. The close window
+        # decodes first (the worker pool is a min-heap on priority);
+        # everything else trickles in afterwards. This way the user
+        # eventually gets a fully-cached sequence even if they never
+        # play through it — and they don't see unexplained gaps on
+        # the cache bar after seeking past the close window.
+        self._prefetch_full_sequence(first, 1)
         self.frame_changed.emit(first)
 
     def play(self) -> None:
@@ -158,7 +165,14 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
         self._cache.clear_pending()
         self._update(current_frame=clamped)
         self._cache.set_current_frame(clamped)
-        self._prefetch_from(clamped, self._state.direction)
+        # Re-plan the entire sequence's prefetch, prioritised by
+        # distance from the new playhead. ``clear_pending`` just
+        # dropped the old queue, including any "middle of the
+        # sequence" frames that were waiting their turn — without
+        # this re-plan they'd never come back, and the user would
+        # see a permanent gap on the cache bar between the previous
+        # prefetch's high-water mark and the new playhead.
+        self._prefetch_full_sequence(clamped, self._state.direction)
         # Seeking discards the rolling FPS window — pre-seek samples
         # don't reflect the post-seek decode pressure (we're likely to
         # land on a non-cached frame which slows the next few ticks).
@@ -283,10 +297,51 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
         self.frame_changed.emit(frame_n)
 
     def _prefetch_from(self, frame: int, direction: int) -> None:
+        """Tick-time prefetch: just the close window.
+
+        Called on every playback tick (24+ Hz). Keep it cheap — only
+        schedule what we need imminently. The full-sequence fill is
+        handled by :meth:`_prefetch_full_sequence` on seek and load.
+        """
         if direction >= 0:
             self._cache.request_range(frame, frame + self.PREFETCH_AHEAD, direction=1)
         else:
             self._cache.request_range(frame - self.PREFETCH_AHEAD, frame, direction=-1)
+
+    # Frames *behind* the playhead in the current play direction are
+    # only revisited on a loop wrap, so we treat them as significantly
+    # less urgent than frames ahead. Mirrors the eviction-scoring rule
+    # in :class:`FrameCache`. 4× was picked empirically: enough that
+    # forward frames always win worker time, not so much that distant
+    # behind-frames never get scheduled.
+    _BEHIND_PRIORITY_PENALTY = 4
+
+    def _prefetch_full_sequence(self, frame: int, direction: int) -> None:
+        """Schedule every frame in the sequence, prioritised by
+        signed distance from ``frame``.
+
+        The worker pool is a min-heap on priority — frames closer to
+        the playhead (small priority numbers) decode first; far
+        frames trickle in once the close window is drained.
+        ``FrameCache.request`` dedups against already-cached and
+        already-pending frames, so calling this on every seek is
+        cheap (one lock + dict lookup per frame) and idempotent.
+
+        Without this, a user who scrubs past the close-window
+        boundary mid-prefetch leaves a permanent gap in the middle
+        of the cache bar: the old queued tasks were dropped by
+        ``clear_pending``, and ``_prefetch_from`` only re-requests
+        the new close window. The gap is exactly what the user
+        reported on the timeline.
+        """
+        if self._sequence is None:
+            return
+        seq = self._sequence
+        d = 1 if direction >= 0 else -1
+        for f in range(seq.first_frame, seq.last_frame + 1):
+            delta = (f - frame) * d
+            priority = delta if delta >= 0 else (-delta * self._BEHIND_PRIORITY_PENALTY)
+            self._cache.request(f, priority=priority)
 
     def _interval_ms(self) -> int:
         return max(1, round(1000.0 / self._state.fps))
