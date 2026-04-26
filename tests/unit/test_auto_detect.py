@@ -14,8 +14,10 @@ import pytest
 
 from img_player.color.auto_detect import (
     DetectionResult,
+    classify_source_colorspace,
     detect_display,
     detect_source_colorspace,
+    detect_view,
 )
 
 
@@ -267,3 +269,113 @@ class TestDetectDisplay:
         for hint in ("SRGB", "sRgb", "SRGBLINEAR", "DisplayP3"):
             result = detect_display(hint, DISPLAYS)
             assert result.colorspace is not None
+
+
+# --------------------------------------------------------------------- Source classification
+
+class TestClassifySource:
+    @pytest.mark.parametrize("name", [
+        "ACES - ACEScg",
+        "ACEScg",
+        "scene_linear",
+        "Linear sRGB",
+        "Linear Rec.709",
+        "ACES2065-1",
+    ])
+    def test_scene_referred(self, name: str) -> None:
+        assert classify_source_colorspace(name) == "scene"
+
+    @pytest.mark.parametrize("name", [
+        "sRGB",
+        "Output - sRGB",
+        "Output - Rec.709",
+        "Rec.709",  # without "Linear" prefix → display
+        "Display P3",
+        "Gamma 2.2 Encoded Rec.709",
+    ])
+    def test_display_referred(self, name: str) -> None:
+        assert classify_source_colorspace(name) == "display"
+
+    @pytest.mark.parametrize("name", [
+        "Cineon",
+        "Log Film",
+        "ARRI LogC3",
+        "RED Log3G10",
+        "S-Log3",
+    ])
+    def test_log_encoded(self, name: str) -> None:
+        assert classify_source_colorspace(name) == "log"
+
+    def test_unknown_returns_unknown(self) -> None:
+        assert classify_source_colorspace("StudioInternal_X") == "unknown"
+
+
+# --------------------------------------------------------------------- View detection
+
+VIEWS_ACES = [
+    "ACES 1.0 SDR-video",
+    "ACES 1.1 HDR-video",
+    "Un-tone-mapped",
+    "Log",
+    "Raw",
+]
+
+
+class TestDetectView:
+    def test_scene_referred_picks_aces_sdr(self) -> None:
+        result = detect_view("ACES - ACEScg", VIEWS_ACES)
+        assert result.colorspace == "ACES 1.0 SDR-video"
+        assert "scene-referred" in result.reason
+
+    def test_display_referred_picks_raw(self) -> None:
+        # An sRGB PNG would be tone-mapped twice if we used ACES SDR;
+        # we want Raw / Un-tone-mapped to skip the curve.
+        result = detect_view("sRGB", VIEWS_ACES)
+        assert result.colorspace == "Raw"
+        assert "display-referred" in result.reason
+
+    def test_log_picks_un_tone_mapped(self) -> None:
+        # Log content needs a "Log to display" path; in plain ACES
+        # configs that's typically Un-tone-mapped or Raw — the user
+        # can refine via the Color panel.
+        result = detect_view("Cineon", VIEWS_ACES)
+        assert result.colorspace == "Un-tone-mapped"
+        assert "log-referred" in result.reason
+
+    def test_no_source_falls_back_to_default(self) -> None:
+        result = detect_view(
+            None, VIEWS_ACES, default_view="ACES 1.0 SDR-video"
+        )
+        assert result.colorspace == "ACES 1.0 SDR-video"
+        assert "no source" in result.reason
+
+    def test_unknown_source_uses_default(self) -> None:
+        result = detect_view(
+            "StudioInternalX", VIEWS_ACES, default_view="ACES 1.0 SDR-video"
+        )
+        assert result.colorspace == "ACES 1.0 SDR-video"
+
+    def test_empty_views_returns_none(self) -> None:
+        result = detect_view("ACES - ACEScg", [])
+        assert result.colorspace is None
+        assert "no views" in result.reason
+
+    def test_scene_with_filmic_only_picks_filmic(self) -> None:
+        # A Blender-style config that doesn't have ACES views — we
+        # should still find a sensible tone-mapping view.
+        views = ["Standard", "Filmic", "Raw"]
+        result = detect_view("Linear sRGB", views)
+        assert result.colorspace == "Filmic"
+
+    def test_display_with_no_raw_falls_back_to_default(self) -> None:
+        # A weird config that doesn't expose Raw / Un-tone-mapped —
+        # we accept the default rather than picking ACES SDR (which
+        # would double up the tone map).
+        views = ["ACES 1.0 SDR-video", "Custom Look"]
+        result = detect_view(
+            "sRGB", views, default_view="ACES 1.0 SDR-video"
+        )
+        # No "Raw" / "Un-tone-mapped" / "None" / "sRGB" matched, so
+        # we fall back to the explicit default.
+        assert result.colorspace == "ACES 1.0 SDR-video"
+        assert "falling back" in result.reason

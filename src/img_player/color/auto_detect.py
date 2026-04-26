@@ -317,3 +317,123 @@ def _find_display(canonical: str, available: Iterable[str]) -> str | None:
     different OCIO concepts even though the matching trick is the
     same string-normalisation."""
     return _find_colorspace(canonical, available)
+
+
+# ----------------------------------------------------------------------- View detection
+
+# Classify a source colorspace name into one of three buckets that
+# matter for picking the right view:
+#
+#   * scene  — linear scene-referred (ACES, ACEScg, scene_linear,
+#              Linear Rec.709, etc.). Wants tone mapping.
+#   * display — already display-referred (sRGB, Rec.709 with EOTF
+#              applied, Output - sRGB). Wants Raw / Un-tone-mapped
+#              to avoid doubling up the tone map.
+#   * log    — log-encoded (Cineon, ARRI Log_C, RED Log…). Wants a
+#              "Log to display" / Un-tone-mapped that delogs the
+#              source first.
+
+SourceCategory = str  # "scene" / "display" / "log" / "unknown"
+
+
+def classify_source_colorspace(source: str) -> SourceCategory:
+    """Categorise a colorspace name into scene / display / log /
+    unknown for view-selection purposes."""
+    norm = source.lower()
+    # Log-encoded: Cineon, ARRI Log_C, RED Log3G10, slog3, etc.
+    if "log" in norm or "cineon" in norm:
+        return "log"
+    # Scene-referred:
+    #   - anything containing "linear" (e.g. "Linear sRGB",
+    #     "Linear Rec.709", "scene_linear")
+    #   - anything ACES that *isn't* "Output - ACES …" (which is
+    #     display-referred ACES output)
+    if "linear" in norm or "scene_linear" in norm:
+        return "scene"
+    if "aces" in norm and "output" not in norm and "display" not in norm:
+        return "scene"
+    # Display-referred: sRGB / Rec.709 / Output / Display naming.
+    if (
+        "srgb" in norm
+        or "rec.709" in norm
+        or "rec709" in norm
+        or "output" in norm
+        or "display" in norm
+        or "gamma" in norm
+    ):
+        return "display"
+    return "unknown"
+
+
+# View preferences per source category, in priority order. We try each
+# in turn against the available views; the first one that fuzzy-matches
+# wins. Studios use different naming conventions ("ACES 1.0 - SDR
+# Video" vs "ACES SDR" vs "Default"), so we list a handful per slot.
+_VIEW_PREFERENCES: dict[SourceCategory, tuple[str, ...]] = {
+    "scene": (
+        "ACES 1.0 SDR-video",  # ACES 1.0 OCIO config
+        "ACES 1.0 - SDR Video",
+        "ACES SDR",
+        "ACES 2.0 SDR-100nit",  # ACES 2.0 / ACES Studio config
+        "Filmic",                # Blender-style
+        "Standard",              # nuke-default-config name
+    ),
+    "display": (
+        "Raw",
+        "Un-tone-mapped",
+        "None",
+        "sRGB",
+    ),
+    "log": (
+        "Un-tone-mapped",
+        "Raw",
+    ),
+    "unknown": (),
+}
+
+
+def detect_view(
+    source_colorspace: str | None,
+    available_views: Iterable[str],
+    *,
+    default_view: str | None = None,
+) -> DetectionResult:
+    """Pick the OCIO view that suits a given source.
+
+    The point: applying ACES tone mapping ("ACES 1.0 SDR-video") on a
+    scene-linear source is correct — applying it on already-display-
+    referred sRGB doubles up the curve and bouillonifies the image.
+    So we look at the source's nature and pick a view in the right
+    family.
+
+    Returns a :class:`DetectionResult`. Falls back to
+    ``default_view`` (typically the OCIO config's default for the
+    chosen display) when nothing better can be picked.
+    """
+    available = list(available_views)
+    if not available:
+        return DetectionResult(None, "no views available")
+
+    if source_colorspace is None:
+        if default_view and default_view in available:
+            return DetectionResult(default_view, "no source — using config default")
+        return DetectionResult(available[0], "no source — using first available")
+
+    category = classify_source_colorspace(source_colorspace)
+    candidates = _VIEW_PREFERENCES.get(category, ())
+    for canonical in candidates:
+        cs = _find_colorspace(canonical, available)
+        if cs is not None:
+            return DetectionResult(
+                cs, f"source is {category}-referred → {canonical}"
+            )
+
+    if default_view and default_view in available:
+        return DetectionResult(
+            default_view,
+            f"source is {category}-referred — falling back to config default ({default_view})",
+        )
+    return DetectionResult(
+        available[0],
+        f"source is {category}-referred — no preference matched, picked first ({available[0]})",
+    )

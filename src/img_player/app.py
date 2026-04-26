@@ -389,13 +389,15 @@ class ImgPlayerApp:
         self._prefs.push_recent(path)
 
     def _guess_source_colorspace(self, seq: SequenceInfo) -> None:
-        """Auto-detect the source colorspace from the first frame's
-        metadata, with extension as a fallback.
+        """Auto-detect the source colorspace + the right view for it.
 
-        See :mod:`img_player.color.auto_detect` for the cascade. The
+        See :mod:`img_player.color.auto_detect` for the cascades. The
         user can always override via the Color panel.
         """
-        from img_player.color.auto_detect import detect_source_colorspace
+        from img_player.color.auto_detect import (
+            detect_source_colorspace,
+            detect_view,
+        )
         from img_player.io.reader import read_color_metadata
 
         # Read the metadata of the first frame only — colour metadata
@@ -409,23 +411,53 @@ class ImgPlayerApp:
             except Exception:
                 log.exception("failed to read color metadata from %s", first_path)
 
-        result = detect_source_colorspace(
+        source_result = detect_source_colorspace(
             metadata=metadata,
             extension=seq.extension,
             available_colorspaces=self._ocio.list_colorspaces(),
             scene_linear_role=self._ocio.role("scene_linear"),
         )
-        if result.colorspace is not None:
-            self._window.color_panel.set_source_colorspace(result.colorspace)
-            self._window.set_status(
-                f"Source colorspace: {result.colorspace} ({result.reason})"
-            )
+        if source_result.colorspace is not None:
+            self._window.color_panel.set_source_colorspace(source_result.colorspace)
             log.info(
                 "auto-detect: source colorspace = %s (%s)",
-                result.colorspace, result.reason,
+                source_result.colorspace, source_result.reason,
             )
         else:
-            log.info("auto-detect: no source colorspace match (%s)", result.reason)
+            log.info("auto-detect: no source colorspace match (%s)", source_result.reason)
+
+        # Now pick the view appropriate for that source. A scene-
+        # referred input wants tone mapping (ACES SDR / Filmic); a
+        # display-referred input wants Raw / Un-tone-mapped to avoid
+        # doubling up the EOTF.
+        view_msg = ""
+        if source_result.colorspace is not None:
+            current_display = self._window.color_panel._display_combo.currentText()
+            if current_display:
+                available_views = self._ocio.list_views(current_display)
+                view_result = detect_view(
+                    source_colorspace=source_result.colorspace,
+                    available_views=available_views,
+                    default_view=self._ocio.default_view(current_display),
+                )
+                if view_result.colorspace is not None:
+                    self._window.color_panel._view_combo.setCurrentText(view_result.colorspace)
+                    view_msg = f" → view: {view_result.colorspace} ({view_result.reason})"
+                    log.info(
+                        "auto-detect: view = %s (%s)",
+                        view_result.colorspace, view_result.reason,
+                    )
+
+        # Surface the combined choice in the status bar (left side).
+        if source_result.colorspace is not None:
+            self._window.set_status(
+                f"Source: {source_result.colorspace} ({source_result.reason}){view_msg}"
+            )
+        else:
+            self._window.set_status(
+                f"Source colorspace: not detected — {source_result.reason}. "
+                f"Pick one in the Color panel."
+            )
             self._window.set_status(
                 f"Source colorspace: not detected — {result.reason}. "
                 f"Pick one in the Color panel."
