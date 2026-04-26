@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QIcon
+from PySide6.QtCore import QEvent, QObject, QSize, Qt, Signal
+from PySide6.QtGui import QIcon, QMouseEvent
 from PySide6.QtWidgets import (
     QComboBox,
     QFrame,
@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from img_player.player.state import LoopMode
+from img_player.sequence.channels import group_channels
 from img_player.ui.frame_display import DisplayMode, FrameDisplay
 from img_player.ui.icons import make_icon
 from img_player.ui.theme import G, H, S
@@ -136,7 +137,11 @@ class TransportBar(QWidget):  # type: ignore[misc]
         # --- Channel selector ----------------------------------------------
         # Multichannel EXR support: pick which channel(s) to display.
         # "RGB" is the composite default; the others appear once a
-        # sequence is loaded (populated via ``set_channels``).
+        # sequence is loaded (populated via ``set_available_channels``).
+        # ``_channel_groups`` maps a UI label to the OIIO channel list
+        # to load — built by ``set_available_channels`` from the
+        # grouped channel list.
+        self._channel_groups: dict[str, tuple[str, ...]] = {}
         self._channel_combo = QComboBox()
         self._channel_combo.setFixedWidth(96)
         self._channel_combo.setFixedHeight(G.INPUT_H)
@@ -148,18 +153,22 @@ class TransportBar(QWidget):  # type: ignore[misc]
         # --- Zoom selector -------------------------------------------------
         # The combo is *editable* solely so we can call setText() with
         # arbitrary values like "127%" coming from the wheel — but the
-        # internal QLineEdit is read-only so the user can't type. They
-        # click the dropdown arrow to pick a preset; the wheel updates
-        # the displayed text to reflect the real zoom.
+        # internal QLineEdit is read-only so the user can't type. We
+        # also intercept mouse clicks on the line edit to open the
+        # dropdown (Qt's default behaviour for editable combos is to
+        # focus the line edit, *not* show the popup, which left the
+        # dropdown unreachable in our config).
         self._zoom_combo = QComboBox()
         self._zoom_combo.setEditable(True)
         self._zoom_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         line_edit = self._zoom_combo.lineEdit()
         if line_edit is not None:
             line_edit.setReadOnly(True)
-            # Click in the line edit area opens the dropdown — same
-            # behaviour as Mac's display-resolution menu.
             line_edit.setCursor(Qt.CursorShape.PointingHandCursor)
+            # The event filter routes a click on the line edit's area
+            # to combo.showPopup(). See _ZoomLineEditClickFilter below.
+            self._zoom_click_filter = _ZoomLineEditClickFilter(self._zoom_combo)
+            line_edit.installEventFilter(self._zoom_click_filter)
         for label in ("Fit", "200%", "150%", "100%", "50%"):
             self._zoom_combo.addItem(label)
         self._zoom_combo.setCurrentText("Fit")
@@ -263,18 +272,36 @@ class TransportBar(QWidget):  # type: ignore[misc]
         self._frame_display.set_display_mode(mode)
 
     def set_available_channels(self, channels: tuple[str, ...]) -> None:
-        """Replace the channel-selector content with the channels of
-        the loaded sequence. ``"RGB"`` (the composite) is always the
-        first item; individual channels follow in their EXR order.
+        """Replace the channel-selector content with grouped channels.
 
-        Selecting ``"RGB"`` emits ``channels_requested(None)``;
-        picking a single channel emits ``channels_requested([name])``.
+        Layers like ``albedo.R``/``.G``/``.B`` collapse into a single
+        ``"albedo"`` entry that loads the three channels as an RGB
+        composite — same convention as Nuke's channel selector.
+        Single-component channels (``Z``, ``volume_Z``,
+        ``normal.X``…) keep their own entry. The first entry is
+        always the beauty ``"RGB"``/``"RGBA"`` from the root.
+
+        The mapping ``label → list[channel]`` is stored on the widget
+        so :meth:`_on_channel_changed` knows which channels to ask
+        the cache for.
         """
+        groups = group_channels(channels) if channels else []
+        # Cache the mapping label → channels so the dropdown handler
+        # can look up the right OIIO channel list when the user
+        # picks an item.
+        self._channel_groups: dict[str, tuple[str, ...]] = {
+            g.label: g.channels for g in groups
+        }
+
         self._channel_combo.blockSignals(True)
         self._channel_combo.clear()
-        self._channel_combo.addItem("RGB")
-        for ch in channels:
-            self._channel_combo.addItem(ch)
+        if not groups:
+            # No header info yet — at least show RGB so the combo
+            # isn't blank. ``None`` → reader's default (R/G/B/A).
+            self._channel_combo.addItem("RGB")
+        else:
+            for g in groups:
+                self._channel_combo.addItem(g.label)
         self._channel_combo.setCurrentIndex(0)
         self._channel_combo.blockSignals(False)
 
@@ -300,16 +327,25 @@ class TransportBar(QWidget):  # type: ignore[misc]
             self.fps_changed.emit(fps)
 
     def _on_channel_changed(self, index: int) -> None:
-        """Translate the combo selection into a `channels_requested`
-        signal. Index 0 is always the ``"RGB"`` composite, which we
-        emit as ``None`` so the cache reverts to the reader's default
-        (R/G/B/A). Any other index sends ``[channel_name]``.
+        """Translate the combo selection into a ``channels_requested``
+        signal.
+
+        Index 0 (the beauty pass) emits ``None`` so the cache reverts
+        to the reader's default (R/G/B/A). Any other index looks up
+        the cached label → channels mapping built by
+        :meth:`set_available_channels` and emits the matching list.
         """
         if index <= 0:
             self.channels_requested.emit(None)
             return
-        name = self._channel_combo.itemText(index)
-        self.channels_requested.emit([name])
+        label = self._channel_combo.itemText(index)
+        channels = self._channel_groups.get(label)
+        if channels is None:
+            # Defensive: if for some reason the mapping is out of sync,
+            # treat the label itself as a single channel name. Better
+            # than swallowing the click silently.
+            channels = (label,)
+        self.channels_requested.emit(list(channels))
 
     def _on_zoom_picked(self, index: int) -> None:
         """User picked a preset from the dropdown.
@@ -390,3 +426,27 @@ def _separator() -> QWidget:
     line.setFixedHeight(18)
     line.setStyleSheet(f"background-color: {H.BORDER_DEFAULT};")
     return line
+
+
+class _ZoomLineEditClickFilter(QObject):
+    """Make a click on the zoom QLineEdit open the combo's dropdown.
+
+    By default an editable QComboBox treats a click on its line edit
+    as a focus-and-edit gesture. We've made the line edit read-only
+    (so the user can't type), but Qt still doesn't open the popup —
+    it just focuses the field. This filter intercepts the mouse
+    press and forwards it to ``combo.showPopup()``. Filter is
+    attached to the line edit, not the combo itself, because that's
+    where the click lands.
+    """
+
+    def __init__(self, combo: QComboBox) -> None:
+        super().__init__(combo)
+        self._combo = combo
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: D401, N802
+        if event.type() == QEvent.Type.MouseButtonPress and isinstance(event, QMouseEvent):
+            if event.button() == Qt.MouseButton.LeftButton:
+                self._combo.showPopup()
+                return True  # consume — don't move focus to the line edit
+        return super().eventFilter(watched, event)
