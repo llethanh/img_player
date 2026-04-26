@@ -13,6 +13,7 @@ from typing import Any
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
 
+from img_player.bench import recorder
 from img_player.cache.frame_cache import FrameCache
 from img_player.player.state import LoopMode, PlaybackState
 from img_player.sequence.models import SequenceInfo
@@ -143,8 +144,16 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
         self._update(current_frame=next_frame, direction=next_dir)
         self._cache.set_current_frame(next_frame)
         self._prefetch_from(next_frame, next_dir)
-        if not self._cache.contains(next_frame):
+        cache_hit = self._cache.contains(next_frame)
+        if not cache_hit:
             self._update(dropped_frames=self._state.dropped_frames + 1)
+        # Bench hook: record the tick decision (no-op when bench is off).
+        if recorder.is_enabled():
+            recorder.record_tick(
+                requested_frame=next_frame,
+                cache_hit=cache_hit,
+                pending_decodes=self._cache._pool.pending(),  # noqa: SLF001
+            )
         self.frame_changed.emit(next_frame)
         if should_stop:
             self.pause()

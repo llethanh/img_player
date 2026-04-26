@@ -10,6 +10,7 @@ from pathlib import Path
 
 import numpy as np
 
+from img_player.bench import recorder
 from img_player.cache.worker_pool import WorkerPool
 from img_player.io.reader import FrameReadError, read_frame
 from img_player.sequence.models import SequenceInfo
@@ -173,6 +174,11 @@ class FrameCache:
     # ------------------------------------------------------------------ Internals
 
     def _decode_and_store(self, frame: int, path: Path) -> None:
+        # Bench hook: time the decode itself, not the lock contention or store.
+        # The recorder check is fast (single attribute load) so we keep it
+        # outside the timing window only when disabled.
+        bench_enabled = recorder.is_enabled()
+        t_start = time.monotonic() if bench_enabled else 0.0
         try:
             arr = read_frame(path)
         except FrameReadError as err:
@@ -180,6 +186,12 @@ class FrameCache:
             with self._lock:
                 self._decode_errors += 1
             return
+        if bench_enabled:
+            recorder.record_decode(
+                frame=frame,
+                decode_ms=(time.monotonic() - t_start) * 1000.0,
+                nbytes=int(arr.nbytes),
+            )
 
         with self._lock:
             if frame in self._frames:

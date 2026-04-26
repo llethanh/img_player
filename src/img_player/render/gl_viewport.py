@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ctypes
 import logging
+import time
 from dataclasses import dataclass
 
 import numpy as np
@@ -17,6 +18,7 @@ from PySide6.QtCore import QSize
 from PySide6.QtGui import QSurfaceFormat
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 
+from img_player.bench import recorder
 from img_player.color.gpu_processor import ShaderBundle, Texture1D, Texture3D
 
 log = logging.getLogger(__name__)
@@ -115,6 +117,13 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
         GL.glViewport(0, 0, max(1, w), max(1, h))
 
     def paintGL(self) -> None:
+        # Bench hook: time the whole paintGL body. Cheap (one branch, one
+        # time.monotonic) when disabled.
+        bench_enabled = recorder.is_enabled()
+        paint_t0 = time.monotonic() if bench_enabled else 0.0
+        upload_us = 0.0
+        displayed_frame = -1  # filled in below if we actually upload this paint
+
         GL.glClear(GL.GL_COLOR_BUFFER_BIT)
 
         # Apply deferred uploads inside a valid GL context.
@@ -122,11 +131,26 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
             self._apply_bundle(self._pending_bundle)
             self._pending_bundle = None
 
+        had_upload = False
         if self._pending_frame is not None:
-            self._upload_image(self._pending_frame)
+            if bench_enabled:
+                up_t0 = time.monotonic()
+                self._upload_image(self._pending_frame)
+                upload_us = (time.monotonic() - up_t0) * 1e6
+            else:
+                self._upload_image(self._pending_frame)
             self._pending_frame = None
+            had_upload = True
 
         if self._program == 0 or self._image_size == (0, 0):
+            if bench_enabled and had_upload:
+                width, height = self._image_size
+                recorder.record_paint(
+                    displayed_frame=-1,
+                    upload_us=upload_us,
+                    paint_us=(time.monotonic() - paint_t0) * 1e6,
+                    width=width, height=height, channels=self._image_channels,
+                )
             return
 
         GL.glUseProgram(self._program)
@@ -155,6 +179,15 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
 
         GL.glBindVertexArray(self._vao)
         GL.glDrawArrays(GL.GL_TRIANGLE_STRIP, 0, 4)
+
+        if bench_enabled:
+            width, height = self._image_size
+            recorder.record_paint(
+                displayed_frame=-1,
+                upload_us=upload_us,
+                paint_us=(time.monotonic() - paint_t0) * 1e6,
+                width=width, height=height, channels=self._image_channels,
+            )
 
     # ------------------------------------------------------------------ Quad / texture helpers
 
