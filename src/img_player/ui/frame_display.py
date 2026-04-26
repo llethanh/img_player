@@ -151,10 +151,16 @@ class FrameDisplay(QLineEdit):  # type: ignore[misc]
             # Restore the displayed value so the field doesn't show
             # garbage after a typo.
             self._refresh_text()
-            return
-        # Re-render too — the controller will eventually push the
-        # corrected frame back via set_frame, but this keeps the field
-        # in sync immediately for the user's eye.
-        self._frame = target
-        self._refresh_text()
-        self.frame_seek_requested.emit(target)
+        else:
+            # Re-render too — the controller will eventually push the
+            # corrected frame back via set_frame, but this keeps the
+            # field in sync immediately for the user's eye.
+            self._frame = target
+            self._refresh_text()
+            self.frame_seek_requested.emit(target)
+        # Always release focus on commit — otherwise Space/J/K/L from
+        # the global shortcuts would land in the QLineEdit (typing a
+        # literal " " into the field) instead of triggering playback
+        # actions. Focus goes back to the main window, which lets the
+        # shortcuts fire.
+        self.clearFocus()

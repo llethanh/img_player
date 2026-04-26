@@ -87,6 +87,26 @@ class TestEnterCommits:
             display.clearFocus()
         assert blocker.args == [55]
 
+    def test_return_releases_focus(self, display: FrameDisplay) -> None:
+        # After a successful commit, focus must leave the field so
+        # global shortcuts (Space → play/pause) aren't intercepted by
+        # the QLineEdit.
+        display.set_frame(7)
+        display.setFocus(Qt.FocusReason.OtherFocusReason)
+        QTest.keyClicks(display, "42")
+        QTest.keyClick(display, Qt.Key.Key_Return)
+        assert not display.hasFocus()
+
+    def test_invalid_input_also_releases_focus(self, display: FrameDisplay) -> None:
+        # Even when the typed value is rejected (parse failure), the
+        # field releases focus on commit — otherwise typos trap the
+        # user with Space-typing-into-the-field.
+        display.set_frame(3)
+        display.setFocus(Qt.FocusReason.OtherFocusReason)
+        QTest.keyClicks(display, "garbage")
+        QTest.keyClick(display, Qt.Key.Key_Return)
+        assert not display.hasFocus()
+
 
 class TestTcMode:
     def test_typing_a_timecode_in_tc_mode_seeks_correctly(

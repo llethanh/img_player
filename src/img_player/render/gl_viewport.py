@@ -117,6 +117,14 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
         # press would also work — SizeHor is the more conventional
         # "you can drag me horizontally" affordance.
         self.setCursor(Qt.CursorShape.SizeHorCursor)
+        # Take keyboard focus on click — without this, clicking the
+        # image leaves focus on whatever was previously focused (e.g.
+        # the frame-display QLineEdit), which makes Space type a
+        # literal space instead of triggering play/pause. ClickFocus
+        # keeps Tab navigation skipping the viewport (the viewport has
+        # no keyboard interactions of its own; the shortcuts live on
+        # the main window).
+        self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
 
         # Zoom state. ``None`` = fit-to-window (the legacy behaviour);
         # any float = user-set zoom factor where 1.0 means "1 image
