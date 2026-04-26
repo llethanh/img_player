@@ -244,3 +244,76 @@ def detect_source_colorspace(
 
     # 5. Total whiff.
     return DetectionResult(None, "no signal in metadata")
+
+
+# ----------------------------------------------------------------------- Display detection
+
+# Map "what Qt's QColorSpace tells us about the screen" → "canonical
+# name we look up in the OCIO config's list of displays". Kept tiny:
+# a screen is one of a handful of well-known colorspaces, and the
+# rare custom ICC profiles fall through to the sRGB fallback (which
+# is what Qt itself uses when it can't introspect a screen).
+_QT_NAMED_COLORSPACE_TO_DISPLAY: dict[str, str] = {
+    "srgb": "sRGB",
+    "srgblinear": "sRGB",          # sRGB primaries, linear EOTF — matches sRGB display
+    "displayp3": "P3-D65",
+    "adobergb": "AdobeRGB",
+    "prophotorgb": "ProPhoto",
+    "bt2020": "Rec.2020",
+    "bt2100pq": "Rec.2020",        # PQ HDR uses Rec.2020 primaries
+    "bt2100hlg": "Rec.2020",       # HLG HDR same primaries
+}
+
+
+def detect_display(
+    qt_named_hint: str | None,
+    available_displays: Iterable[str],
+) -> DetectionResult:
+    """Pick an OCIO display name based on what Qt told us about the
+    monitor.
+
+    ``qt_named_hint`` is the screen's named colorspace as a plain
+    string, lowercased (``"srgb"``, ``"displayp3"``, ``"adobergb"``…).
+    ``None`` covers the case where the screen has a custom ICC
+    profile that Qt couldn't classify — we fall back to sRGB (the
+    safe default for desktop monitors).
+
+    Returns a :class:`DetectionResult`. Like ``detect_source_colorspace``,
+    we only return display names that actually exist in the config.
+    """
+    available = list(available_displays)
+    if not available:
+        return DetectionResult(None, "OCIO config exposes no displays")
+
+    if qt_named_hint:
+        canonical = _QT_NAMED_COLORSPACE_TO_DISPLAY.get(qt_named_hint.lower())
+        if canonical is not None:
+            cs = _find_display(canonical, available)
+            if cs is not None:
+                return DetectionResult(
+                    cs, f"screen colorspace: {qt_named_hint} → {canonical}"
+                )
+
+    # Fallback: most desktop monitors are sRGB-equivalent, and the
+    # OCIO config almost always exposes an sRGB display. Use it as
+    # a deliberate default — better than a random first display.
+    cs = _find_display("sRGB", available)
+    if cs is not None:
+        reason = "fallback: sRGB (no screen hint)" if not qt_named_hint else (
+            f"fallback: sRGB (Qt reported {qt_named_hint!r}, no OCIO match)"
+        )
+        return DetectionResult(cs, reason)
+
+    # Truly weird config without sRGB — return the first display so
+    # the app at least has *something* to render with.
+    return DetectionResult(
+        available[0], f"fallback: first available display ({available[0]})"
+    )
+
+
+def _find_display(canonical: str, available: Iterable[str]) -> str | None:
+    """Same fuzzy matching as :func:`_find_colorspace`, just renamed
+    for clarity at call sites — displays and colorspaces are
+    different OCIO concepts even though the matching trick is the
+    same string-normalisation."""
+    return _find_colorspace(canonical, available)

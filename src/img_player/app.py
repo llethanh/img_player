@@ -484,15 +484,77 @@ def _apply_preferences_to_window(app: ImgPlayerApp) -> None:
     displays = set(app._ocio.list_displays())
     if prefs.source_colorspace and prefs.source_colorspace in cs_list:
         app._window.color_panel.set_source_colorspace(prefs.source_colorspace)
-    if prefs.display and prefs.display in displays:
+
+    # Display: prefer a stored preference; otherwise auto-detect from
+    # the current screen's color profile.
+    display_name = prefs.display if prefs.display in displays else None
+    if display_name is None:
+        display_name = _autodetect_display(app)
+
+    if display_name and display_name in displays:
         # Selecting a display also repopulates the view combo, so set view after.
-        app._window.color_panel._display_combo.setCurrentText(prefs.display)
-    if prefs.view and prefs.display and prefs.view in set(app._ocio.list_views(prefs.display)):
+        app._window.color_panel._display_combo.setCurrentText(display_name)
+
+    if prefs.view and display_name and prefs.view in set(app._ocio.list_views(display_name)):
         app._window.color_panel._view_combo.setCurrentText(prefs.view)
 
     # FPS — push through the controller so transport + timeline pick up
     # the value via state_changed (keeps the FPS combo / timeline TC in sync).
     app._controller.set_fps(prefs.fps)
+
+
+def _autodetect_display(app: ImgPlayerApp) -> str | None:
+    """Inspect Qt's view of the primary screen and pick the matching
+    OCIO display.
+
+    Returns the display name that was applied, or ``None`` if even
+    the safe sRGB fallback wasn't in the config.
+    """
+    from img_player.color.auto_detect import detect_display
+
+    hint = _qt_screen_colorspace_hint(app._qapp)
+    result = detect_display(hint, app._ocio.list_displays())
+    if result.colorspace is not None:
+        log.info("auto-detect: display = %s (%s)", result.colorspace, result.reason)
+        # Surface to the user; will be replaced by the source-colorspace
+        # message once they load a sequence.
+        app._window.set_status(f"Display: {result.colorspace} ({result.reason})")
+        return result.colorspace
+    log.info("auto-detect: no display match (%s)", result.reason)
+    return None
+
+
+def _qt_screen_colorspace_hint(qapp: QApplication) -> str | None:
+    """Translate Qt's QColorSpace introspection into the lowercase
+    canonical name our :func:`auto_detect.detect_display` expects.
+
+    Returns ``None`` when the screen has a custom ICC profile that
+    Qt couldn't classify into a named colorspace; the detector then
+    falls back to sRGB.
+    """
+    from PySide6.QtGui import QColorSpace
+
+    screen = qapp.primaryScreen() if qapp is not None else None
+    if screen is None:
+        return None
+    qcs = screen.colorSpace()
+    if not qcs.isValid():
+        return None
+
+    # Qt 6 enum → canonical lowercase string. Anything not listed
+    # (e.g. Undefined, or a custom-named ICC) returns None, and
+    # detect_display() handles that with the sRGB fallback.
+    mapping = {
+        QColorSpace.NamedColorSpace.SRgb: "srgb",
+        QColorSpace.NamedColorSpace.SRgbLinear: "srgblinear",
+        QColorSpace.NamedColorSpace.AdobeRgb: "adobergb",
+        QColorSpace.NamedColorSpace.DisplayP3: "displayp3",
+        QColorSpace.NamedColorSpace.ProPhotoRgb: "prophotorgb",
+        QColorSpace.NamedColorSpace.Bt2020: "bt2020",
+        QColorSpace.NamedColorSpace.Bt2100Pq: "bt2100pq",
+        QColorSpace.NamedColorSpace.Bt2100Hlg: "bt2100hlg",
+    }
+    return mapping.get(qcs.namedColorSpace())
 
 
 def run_gui(

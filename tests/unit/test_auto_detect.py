@@ -14,6 +14,7 @@ import pytest
 
 from img_player.color.auto_detect import (
     DetectionResult,
+    detect_display,
     detect_source_colorspace,
 )
 
@@ -193,3 +194,76 @@ class TestDetectionResult:
         assert a == b
         with pytest.raises(Exception):  # FrozenInstanceError or AttributeError
             a.colorspace = "other"  # type: ignore[misc]
+
+
+# --------------------------------------------------------------------- Display detection
+
+# Mirrors the kind of display list an OCIO ACES config exposes.
+DISPLAYS = [
+    "sRGB",
+    "Rec.709",
+    "Rec.2020",
+    "P3-D65",
+    "P3-DCI",
+    "AdobeRGB",
+]
+
+
+class TestDetectDisplay:
+    def test_srgb_hint_matches_srgb_display(self) -> None:
+        result = detect_display("srgb", DISPLAYS)
+        assert result.colorspace == "sRGB"
+        assert "srgb" in result.reason.lower()
+
+    def test_displayp3_hint_matches_p3_d65(self) -> None:
+        result = detect_display("displayp3", DISPLAYS)
+        assert result.colorspace == "P3-D65"
+        assert "P3-D65" in result.reason
+
+    def test_adobergb_hint_matches(self) -> None:
+        result = detect_display("adobergb", DISPLAYS)
+        assert result.colorspace == "AdobeRGB"
+
+    def test_bt2020_hint_matches_rec2020(self) -> None:
+        result = detect_display("bt2020", DISPLAYS)
+        assert result.colorspace == "Rec.2020"
+
+    def test_hdr_pq_hint_falls_back_to_rec2020(self) -> None:
+        # PQ HDR uses Rec.2020 primaries; a non-HDR-aware config still
+        # gets the right gamut.
+        result = detect_display("bt2100pq", DISPLAYS)
+        assert result.colorspace == "Rec.2020"
+
+    def test_no_hint_falls_back_to_srgb(self) -> None:
+        result = detect_display(None, DISPLAYS)
+        assert result.colorspace == "sRGB"
+        assert "fallback" in result.reason.lower()
+        assert "no screen hint" in result.reason
+
+    def test_unknown_hint_falls_back_to_srgb_with_explanation(self) -> None:
+        result = detect_display("verystudiocustomspace", DISPLAYS)
+        assert result.colorspace == "sRGB"
+        assert "verystudiocustomspace" in result.reason
+
+    def test_empty_displays_returns_none(self) -> None:
+        result = detect_display("srgb", [])
+        assert result.colorspace is None
+        assert "no displays" in result.reason
+
+    def test_no_srgb_falls_back_to_first_display(self) -> None:
+        # A config that doesn't expose sRGB — last-resort fallback
+        # is the first available so the app doesn't render with
+        # nothing at all.
+        result = detect_display("srgb", ["Rec.709", "P3-D65"])
+        # "sRGB" matches the substring "srgb" inside "sRGB"… wait,
+        # neither display contains "srgb". So it goes to the last
+        # branch.
+        assert result.colorspace == "Rec.709"
+        assert "first available" in result.reason
+
+    def test_case_insensitive_hint(self) -> None:
+        # Hints can come in any casing; we lowercase them before
+        # matching.
+        for hint in ("SRGB", "sRgb", "SRGBLINEAR", "DisplayP3"):
+            result = detect_display(hint, DISPLAYS)
+            assert result.colorspace is not None
