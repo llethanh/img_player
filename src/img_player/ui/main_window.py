@@ -221,7 +221,12 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         help_menu.addAction(about_act)
 
     def _on_toggle_timecode(self, checked: bool) -> None:
-        self._timeline.set_display_mode("tc" if checked else "frames")
+        mode = "tc" if checked else "frames"
+        # Both the timeline tick labels *and* the transport's
+        # FrameDisplay follow the same toggle so the user can't end
+        # up with mismatched units between the two readouts.
+        self._timeline.set_display_mode(mode)
+        self._transport.set_display_mode(mode)
 
     def _show_shortcuts(self) -> None:
         from img_player.ui.shortcuts_dialog import ShortcutsDialog
@@ -320,6 +325,15 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self._transport.mark_out_clicked.connect(self.mark_out_requested.emit)
         self._transport.clear_in_out_clicked.connect(self.clear_in_out_requested.emit)
         self._transport.loop_mode_requested.connect(self.loop_mode_requested.emit)
+        # Reverse-play button reuses the same signal as the J shortcut —
+        # one pathway in app.py decides whether to start, flip or
+        # pause based on the current state.
+        self._transport.reverse_play_clicked.connect(
+            lambda: self.direction_play_requested.emit(-1)
+        )
+        # Frame display: typing a frame number / TC and pressing Enter
+        # asks the controller to seek there.
+        self._transport.frame_seek_requested.connect(self.frame_requested.emit)
         self._timeline.frame_requested.connect(self.frame_requested.emit)
 
     # --------------------------------------------------------------- Menu handlers

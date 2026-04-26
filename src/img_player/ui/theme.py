@@ -49,9 +49,16 @@ class C:
     PLAYHEAD         = QColor("#F5AA28")
     PLAYHEAD_OUTLINE = QColor("#141416")
     MARKER_IO        = QColor("#DC3C3C")
-    RANGE_BAR        = QColor("#56B46A")
-    CACHE_BAR        = QColor("#38B464")
-    CACHE_BAR_BG     = QColor("#28282C")
+    # Range bar: the IN/OUT span. Was green (#56B46A) — switched to a
+    # warm orange that picks up the rest of the accent palette so the
+    # whole timeline reads as one family with the playhead.
+    RANGE_BAR        = QColor("#E8901C")  # = ACCENT
+    # Cache bar: matches the user-supplied reference (deep dark
+    # background, accent-orange fill, thin border). Bright fill so the
+    # cached runs read clearly against BG_DEEP.
+    CACHE_BAR        = QColor("#F5A830")  # = ACCENT_BRIGHT
+    CACHE_BAR_BG     = QColor("#141416")  # = BG_DEEP — matches viewport bg
+    CACHE_BAR_BORDER = QColor("#E8901C")  # = ACCENT — frames the bar
 
     # Timeline ticks
     TICK_MINOR = QColor("#3C3C40")
@@ -90,8 +97,11 @@ class H:
     # (status bar dots, etc.) instead of using QPainter directly.
     PLAYHEAD  = "#F5AA28"
     MARKER_IO = "#DC3C3C"
-    RANGE_BAR = "#56B46A"
-    CACHE_BAR = "#38B464"
+    # Note: status bar uses these for the live indicators. Cache fill
+    # dot stays "good"-coded (green-ish) when the cache is healthy, so
+    # we keep CACHE_BAR distinct from the timeline accent here.
+    RANGE_BAR = "#E8901C"   # warm accent — was green (#56B46A)
+    CACHE_BAR = "#38B464"   # cache OK indicator (status bar dot)
 
 
 # ---------------------------------------------------------------------------

@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from img_player.player.state import LoopMode
+from img_player.ui.frame_display import DisplayMode, FrameDisplay
 from img_player.ui.icons import make_icon
 from img_player.ui.theme import G, H, S
 
@@ -43,6 +44,14 @@ class TransportBar(QWidget):  # type: ignore[misc]
     mark_out_clicked = Signal()
     clear_in_out_clicked = Signal()
     loop_mode_requested  = Signal(object)  # LoopMode
+    # Reverse-play button (in addition to the existing "J" shortcut).
+    # The transport doesn't know about playback state — it just signals
+    # "the user wants to play in this direction" and the controller
+    # decides whether to start, flip, or pause accordingly.
+    reverse_play_clicked  = Signal()
+    # User typed a frame / timecode in the FrameDisplay and pressed
+    # Enter. Carries the absolute frame index.
+    frame_seek_requested  = Signal(int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -65,19 +74,32 @@ class TransportBar(QWidget):  # type: ignore[misc]
 
         # --- Playback controls ---------------------------------------------
         # All transport buttons use our custom SVG icon set so they
-        # match ui_mockup.html. Play is in the warm accent (orange);
-        # the rest are TEXT_PRIMARY (white-ish) for visual hierarchy.
+        # match ui_mockup.html. Both play buttons are in the warm
+        # accent (orange); the others are TEXT_PRIMARY (white-ish) for
+        # visual hierarchy.
         self._first_btn = _icon_button(make_icon("first"), "Go to first frame (Home)")
         self._prev_btn  = _icon_button(make_icon("prev"),  "Previous frame (Left)")
+        self._reverse_play_btn = _icon_button(
+            make_icon("play_reverse", color=H.ACCENT),
+            "Play in reverse (J)",
+        )
         self._play_btn  = _icon_button(
-            make_icon("play", color=H.ACCENT), "Play / Pause (Space)"
+            make_icon("play", color=H.ACCENT), "Play / Pause forward (Space / L)"
         )
         self._stop_btn  = _icon_button(make_icon("stop"),  "Stop")
         self._next_btn  = _icon_button(make_icon("next"),  "Next frame (Right)")
         self._last_btn  = _icon_button(make_icon("last"),  "Go to last frame (End)")
 
+        # --- Frame / timecode display -------------------------------------
+        # Sits between the navigation half and the playback half so the
+        # current frame stays at the centre of attention, matching the
+        # Nuke-like layout the user asked for.
+        self._frame_display = FrameDisplay(self)
+        self._frame_display.frame_seek_requested.connect(self.frame_seek_requested.emit)
+
         self._first_btn.clicked.connect(lambda: self.jump_to_ends.emit(-1))
         self._prev_btn.clicked.connect(lambda: self.step_clicked.emit(-1))
+        self._reverse_play_btn.clicked.connect(self.reverse_play_clicked.emit)
         self._play_btn.clicked.connect(self.play_toggled.emit)
         self._stop_btn.clicked.connect(self.stop_clicked.emit)
         self._next_btn.clicked.connect(lambda: self.step_clicked.emit(1))
@@ -109,15 +131,20 @@ class TransportBar(QWidget):  # type: ignore[misc]
         layout.addWidget(self._loop_btn)
         layout.addWidget(_separator())
 
-        for btn in (
-            self._first_btn,
-            self._prev_btn,
-            self._play_btn,
-            self._stop_btn,
-            self._next_btn,
-            self._last_btn,
-        ):
-            layout.addWidget(btn)
+        # Layout order — navigation on the left, playback in the
+        # middle (anchored around the FrameDisplay so the current
+        # frame is the visual centre of the bar), navigation on the
+        # right. Reverse-play sits to the right of the FrameDisplay
+        # exactly as the user asked, mirroring the forward-play btn
+        # that sits one further out.
+        layout.addWidget(self._first_btn)
+        layout.addWidget(self._prev_btn)
+        layout.addWidget(self._frame_display)
+        layout.addWidget(self._reverse_play_btn)
+        layout.addWidget(self._play_btn)
+        layout.addWidget(self._stop_btn)
+        layout.addWidget(self._next_btn)
+        layout.addWidget(self._last_btn)
 
         layout.addWidget(_separator())
         fps_label = QLabel("FPS")
@@ -135,10 +162,23 @@ class TransportBar(QWidget):  # type: ignore[misc]
         # the warm ACCENT colour on "play" (encourages the click) and
         # use the neutral TEXT_PRIMARY on "pause" (calmer, less
         # attention-grabbing while playback is in progress).
-        if state.is_playing:
+        # The forward play button shows pause only when the controller
+        # is *playing forward*; while playing backward the pause icon
+        # belongs to the reverse button instead.
+        playing_fwd = state.is_playing and state.direction >= 0
+        playing_rev = state.is_playing and state.direction < 0
+        if playing_fwd:
             self._play_btn.setIcon(make_icon("pause"))
         else:
             self._play_btn.setIcon(make_icon("play", color=H.ACCENT))
+        if playing_rev:
+            self._reverse_play_btn.setIcon(make_icon("pause"))
+        else:
+            self._reverse_play_btn.setIcon(make_icon("play_reverse", color=H.ACCENT))
+
+        # Push the current frame into the editable display.
+        self._frame_display.set_frame(state.current_frame)
+        self._frame_display.set_fps(state.fps)
 
         if state.loop_mode != self._loop_mode:
             self._loop_mode = state.loop_mode
@@ -149,6 +189,11 @@ class TransportBar(QWidget):  # type: ignore[misc]
             self._fps_combo.blockSignals(True)
             self._fps_combo.setCurrentText(self._format_fps(state.fps))
             self._fps_combo.blockSignals(False)
+
+    def set_display_mode(self, mode: DisplayMode) -> None:
+        """Propagate the global frame/timecode toggle (View menu) to
+        the FrameDisplay so it stays in sync with the timeline."""
+        self._frame_display.set_display_mode(mode)
 
     # ------------------------------------------------------------------ Internals
 

@@ -49,6 +49,12 @@ _TEMPLATES: dict[str, str] = {
         '<polygon points="4,2 14,8 4,14" fill="{color}"/>'
         "</svg>"
     ),
+    # Mirror of "play" — same triangle pointing left for reverse play.
+    "play_reverse": (
+        '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">'
+        '<polygon points="12,2 2,8 12,14" fill="{color}"/>'
+        "</svg>"
+    ),
     # Two vertical bars (the natural counterpart to play). Geometry
     # chosen so the two bars together occupy roughly the same visual
     # mass as the play triangle.

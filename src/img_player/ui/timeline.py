@@ -241,10 +241,21 @@ class Timeline(QWidget):  # type: ignore[misc]
         painter.drawPolygon(triangle)
 
     def _draw_cache_bar(self, painter: QPainter) -> None:
+        # Background: deep dark fill, then a thin accent-orange border so
+        # the bar reads as a framed slot even when no frame is cached
+        # yet (matches the user reference). Drawn outside the if-empty
+        # check so the empty state still shows the slot.
         bar_rect = QRectF(self.MARGIN_X, self.CACHE_TOP, self._usable_width(), self.CACHE_H)
         painter.fillRect(bar_rect, C.CACHE_BAR_BG)
+        painter.setPen(QPen(C.CACHE_BAR_BORDER, 1))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        # Inset by 0.5 px so the 1-px stroke lands on whole pixels.
+        painter.drawRect(bar_rect.adjusted(0.5, 0.5, -0.5, -0.5))
+
         if not self._cached_frames:
             return
+
+        # Cached runs in accent fill, drawn inside the bordered slot.
         painter.setBrush(C.CACHE_BAR)
         painter.setPen(Qt.PenStyle.NoPen)
 
