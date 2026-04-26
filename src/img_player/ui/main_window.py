@@ -95,7 +95,11 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self._side_tabs.addTab(self._color_panel, "Color")
         self._side_tabs.addTab(self._channel_panel, "Channels")
         # Stored on self so the burger button can toggle it.
+        # objectName is mandatory for QMainWindow.saveState() /
+        # restoreState() to round-trip the dock layout in QSettings —
+        # without it Qt logs a warning and silently drops the state.
         self._side_dock = QDockWidget("Panels", self)
+        self._side_dock.setObjectName("side_dock")
         self._side_dock.setWidget(self._side_tabs)
         self._side_dock.setAllowedAreas(
             Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
@@ -167,9 +171,22 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
 
     def update_sequence_info(self, sequence: SequenceInfo) -> None:
         """Refresh the title bar, timeline range, channel panel and the
-        transport bar's channel selector."""
+        transport bar's channel selector.
+
+        Loading a new sequence wipes any per-sequence UI state that
+        would otherwise leak across (the cache-bar runs from the
+        *previous* sequence, channel labels, etc.). The 200 ms refresh
+        timer would eventually catch up — but a noticeable flash of
+        stale cache marks is exactly what the user reported, so we
+        reset eagerly here.
+        """
         self.setWindowTitle(f"img_player — {sequence.display_pattern()}")
         self._timeline.set_range(sequence.first_frame, sequence.last_frame)
+        # Clear the cache bar so we don't briefly show the old run
+        # rectangles re-mapped onto the new range. The next
+        # _refresh_cache_bar tick (~200 ms) re-populates with the
+        # actually-cached frames of the new sequence.
+        self._timeline.set_cached_frames(frozenset())
         self._channel_panel.set_channels(sequence.channel_names)
         # Populate the channel-selector combo so the user can pick
         # individual channels (Z, normals, AOVs, …).

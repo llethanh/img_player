@@ -154,8 +154,11 @@ class ImgPlayerApp:
         _apply_preferences_to_window(self)
 
     def _shutdown(self) -> None:
-        # Persist window geometry so it reopens at the same size/position.
+        # Persist window geometry so it reopens at the same size /
+        # position; persist the dock-layout state so the side panels
+        # come back collapsed / floating / wherever the user left them.
         self._prefs.window_geometry = bytes(self._window.saveGeometry())
+        self._prefs.window_state = bytes(self._window.saveState())
         self._status_timer.stop()
         self._wait_timer.stop()
         self._cache_bar_timer.stop()
@@ -618,6 +621,11 @@ def _apply_preferences_to_window(app: ImgPlayerApp) -> None:
     geom = prefs.window_geometry
     if geom is not None:
         app._window.restoreGeometry(geom)
+    state = prefs.window_state
+    if state is not None:
+        # restoreState reapplies dock visibility / position / floating
+        # from the previous session.
+        app._window.restoreState(state)
 
     # Color defaults — only apply if they still exist in the current OCIO config.
     cs_list = set(app._ocio.list_colorspaces())

@@ -127,3 +127,24 @@ class Preferences:
             self._s.setValue("window/geometry", value)
         else:
             self._s.remove("window/geometry")
+
+    @property
+    def window_state(self) -> bytes | None:
+        """Qt's serialised dock layout (``QMainWindow.saveState()``).
+
+        Stores the visibility, position, size and floating state of
+        every QDockWidget in the window — so the right-hand "Panels"
+        dock comes back collapsed/floating/whatever the user left it
+        when they re-open the app.
+        """
+        raw = self._s.value("window/state")
+        if raw is None:
+            return None
+        return bytes(raw) if isinstance(raw, (bytes, bytearray)) else None
+
+    @window_state.setter
+    def window_state(self, value: bytes | None) -> None:
+        if value:
+            self._s.setValue("window/state", value)
+        else:
+            self._s.remove("window/state")
