@@ -320,6 +320,13 @@ class ImgPlayerApp:
         # mypy gets a Signal(object) here, normalise the type at the boundary.
         cs: list[str] | None = list(channels) if isinstance(channels, list) else None
         self._cache.set_channels(cs)
+        # The cache just got wiped (frames decoded with the previous
+        # selection are now invalid). The timeline's cache bar polls
+        # at ~200 ms, so without an eager reset the user briefly sees
+        # the *previous* channel's cache runs lingering after the
+        # switch — confusing, especially mid-prefetch. Mirror the same
+        # eager reset we do on sequence load.
+        self._window.timeline.set_cached_frames(frozenset())
 
         if cs is None:
             label = "RGB (composite)"
