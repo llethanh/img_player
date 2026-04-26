@@ -389,23 +389,47 @@ class ImgPlayerApp:
         self._prefs.push_recent(path)
 
     def _guess_source_colorspace(self, seq: SequenceInfo) -> None:
-        """Heuristic: EXR -> scene_linear, PNG/JPG/TGA -> sRGB display encoded.
+        """Auto-detect the source colorspace from the first frame's
+        metadata, with extension as a fallback.
 
-        The user can always override via the Color panel.
+        See :mod:`img_player.color.auto_detect` for the cascade. The
+        user can always override via the Color panel.
         """
-        ext = seq.extension.lower()
-        cs: str | None = None
-        if ext in (".exr",):
-            cs = self._ocio.role("scene_linear")
-        elif ext in (".png", ".jpg", ".jpeg", ".tga", ".bmp"):
-            cs = _first_existing(
-                self._ocio,
-                ["sRGB Encoded Rec.709 (sRGB)", "sRGB", "Gamma 2.2 Encoded Rec.709"],
+        from img_player.color.auto_detect import detect_source_colorspace
+        from img_player.io.reader import read_color_metadata
+
+        # Read the metadata of the first frame only — colour metadata
+        # is invariant across the sequence, and reading one header is
+        # cheap (no pixel decode).
+        first_path = seq.frames[0].path if seq.frames else None
+        metadata: dict[str, object] = {}
+        if first_path is not None:
+            try:
+                metadata = read_color_metadata(first_path)
+            except Exception:
+                log.exception("failed to read color metadata from %s", first_path)
+
+        result = detect_source_colorspace(
+            metadata=metadata,
+            extension=seq.extension,
+            available_colorspaces=self._ocio.list_colorspaces(),
+            scene_linear_role=self._ocio.role("scene_linear"),
+        )
+        if result.colorspace is not None:
+            self._window.color_panel.set_source_colorspace(result.colorspace)
+            self._window.set_status(
+                f"Source colorspace: {result.colorspace} ({result.reason})"
             )
-        elif ext in (".dpx", ".cin"):
-            cs = _first_existing(self._ocio, ["Cineon", "Log Film"])
-        if cs:
-            self._window.color_panel.set_source_colorspace(cs)
+            log.info(
+                "auto-detect: source colorspace = %s (%s)",
+                result.colorspace, result.reason,
+            )
+        else:
+            log.info("auto-detect: no source colorspace match (%s)", result.reason)
+            self._window.set_status(
+                f"Source colorspace: not detected — {result.reason}. "
+                f"Pick one in the Color panel."
+            )
 
     def _refresh_cache_bar(self) -> None:
         if self._controller.sequence is None:
@@ -443,12 +467,6 @@ class ImgPlayerApp:
         )
 
 
-def _first_existing(manager: OCIOManager, candidates: list[str]) -> str | None:
-    available = set(manager.list_colorspaces())
-    for name in candidates:
-        if name in available:
-            return name
-    return None
 
 
 # ---------------------------------------------------------------------- Preferences glue

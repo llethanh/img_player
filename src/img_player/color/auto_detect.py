@@ -1,0 +1,246 @@
+"""Auto-detect the source colorspace from image metadata.
+
+Detection is best-effort: we'd rather correctly identify 80 % of
+sequences automatically and let the user override the rest, than
+guess wrong on edge cases. The detector returns a colorspace name
+**that exists in the active OCIO config**, plus a short reason
+string that the UI surfaces in the status bar so the user can
+quickly verify (or correct) the choice.
+
+Detection cascade — first match wins:
+
+    1. **Explicit colorspace tag** — `colorSpaceName`,
+       `nuke/input/colorspace`. These are written by OCIO-aware
+       renderers / Nuke and are essentially ground truth.
+    2. **OIIO's own classification** — `oiio:ColorSpace`. Reliable
+       for sRGB/Linear from non-EXR formats; less precise for EXR.
+    3. **Chromaticities (gamut signature)** — match the EXR
+       `chromaticities` attribute against the canonical primaries
+       of ACES AP0 / AP1, Rec.709, Rec.2020, DCI-P3, Display-P3.
+    4. **Extension fallback** — `.exr → scene_linear`,
+       `.png/.jpg/.tga → sRGB`, `.dpx/.cin → Cineon`.
+
+If everything fails we return ``(None, "no signal in metadata")`` and
+the caller decides what to do (typically: keep whatever the user
+last selected, or surface a warning).
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterable
+from dataclasses import dataclass
+
+
+# ----------------------------------------------------------------------- Detection result
+
+
+@dataclass(frozen=True)
+class DetectionResult:
+    """Outcome of one round of detection.
+
+    ``colorspace`` is ``None`` when nothing matched; ``reason``
+    always carries a short human-readable explanation suitable for
+    the status bar.
+    """
+
+    colorspace: str | None
+    reason: str
+
+
+# ----------------------------------------------------------------------- Canonical chromaticities
+
+# (red.x, red.y, green.x, green.y, blue.x, blue.y, white.x, white.y)
+# Values come from the official spec sheets (ACES TB-2014-004, ITU-R
+# BT.709-6, BT.2020-2, SMPTE RP 431-2). The match tolerance is loose
+# enough (±0.005) to absorb rounding differences in different export
+# pipelines, tight enough to never confuse two adjacent gamuts.
+_GAMUTS: tuple[tuple[str, tuple[float, ...]], ...] = (
+    # ACES AP1 — what most studios call "ACEScg".
+    ("ACEScg", (0.713, 0.293, 0.165, 0.830, 0.128, 0.044, 0.32168, 0.33767)),
+    # ACES AP0 — the wider primary set; "ACES2065-1" / "ACES" in OCIO.
+    ("ACES2065-1", (0.7347, 0.2653, 0.0, 1.0, 0.0001, -0.077, 0.32168, 0.33767)),
+    # Rec.709 / sRGB — same primaries, only the EOTF differs.
+    ("Rec.709", (0.64, 0.33, 0.30, 0.60, 0.15, 0.06, 0.3127, 0.329)),
+    # Rec.2020 — UHD.
+    ("Rec.2020", (0.708, 0.292, 0.170, 0.797, 0.131, 0.046, 0.3127, 0.329)),
+    # DCI-P3 — theatrical projection (D63 white).
+    ("DCI-P3", (0.680, 0.320, 0.265, 0.690, 0.150, 0.060, 0.314, 0.351)),
+    # Display P3 — Apple-style (D65 white).
+    ("Display P3", (0.680, 0.320, 0.265, 0.690, 0.150, 0.060, 0.3127, 0.329)),
+)
+_CHROMATICITY_TOLERANCE = 0.005
+
+
+def _chromaticities_match(
+    measured: tuple[float, ...], expected: tuple[float, ...]
+) -> bool:
+    if len(measured) != len(expected):
+        return False
+    return all(abs(m - e) <= _CHROMATICITY_TOLERANCE for m, e in zip(measured, expected))
+
+
+def _identify_gamut(chromaticities: tuple[float, ...]) -> str | None:
+    """Return the canonical gamut name (e.g. ``"ACEScg"``) for a set
+    of chromaticity primaries, or ``None`` if no gamut matches."""
+    for name, expected in _GAMUTS:
+        if _chromaticities_match(chromaticities, expected):
+            return name
+    return None
+
+
+# ----------------------------------------------------------------------- Name normalisation
+
+def _normalize(name: str) -> str:
+    """Collapse a colorspace name to a fuzzy-match key.
+
+    Studios shuffle ACEScg / ACES - ACEScg / aces_cg / etc. — we
+    strip spaces, dashes, dots and underscores, lowercase, then look
+    for substring containment. Good enough for the dozen common
+    names we care about.
+    """
+    return (
+        name.lower()
+        .replace(" ", "")
+        .replace("-", "")
+        .replace("_", "")
+        .replace(".", "")
+    )
+
+
+def _find_colorspace(canonical: str, available: Iterable[str]) -> str | None:
+    """Pick the OCIO-config name that best matches ``canonical``.
+
+    We do substring matching after normalisation: e.g. canonical
+    ``"ACEScg"`` (norm: ``acescg``) will match any of:
+      - ``"ACES - ACEScg"`` (norm: ``acesacescg``) — contains acescg
+      - ``"ACEScg"``
+      - ``"acescg_linear"``
+    """
+    target = _normalize(canonical)
+    for cs in available:
+        if target in _normalize(cs):
+            return cs
+    return None
+
+
+# ----------------------------------------------------------------------- Aliases
+
+# Maps "what the metadata says" → "canonical name we look up in the
+# OCIO config". Kept tiny on purpose — only the cases we know occur
+# in the wild. Anything else falls through and we try a direct
+# substring match against the config.
+_OIIO_COLORSPACE_ALIASES: dict[str, str] = {
+    "linear": "scene_linear",          # OIIO's generic "linear" tag
+    "lin_rec709": "Rec.709",
+    "lin_srgb": "Linear sRGB",
+    "g22_rec709": "Rec.709",
+    "g18_rec709": "Rec.709",
+    "rec709": "Rec.709",
+    "rec.709": "Rec.709",
+    "srgb": "sRGB",
+    "acescg": "ACEScg",
+    "aces": "ACES2065-1",
+    "aces2065-1": "ACES2065-1",
+}
+
+
+# ----------------------------------------------------------------------- Public API
+
+
+def detect_source_colorspace(
+    metadata: dict[str, object],
+    extension: str,
+    available_colorspaces: Iterable[str],
+    *,
+    scene_linear_role: str | None = None,
+) -> DetectionResult:
+    """Pick a source colorspace based on file metadata + extension.
+
+    ``metadata`` is whatever ``io.reader.read_color_metadata`` returned
+    (may be empty). ``extension`` is the file extension including the
+    dot, lowercased. ``available_colorspaces`` is the list of names
+    the active OCIO config exposes; we never return a name that isn't
+    in this list.
+
+    ``scene_linear_role``, when provided, is the colorspace the active
+    OCIO config has assigned to the ``scene_linear`` *role*. We use it
+    as the EXR fallback in preference to substring-matching against
+    ``"linear"`` — which is too greedy: it would match
+    ``Linear AdobeRGB`` etc. on the way to ``Linear Rec.709``.
+
+    Returns a :class:`DetectionResult`. ``colorspace`` is ``None`` if
+    no signal could be turned into an existing OCIO name.
+    """
+    available = list(available_colorspaces)
+
+    # 1. Explicit tag (highest priority — the file is telling us).
+    for key in ("colorSpaceName", "nuke/input/colorspace", "nuke/input/colourspace"):
+        raw = metadata.get(key)
+        if isinstance(raw, str) and raw:
+            cs = _find_colorspace(raw, available)
+            if cs is not None:
+                return DetectionResult(cs, f"file metadata: {key}={raw!r}")
+            # The file claims a colorspace that isn't in our config —
+            # surface that, the user might want to fix their config.
+            return DetectionResult(None, f"file metadata claims {raw!r} but it is not in the config")
+
+    # 2. OIIO's normalised tag.
+    oiio_cs = metadata.get("oiio:ColorSpace")
+    if isinstance(oiio_cs, str) and oiio_cs:
+        normalized_oiio = oiio_cs.lower().strip()
+        canonical = _OIIO_COLORSPACE_ALIASES.get(normalized_oiio, oiio_cs)
+        cs = _find_colorspace(canonical, available)
+        if cs is not None:
+            return DetectionResult(cs, f"oiio:ColorSpace={oiio_cs!r}")
+
+    # 3. Chromaticities (gamut signature).
+    chroma = metadata.get("chromaticities")
+    if isinstance(chroma, (tuple, list)) and len(chroma) == 8:
+        try:
+            tup = tuple(float(v) for v in chroma)
+        except (TypeError, ValueError):
+            tup = ()
+        if tup:
+            gamut = _identify_gamut(tup)
+            if gamut is not None:
+                cs = _find_colorspace(gamut, available)
+                if cs is not None:
+                    return DetectionResult(cs, f"chromaticities match {gamut}")
+
+    # 4. Extension fallback.
+    ext = extension.lower()
+    if ext == ".exr":
+        # Prefer the OCIO scene_linear role if we have it — that's
+        # what the active config considers "linear scene-referred".
+        # Then try the literal "scene_linear" name (some configs
+        # expose it directly), then specific Rec.709 / sRGB linear
+        # variants. "Linear" alone would be too greedy
+        # (matches AdobeRGB, ProPhoto, etc.).
+        if scene_linear_role and scene_linear_role in available:
+            return DetectionResult(
+                scene_linear_role,
+                f"EXR default — scene_linear role ({scene_linear_role})",
+            )
+        for candidate in (
+            "scene_linear",
+            "Linear Rec.709",
+            "Linear Rec 709",
+            "Linear BT.709",
+            "Linear sRGB",
+        ):
+            cs = _find_colorspace(candidate, available)
+            if cs is not None:
+                return DetectionResult(cs, f"EXR default — assumed {candidate}")
+    elif ext in (".png", ".jpg", ".jpeg", ".tga", ".bmp"):
+        for candidate in ("sRGB Encoded Rec.709", "sRGB", "Gamma 2.2 Encoded Rec.709"):
+            cs = _find_colorspace(candidate, available)
+            if cs is not None:
+                return DetectionResult(cs, f"extension {ext} — assumed {candidate}")
+    elif ext in (".dpx", ".cin"):
+        for candidate in ("Cineon", "Log Film"):
+            cs = _find_colorspace(candidate, available)
+            if cs is not None:
+                return DetectionResult(cs, f"extension {ext} — assumed {candidate}")
+
+    # 5. Total whiff.
+    return DetectionResult(None, "no signal in metadata")

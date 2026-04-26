@@ -138,6 +138,57 @@ def read_header(path: Path | str) -> oiio.ImageSpec:
         inp.close()
 
 
+# Attributes we care about for colorspace auto-detection. Listed in
+# priority order: explicit colorspace tags first (most reliable), then
+# chromaticities (gamut signature), finally OIIO's own normalisation.
+_COLOR_METADATA_ATTRS: tuple[str, ...] = (
+    # Set by OCIO-aware renderers / pipelines.
+    "colorSpaceName",
+    # Nuke writes this when it bakes a colorspace into an EXR.
+    "nuke/input/colorspace",
+    "nuke/input/colourspace",  # British spelling shows up too
+    # ICC profile bakers tend to set these.
+    "ICCProfile:cprt",
+    "ICCProfile:desc",
+    # OIIO's own classification of the file's encoding.
+    "oiio:ColorSpace",
+    # Standard EXR header attribute — 8 floats describing R/G/B/W
+    # primaries. Lets us match against ACES AP0 / AP1, Rec.709,
+    # Rec.2020, P3 etc. by gamut signature.
+    "chromaticities",
+)
+
+
+def read_color_metadata(path: Path | str) -> dict[str, object]:
+    """Return whatever colour-related attributes the file's header
+    advertises. Cheap — opens the file but doesn't decode pixels.
+
+    The returned dict's keys are the OIIO attribute names from
+    :data:`_COLOR_METADATA_ATTRS`. Missing attributes are simply
+    absent (not present as ``None``). The values come straight from
+    OIIO so they may be strings, tuples of floats, or other types
+    depending on the attribute.
+    """
+    path = Path(path)
+    inp = oiio.ImageInput.open(str(path))
+    if inp is None:
+        # We don't raise — auto-detection is best-effort, so a
+        # failure to read metadata just means "no metadata, fall
+        # back to extension".
+        log.debug("read_color_metadata: cannot open %s (%s)", path, oiio.geterror())
+        return {}
+    try:
+        spec = inp.spec()
+        meta: dict[str, object] = {}
+        for attr in _COLOR_METADATA_ATTRS:
+            value = spec.getattribute(attr)
+            if value is not None:
+                meta[attr] = value
+        return meta
+    finally:
+        inp.close()
+
+
 def _resolve_channels(
     available: list[str], requested: Sequence[str] | None, path: Path
 ) -> list[str]:
