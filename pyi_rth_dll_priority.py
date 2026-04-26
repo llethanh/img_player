@@ -75,6 +75,19 @@ def _preload(path: str) -> bool:
 # correctly — we keep the explicit ordering as a belt-and-suspenders
 # safety net for older Windows / unusual driver stacks.
 _PRELOAD_CHAIN: tuple[str, ...] = (
+    # Qt6 — mrViewer 6 / Nuke / DaVinci Resolve all ship their own Qt6
+    # build with possibly-different ABI. Pre-load ours first.
+    # Order: Core -> Gui -> Widgets -> OpenGL -> OpenGLWidgets so each
+    # link in the dependency chain is already resident before the next
+    # one is loaded. LOAD_WITH_ALTERED_SEARCH_PATH below would handle
+    # this anyway, but the explicit order is cheaper than re-trying.
+    "Qt6Core.dll",
+    "Qt6Network.dll",
+    "Qt6Gui.dll",
+    "Qt6Widgets.dll",
+    "Qt6OpenGL.dll",
+    "Qt6OpenGLWidgets.dll",
+    "Qt6Svg.dll",
     # OpenEXR family
     "Imath.dll",
     "Iex.dll",
