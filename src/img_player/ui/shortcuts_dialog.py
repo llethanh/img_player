@@ -12,6 +12,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from img_player.ui.theme import F, G, H, S
+
 _SECTIONS: list[tuple[str, list[tuple[str, str]]]] = [
     (
         "Playback",
@@ -90,11 +92,20 @@ class ShortcutsDialog(QDialog):  # type: ignore[misc]
 
         for keys, description in rows:
             row = QHBoxLayout()
-            row.setContentsMargins(10, 0, 0, 0)
-            row.setSpacing(12)
+            row.setContentsMargins(S.LG, 0, 0, 0)
+            row.setSpacing(S.LG)
             key_label = QLabel(keys)
+            # "Keycap" pill — slightly darker than the dialog bg so it
+            # reads as raised, mono font for the keys themselves so the
+            # spacing between Ctrl, Shift etc. matches what people see
+            # on their keyboard.
             key_label.setStyleSheet(
-                "background: #333; color: #eee; padding: 1px 6px; border-radius: 3px;"
+                f"background: {H.BG_SURFACE};"
+                f" color: {H.TEXT_PRIMARY};"
+                f" padding: 1px {S.MD}px;"
+                f" border: 1px solid {H.BORDER_DEFAULT};"
+                f" border-radius: {G.RADIUS_SM}px;"
+                f" font-family: '{F.FAMILY_MONO}', '{F.FAMILY_UI}', monospace;"
             )
             key_label.setMinimumWidth(140)
             row.addWidget(key_label)

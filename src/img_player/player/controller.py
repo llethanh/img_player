@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import gc
 import logging
+import time
+from collections import deque
 from dataclasses import replace
 from typing import Any
 
@@ -20,6 +22,12 @@ from img_player.player.state import LoopMode, PlaybackState
 from img_player.sequence.models import SequenceInfo
 
 log = logging.getLogger(__name__)
+
+# Rolling window of tick timestamps used to compute the live effective fps.
+# 24 samples ~= 1 second at 24 fps — the right bin for "is playback
+# smooth right now". Bigger would smooth too much (slow to react to a
+# stutter), smaller would be twitchy.
+_TICK_WINDOW = 24
 
 
 class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
@@ -43,6 +51,12 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
         self._timer = QTimer(self)
         self._timer.setTimerType(Qt.PreciseTimer)
         self._timer.timeout.connect(self._tick)
+        # Rolling window of monotonic timestamps captured at each tick.
+        # Drives :meth:`effective_fps` so the UI can show what the play
+        # loop is actually delivering, independent of the target FPS
+        # combo. Cleared on play / pause / seek so the metric reflects
+        # the *current* playback, not stale data from a previous run.
+        self._tick_timestamps: deque[float] = deque(maxlen=_TICK_WINDOW)
 
     # ------------------------------------------------------------------ Properties
 
@@ -53,6 +67,26 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
     @property
     def sequence(self) -> SequenceInfo | None:
         return self._sequence
+
+    def effective_fps(self) -> float | None:
+        """Rolling-average effective playback FPS.
+
+        Returns ``None`` when not enough samples are available — i.e. not
+        currently playing, or fewer than two ticks have fired since the
+        last play/pause/seek. Otherwise returns the average rate over the
+        last ``_TICK_WINDOW`` ticks.
+
+        This is the metric the status bar shows to the user, and it's
+        what the bench harness independently measures from outside.
+        """
+        if not self._state.is_playing:
+            return None
+        if len(self._tick_timestamps) < 2:
+            return None
+        span = self._tick_timestamps[-1] - self._tick_timestamps[0]
+        if span <= 0:
+            return None
+        return (len(self._tick_timestamps) - 1) / span
 
     # ------------------------------------------------------------------ Commands
 
@@ -86,6 +120,11 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
         gc.freeze()
         gc.disable()
 
+        # Reset the FPS rolling window so the metric reflects this
+        # playback session, not the previous one (which may have ended
+        # at a wildly different rate).
+        self._tick_timestamps.clear()
+
         self._update(is_playing=True)
         self._timer.start(self._interval_ms())
 
@@ -100,6 +139,9 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
         gc.unfreeze()
         gc.enable()
         gc.collect()
+        # Drop the rolling window so effective_fps() returns None until
+        # the next play() — paused players don't have a meaningful fps.
+        self._tick_timestamps.clear()
         self._update(is_playing=False)
 
     def stop(self) -> None:
@@ -117,6 +159,10 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
         self._update(current_frame=clamped)
         self._cache.set_current_frame(clamped)
         self._prefetch_from(clamped, self._state.direction)
+        # Seeking discards the rolling FPS window — pre-seek samples
+        # don't reflect the post-seek decode pressure (we're likely to
+        # land on a non-cached frame which slows the next few ticks).
+        self._tick_timestamps.clear()
         self._try_render(count_misses=False)
 
     def step(self, delta: int) -> None:
@@ -155,6 +201,10 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
     def _tick(self) -> None:
         if self._sequence is None or not self._state.is_playing:
             return
+        # Stamp the tick *first* so effective_fps() reflects the actual
+        # cadence of the QTimer, not the time we spend below in advance/
+        # prefetch logic. The status bar reads this every 500 ms.
+        self._tick_timestamps.append(time.monotonic())
         next_frame, next_dir, should_stop = self._advance()
 
         # The playhead always moves forward at the configured FPS —

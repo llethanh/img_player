@@ -9,6 +9,8 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QGroupBox, QLabel, QVBoxLayout, QWidget
 
+from img_player.ui.theme import S
+
 
 class ChannelPanel(QWidget):  # type: ignore[misc]
     """A tiny read-only panel listing the current sequence's channels."""
@@ -27,7 +29,7 @@ class ChannelPanel(QWidget):  # type: ignore[misc]
         group.setLayout(inner)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setContentsMargins(S.SM, S.SM, S.SM, S.SM)
         layout.addWidget(group)
         layout.addStretch(1)
 

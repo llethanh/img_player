@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from img_player.color.ocio_manager import OCIOManager
+from img_player.ui.theme import S
 
 
 class ColorPanel(QWidget):  # type: ignore[misc]
@@ -70,7 +71,7 @@ class ColorPanel(QWidget):  # type: ignore[misc]
         group.setLayout(form)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setContentsMargins(S.SM, S.SM, S.SM, S.SM)
         layout.addWidget(group)
         layout.addWidget(self._reset_btn)
         layout.addStretch(1)

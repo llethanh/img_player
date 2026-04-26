@@ -12,12 +12,12 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QStyle,
     QWidget,
 )
 
 from img_player.player.state import LoopMode
-from img_player.ui.theme import G, S
+from img_player.ui.icons import make_icon
+from img_player.ui.theme import G, H, S
 
 if TYPE_CHECKING:
     from img_player.player.state import PlaybackState
@@ -48,7 +48,6 @@ class TransportBar(QWidget):  # type: ignore[misc]
         super().__init__(parent)
         self.setFixedHeight(G.TRANSPORT_H)
 
-        style = self.style()
         self._loop_mode = LoopMode.LOOP
 
         # --- In/Out markers -------------------------------------------------
@@ -65,29 +64,17 @@ class TransportBar(QWidget):  # type: ignore[misc]
         self._loop_btn.clicked.connect(self._cycle_loop_mode)
 
         # --- Playback controls ---------------------------------------------
-        self._first_btn = _icon_button(
-            style.standardIcon(QStyle.StandardPixmap.SP_MediaSkipBackward),
-            "Go to first frame (Home)",
+        # All transport buttons use our custom SVG icon set so they
+        # match ui_mockup.html. Play is in the warm accent (orange);
+        # the rest are TEXT_PRIMARY (white-ish) for visual hierarchy.
+        self._first_btn = _icon_button(make_icon("first"), "Go to first frame (Home)")
+        self._prev_btn  = _icon_button(make_icon("prev"),  "Previous frame (Left)")
+        self._play_btn  = _icon_button(
+            make_icon("play", color=H.ACCENT), "Play / Pause (Space)"
         )
-        self._prev_btn = _icon_button(
-            style.standardIcon(QStyle.StandardPixmap.SP_MediaSeekBackward),
-            "Previous frame (Left)",
-        )
-        self._play_btn = _icon_button(
-            style.standardIcon(QStyle.StandardPixmap.SP_MediaPlay),
-            "Play / Pause (Space)",
-        )
-        self._stop_btn = _icon_button(
-            style.standardIcon(QStyle.StandardPixmap.SP_MediaStop), "Stop"
-        )
-        self._next_btn = _icon_button(
-            style.standardIcon(QStyle.StandardPixmap.SP_MediaSeekForward),
-            "Next frame (Right)",
-        )
-        self._last_btn = _icon_button(
-            style.standardIcon(QStyle.StandardPixmap.SP_MediaSkipForward),
-            "Go to last frame (End)",
-        )
+        self._stop_btn  = _icon_button(make_icon("stop"),  "Stop")
+        self._next_btn  = _icon_button(make_icon("next"),  "Next frame (Right)")
+        self._last_btn  = _icon_button(make_icon("last"),  "Go to last frame (End)")
 
         self._first_btn.clicked.connect(lambda: self.jump_to_ends.emit(-1))
         self._prev_btn.clicked.connect(lambda: self.step_clicked.emit(-1))
@@ -144,14 +131,14 @@ class TransportBar(QWidget):  # type: ignore[misc]
     # ------------------------------------------------------------------ Public
 
     def update_from_state(self, state: PlaybackState) -> None:
-        style = self.style()
-        self._play_btn.setIcon(
-            style.standardIcon(
-                QStyle.StandardPixmap.SP_MediaPause
-                if state.is_playing
-                else QStyle.StandardPixmap.SP_MediaPlay
-            )
-        )
+        # Swap the play button's icon between the two states. We keep
+        # the warm ACCENT colour on "play" (encourages the click) and
+        # use the neutral TEXT_PRIMARY on "pause" (calmer, less
+        # attention-grabbing while playback is in progress).
+        if state.is_playing:
+            self._play_btn.setIcon(make_icon("pause"))
+        else:
+            self._play_btn.setIcon(make_icon("play", color=H.ACCENT))
 
         if state.loop_mode != self._loop_mode:
             self._loop_mode = state.loop_mode
@@ -225,5 +212,5 @@ def _separator() -> QWidget:
     line.setFrameShadow(QFrame.Shadow.Plain)
     line.setFixedWidth(1)
     line.setFixedHeight(18)
-    line.setStyleSheet("background-color: #38383C;")
+    line.setStyleSheet(f"background-color: {H.BORDER_DEFAULT};")
     return line
