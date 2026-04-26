@@ -211,16 +211,23 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
         multiplies the zoom by :attr:`WHEEL_ZOOM_STEP`. Smooth-scroll
         wheels (mac trackpads) report fractional deltas — the same
         formula Just Works because we use a power.
+
+        Starting point matters: in *fit* mode the image isn't at 100 %
+        — it's at whatever ratio makes it fill the widget (often
+        30-40 % for a 4K image in a 1280-wide window). Wheeling from
+        Fit must continue *from that ratio*, not jump back to 100 %.
+        We therefore base the multiplication on the current effective
+        zoom, which is the fit factor when ``_zoom_factor is None``.
         """
         delta_steps = event.angleDelta().y() / 120.0
         if delta_steps == 0:
             super().wheelEvent(event)
             return
-        # Starting point: if we're in fit mode, treat current as
-        # 1.0 (so the first wheel notch zooms in/out around 100 %
-        # rather than re-fitting). Otherwise multiply from where we
-        # already are.
-        base = 1.0 if self._zoom_factor is None else self._zoom_factor
+        base = (
+            self._compute_fit_factor()
+            if self._zoom_factor is None
+            else self._zoom_factor
+        )
         new_zoom = base * (self.WHEEL_ZOOM_STEP ** delta_steps)
         new_zoom = max(self.MIN_ZOOM, min(self.MAX_ZOOM, new_zoom))
         self.set_zoom(new_zoom)
@@ -442,19 +449,39 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
         if loc != -1:
             GL.glUniformMatrix4fv(loc, 1, GL.GL_FALSE, matrix)
 
+    def _compute_fit_factor(self) -> float:
+        """Return the zoom factor that makes the image fit the widget.
+
+        Used both by the fit-mode view matrix and by the wheel-event
+        handler when transitioning out of fit (so the first wheel
+        notch zooms relative to "what's currently on screen", not
+        from a hard-coded 100 %). Falls back to ``1.0`` when no
+        image has been loaded yet.
+        """
+        win_w = max(1, self.width())
+        win_h = max(1, self.height())
+        img_w, img_h = self._image_size
+        if img_w == 0 or img_h == 0:
+            return 1.0
+        return min(win_w / img_w, win_h / img_h)
+
     def _fit_matrix(self) -> np.ndarray:
         """View matrix combining aspect-ratio fit + user zoom.
 
         Two regimes:
 
-        * ``self._zoom_factor is None`` — legacy "fit" mode: scale the
-          fullscreen quad so the image fits the widget while preserving
-          aspect ratio (letterbox or pillarbox as needed).
+        * ``self._zoom_factor is None`` — fit mode: scale the
+          fullscreen quad so the image fits the widget while
+          preserving aspect ratio (letterbox / pillarbox).
         * ``self._zoom_factor`` is a float — user-set zoom, where the
-          image is rendered at ``factor`` widget-pixels per image-pixel
-          (centred). The image can extend beyond the widget at large
-          zooms; that's the user's intent (inspect a region pixel-by-
-          pixel).
+          image is rendered at ``factor`` widget-pixels per
+          image-pixel (centred). The image can extend beyond the
+          widget at large zooms; that's the user's intent (inspect
+          a region pixel-by-pixel).
+
+        Both regimes share the same underlying formula
+        ``s = (img_size × factor) / win_size`` — fit just substitutes
+        ``factor = _compute_fit_factor()``.
         """
         win_w = max(1, self.width())
         win_h = max(1, self.height())
@@ -462,21 +489,9 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
         if img_w == 0 or img_h == 0:
             return np.identity(4, dtype=np.float32)
 
-        if self._zoom_factor is None:
-            # Aspect-fit (the original behaviour).
-            win_aspect = win_w / win_h
-            img_aspect = img_w / img_h
-            sx, sy = 1.0, 1.0
-            if img_aspect > win_aspect:
-                sy = win_aspect / img_aspect
-            else:
-                sx = img_aspect / win_aspect
-        else:
-            # Zoom factor = "image pixels covered per widget pixel".
-            # The fullscreen quad spans [-1, 1] in both axes, so we
-            # scale by (image_size_in_widget_pixels / widget_size).
-            sx = (img_w * self._zoom_factor) / win_w
-            sy = (img_h * self._zoom_factor) / win_h
+        factor = self._zoom_factor if self._zoom_factor is not None else self._compute_fit_factor()
+        sx = (img_w * factor) / win_w
+        sy = (img_h * factor) / win_h
 
         m = np.identity(4, dtype=np.float32)
         m[0, 0] = sx
