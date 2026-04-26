@@ -11,12 +11,13 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import (
     QAction,
     QCloseEvent,
     QDragEnterEvent,
     QDropEvent,
+    QIcon,
     QKeySequence,
     QShortcut,
 )
@@ -37,6 +38,7 @@ from PySide6.QtWidgets import (
 from img_player.color.ocio_manager import OCIOManager
 from img_player.ui.channel_panel import ChannelPanel
 from img_player.ui.color_panel import ColorPanel
+from img_player.ui.icons import make_icon
 from img_player.ui.theme import F, G, H, S
 from img_player.ui.timeline import Timeline
 from img_player.ui.transport import TransportBar
@@ -244,26 +246,48 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         # makes a button taller than the 26 px menubar and clips it
         # off-screen. QToolButton has its own independent QSS scope.
         burger = QToolButton(self)
-        burger.setText("☰")
+        # Painted SVG icon: three perfectly-spaced bars. We previously
+        # rendered the Unicode glyph U+2630 (☰) as text, but its
+        # spacing varies wildly across system fonts (the glyph is
+        # designed for CJK contexts, not UI hamburgers) — users
+        # noticed the bars looked uneven. SVG primitives give us
+        # pixel-exact control.
+        #
+        # We build a fresh QIcon with two pixmaps so the colour
+        # tracks the hover state — Qt swaps to ``Active`` mode
+        # automatically when the cursor enters a QAbstractButton,
+        # which is the gentler equivalent of the ``:hover`` colour
+        # we used to apply to the text glyph.
+        burger_size = 18
+        burger_icon = QIcon()
+        burger_icon.addPixmap(
+            make_icon("menu", color=H.ACCENT, size=burger_size).pixmap(
+                burger_size, burger_size,
+            ),
+            QIcon.Mode.Normal,
+        )
+        burger_icon.addPixmap(
+            make_icon("menu", color=H.ACCENT_BRIGHT, size=burger_size).pixmap(
+                burger_size, burger_size,
+            ),
+            QIcon.Mode.Active,
+        )
+        burger.setIcon(burger_icon)
+        burger.setIconSize(QSize(burger_size, burger_size))
         burger.setAutoRaise(True)
         burger.setFixedSize(36, 24)
         burger.setCursor(Qt.CursorShape.PointingHandCursor)
         burger.setToolTip("Show / hide the side panels")
-        # Orange glyph — picks up the rest of the accent palette so
-        # the burger reads as part of the same family as the playhead
-        # and the play button. ACCENT_BRIGHT on hover for a small
-        # glow-up; the hover background uses BG_HOVER so the rounded
-        # patch is visible against the menubar.
+        # The hover background gives a rounded affordance patch.
+        # Color of the icon itself is baked into the SVG; QToolButton
+        # mode handles the hover swap.
         burger.setStyleSheet(
             "QToolButton {"
             f"  background: transparent;"
-            f"  color: {H.ACCENT};"
             f"  border: none;"
             f"  padding: 0;"
-            "  font-size: 16px;"
             "}"
             "QToolButton:hover {"
-            f"  color: {H.ACCENT_BRIGHT};"
             f"  background: {H.BG_HOVER};"
             f"  border-radius: {G.RADIUS_SM}px;"
             "}"
