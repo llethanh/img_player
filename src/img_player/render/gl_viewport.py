@@ -28,6 +28,16 @@ log = logging.getLogger(__name__)
 class _ColorParams:
     exposure: float = 0.0
     gamma: float = 1.0
+    # Channel mask — (R, G, B, A) booleans flattened to floats for the
+    # GLSL uniform. All-on by default. When the user disables a
+    # channel, we multiply that component by 0.0 in the fragment
+    # shader (after OCIO) — cheap, no texture re-upload, no cache
+    # invalidation.
+    channel_mask: tuple[float, float, float, float] = (1.0, 1.0, 1.0, 1.0)
+    # Whether single-channel isolation should render as luminance
+    # (Nuke behaviour) vs the original colour. True by default
+    # because that's what artists expect when they click "R" alone.
+    isolate_as_luminance: bool = True
 
 
 class GLViewport(QOpenGLWidget):  # type: ignore[misc]
@@ -113,6 +123,18 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
         # pixel = 1 widget pixel" (= "Actual size" / 100 %).
         self._zoom_factor: float | None = None
 
+        # Pan offset in widget pixels (0, 0 = image centred). Applied
+        # as a translation to the view matrix, scaled into NDC. Reset
+        # on fit toggle since panning a fit-to-window image makes no
+        # sense.
+        self._pan_x: float = 0.0
+        self._pan_y: float = 0.0
+        # Middle-button drag tracking: the position when the press
+        # event fired and the pan offset at that moment, so move
+        # events compute the new pan from a stable origin.
+        self._pan_drag_start: tuple[float, float] | None = None
+        self._pan_base_offset: tuple[float, float] = (0.0, 0.0)
+
     def sizeHint(self) -> QSize:
         return QSize(960, 540)
 
@@ -133,14 +155,19 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
         *,
         exposure: float | None = None,
         gamma: float | None = None,
+        channel_mask: tuple[float, float, float, float] | None = None,
     ) -> None:
-        """Swap the OCIO shader bundle and/or tweak exposure/gamma."""
+        """Swap the OCIO shader bundle and/or tweak exposure / gamma /
+        channel mask. Any argument left ``None`` keeps its current
+        value."""
         if bundle is not None:
             self._pending_bundle = bundle
         if exposure is not None:
             self._color_params.exposure = exposure
         if gamma is not None:
             self._color_params.gamma = max(0.01, gamma)
+        if channel_mask is not None:
+            self._color_params.channel_mask = channel_mask
         self.update()
 
     def set_current_frame(self, frame: int) -> None:
@@ -157,7 +184,9 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
         ``factor`` is interpreted as image-pixels-per-widget-pixel:
         ``1.0`` is "Actual size" (100 %), ``0.5`` is half size,
         ``2.0`` is 2× zoom. Clamped to :attr:`MIN_ZOOM` /
-        :attr:`MAX_ZOOM`.
+        :attr:`MAX_ZOOM`. Switching back to fit (None) clears the
+        pan offset because a centred fit is the only sensible
+        baseline.
 
         The combo box in the transport bar drives this; the wheel
         also calls it with the new factor and emits ``zoom_changed``
@@ -165,6 +194,8 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
         """
         if factor is None:
             self._zoom_factor = None
+            self._pan_x = 0.0
+            self._pan_y = 0.0
         else:
             self._zoom_factor = max(self.MIN_ZOOM, min(self.MAX_ZOOM, float(factor)))
         self.update()
@@ -178,26 +209,49 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
             event.accept()
             return
+        if event.button() == Qt.MouseButton.MiddleButton:
+            # Middle-button drag = pan the image inside the viewport.
+            # We capture the start position + the current pan offset
+            # so subsequent move events compute deltas from a stable
+            # origin (no drift if the user wiggles back and forth).
+            self._pan_drag_start = (event.position().x(), event.position().y())
+            self._pan_base_offset = (self._pan_x, self._pan_y)
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            event.accept()
+            return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
-        if self._drag_base_frame is None:
-            super().mouseMoveEvent(event)
+        if self._drag_base_frame is not None:
+            delta_px = event.position().x() - self._drag_start_x
+            delta_frames = int(delta_px / self.DRAG_PIXELS_PER_FRAME)
+            target = self._drag_base_frame + delta_frames
+            if target != self._current_frame:
+                # We don't update _current_frame ourselves — the controller
+                # will push it back via set_current_frame when the seek
+                # actually lands. That avoids drift if a seek is rejected
+                # (e.g. clamped against in/out range).
+                self.frame_requested.emit(target)
+            event.accept()
             return
-        delta_px = event.position().x() - self._drag_start_x
-        delta_frames = int(delta_px / self.DRAG_PIXELS_PER_FRAME)
-        target = self._drag_base_frame + delta_frames
-        if target != self._current_frame:
-            # We don't update _current_frame ourselves — the controller
-            # will push it back via set_current_frame when the seek
-            # actually lands. That avoids drift if a seek is rejected
-            # (e.g. clamped against in/out range).
-            self.frame_requested.emit(target)
-        event.accept()
+        if self._pan_drag_start is not None:
+            dx = event.position().x() - self._pan_drag_start[0]
+            dy = event.position().y() - self._pan_drag_start[1]
+            self._pan_x = self._pan_base_offset[0] + dx
+            self._pan_y = self._pan_base_offset[1] + dy
+            self.update()
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton and self._drag_base_frame is not None:
             self._drag_base_frame = None
+            self.setCursor(Qt.CursorShape.SizeHorCursor)
+            event.accept()
+            return
+        if event.button() == Qt.MouseButton.MiddleButton and self._pan_drag_start is not None:
+            self._pan_drag_start = None
             self.setCursor(Qt.CursorShape.SizeHorCursor)
             event.accept()
             return
@@ -312,6 +366,15 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
 
         self._set_uniform_float("uExposure", self._color_params.exposure)
         self._set_uniform_float("uGamma", self._color_params.gamma)
+        # Per-channel mask + isolation flag (cf. fragment_template.glsl).
+        mask = self._color_params.channel_mask
+        loc_mask = GL.glGetUniformLocation(self._program, "uChannelMask")
+        if loc_mask != -1:
+            GL.glUniform4f(loc_mask, mask[0], mask[1], mask[2], mask[3])
+        self._set_uniform_float(
+            "uChannelIsolateLuminance",
+            1.0 if self._color_params.isolate_as_luminance else 0.0,
+        )
         self._set_uniform_matrix4("uTransform", self._fit_matrix())
 
         GL.glBindVertexArray(self._vao)
@@ -493,9 +556,23 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
         sx = (img_w * factor) / win_w
         sy = (img_h * factor) / win_h
 
+        # Pan: convert widget-pixel offsets to NDC ([-1, 1] across
+        # the widget = 2 NDC units total). We negate Y because Qt's
+        # mouse coordinates have Y growing down while NDC has Y
+        # growing up.
+        tx = (self._pan_x / max(1, win_w)) * 2.0
+        ty = -(self._pan_y / max(1, win_h)) * 2.0
+
         m = np.identity(4, dtype=np.float32)
         m[0, 0] = sx
         m[1, 1] = sy
+        # Translation lives on column 3 (rows 0, 1) for an OpenGL
+        # column-major matrix. PySide6 uses row-major numpy arrays
+        # for upload via glUniformMatrix4fv with transpose=GL_FALSE,
+        # but we transposed the whole codebase to put translation
+        # at m[3, 0/1] — keep that convention.
+        m[3, 0] = tx
+        m[3, 1] = ty
         return m
 
 

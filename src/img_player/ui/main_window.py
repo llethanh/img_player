@@ -54,6 +54,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
     open_requested = Signal(Path)
     play_toggled = Signal()
     channels_requested = Signal(object)   # list[str] | None
+    channel_mask_changed = Signal(tuple)  # (R, G, B, A) bools
     zoom_requested = Signal(object)       # float | None ; None = fit
     step_clicked = Signal(int)  # +1 / -1
     jump_to_ends = Signal(int)  # -1 first, +1 last
@@ -402,6 +403,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         # asks the controller to seek there.
         self._transport.frame_seek_requested.connect(self.frame_requested.emit)
         self._transport.channels_requested.connect(self.channels_requested.emit)
+        self._transport.channel_mask_changed.connect(self.channel_mask_changed.emit)
         # Zoom: combo → viewport (forward), wheel → combo (back-channel
         # so the displayed value follows the wheel without us
         # re-emitting and ping-ponging).

@@ -184,6 +184,7 @@ class ImgPlayerApp:
         self._window.clear_in_out_requested.connect(lambda: self._controller.set_in_out(None, None))
         self._window.loop_mode_requested.connect(self._controller.set_loop_mode)
         self._window.channels_requested.connect(self._on_channels_requested)
+        self._window.channel_mask_changed.connect(self._on_channel_mask_changed)
         # Zoom from the combo box → propagate to the GL viewport.
         # The wheel-zoom path (viewport → combo) is wired inside
         # MainWindow so app.py doesn't have to care.
@@ -273,6 +274,20 @@ class ImgPlayerApp:
         else:
             self._controller.play()
 
+    def _on_channel_mask_changed(self, mask: tuple) -> None:
+        """Forward the four RGBA visibility booleans to the GL viewport.
+
+        The viewer multiplies each component by 0 or 1 in the
+        fragment shader — no texture re-upload, no cache eviction.
+        Toggling is essentially free at runtime.
+        """
+        # Defensive: accept any 4-element sequence and coerce to floats.
+        try:
+            r, g, b, a = (1.0 if bool(x) else 0.0 for x in mask)
+        except (TypeError, ValueError):
+            return
+        self._window.viewer.gl.set_color_params(channel_mask=(r, g, b, a))
+
     def _on_zoom_requested(self, factor: object) -> None:
         """Forward a zoom request from the combo to the GL viewport.
 
@@ -288,16 +303,35 @@ class ImgPlayerApp:
         """Switch which channels the cache decodes for subsequent frames.
 
         ``channels`` is either ``None`` (RGB composite default) or a
-        list like ``["Z"]``. We push it to the cache, which clears
-        currently-cached frames (they were decoded with the previous
-        selection) and re-prefetches around the playhead.
+        list like ``["Z"]`` or ``["albedo.R", "albedo.G", "albedo.B"]``.
+        We push it to the cache, which clears currently-cached frames
+        (they were decoded with the previous selection) and re-prefetches
+        around the playhead.
+
+        EXR multichannel decode is intrinsically slow (~700 ms – 2 s per
+        4K frame on this hardware), so the user sees the *previous*
+        channel for a couple of seconds while the worker pool
+        re-decodes. We surface that with an explicit status message —
+        better than silence.
         """
         # mypy gets a Signal(object) here, normalise the type at the boundary.
         cs: list[str] | None = list(channels) if isinstance(channels, list) else None
         self._cache.set_channels(cs)
-        self._window.set_status(
-            f"Channel: {'RGB (composite)' if cs is None else ', '.join(cs)}"
-        )
+
+        if cs is None:
+            label = "RGB (composite)"
+        elif len(cs) == 1:
+            label = cs[0]
+        elif "." in cs[0]:
+            # Layer composite (e.g. ["albedo.R", "albedo.G", "albedo.B"])
+            # — pull the layer prefix for a tidy "albedo (composite)"
+            # message rather than a mile-long channel list.
+            label = f"{cs[0].rsplit('.', 1)[0]} (composite)"
+        else:
+            label = " / ".join(cs)
+
+        self._window.set_status(f"Loading channel: {label} — decoding…")
+
         # Re-trigger the prefetch so the new channel set fills the
         # cache around the playhead immediately. Easiest path: drive
         # through the existing seek-to-current-frame route.

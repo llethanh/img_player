@@ -61,6 +61,12 @@ class TransportBar(QWidget):  # type: ignore[misc]
     # Zoom — either ``None`` for fit-to-window, or a float factor
     # (1.0 = 100 %, 0.5 = 50 %, 2.0 = 200 %).
     zoom_requested = Signal(object)
+    # Per-channel show/hide. Carries a 4-tuple of bools:
+    # (R, G, B, A) where True = visible, False = masked. The viewer
+    # multiplies the corresponding channel by 0 in the shader — so
+    # toggling is free runtime cost and does not invalidate the
+    # frame cache.
+    channel_mask_changed = Signal(tuple)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -150,6 +156,22 @@ class TransportBar(QWidget):  # type: ignore[misc]
         self._channel_combo.addItem("RGB")  # always the first entry
         self._channel_combo.currentIndexChanged.connect(self._on_channel_changed)
 
+        # --- RGBA mute toggles ---------------------------------------------
+        # Four small checkable buttons — the viewer's fragment shader
+        # multiplies each component by the matching mask, so toggling
+        # is essentially free at runtime and doesn't invalidate the
+        # frame cache the way the channel-selector does.
+        self._channel_btns: dict[str, QPushButton] = {}
+        for letter, tooltip in (
+            ("R", "Show / hide red channel"),
+            ("G", "Show / hide green channel"),
+            ("B", "Show / hide blue channel"),
+            ("A", "Show / hide alpha channel"),
+        ):
+            btn = _channel_toggle_button(letter, tooltip)
+            btn.toggled.connect(self._emit_channel_mask)
+            self._channel_btns[letter] = btn
+
         # --- Zoom selector -------------------------------------------------
         # The combo is *editable* solely so we can call setText() with
         # arbitrary values like "127%" coming from the wheel — but the
@@ -224,6 +246,13 @@ class TransportBar(QWidget):  # type: ignore[misc]
         channel_label.setFixedWidth(20)
         layout.addWidget(channel_label)
         layout.addWidget(self._channel_combo)
+
+        # The four RGBA mute toggles sit right after the channel combo,
+        # because they're conceptually about the *same* thing (what
+        # of the loaded data ends up on screen) — just at a finer
+        # grain.
+        for letter in ("R", "G", "B", "A"):
+            layout.addWidget(self._channel_btns[letter])
 
         layout.addWidget(_separator())
         zoom_label = QLabel("Zoom")
@@ -329,6 +358,14 @@ class TransportBar(QWidget):  # type: ignore[misc]
         if fps is not None:
             self.fps_changed.emit(fps)
 
+    def _emit_channel_mask(self) -> None:
+        """Bundle the four RGBA toggle states and emit
+        ``channel_mask_changed`` with a (R, G, B, A) bool tuple."""
+        mask = tuple(
+            self._channel_btns[letter].isChecked() for letter in ("R", "G", "B", "A")
+        )
+        self.channel_mask_changed.emit(mask)
+
     def _on_channel_changed(self, index: int) -> None:
         """Translate the combo selection into a ``channels_requested``
         signal.
@@ -429,6 +466,43 @@ def _separator() -> QWidget:
     line.setFixedHeight(18)
     line.setStyleSheet(f"background-color: {H.BORDER_DEFAULT};")
     return line
+
+
+# Per-letter colours used by the RGBA channel-mute toggles. Matches
+# the convention every VFX viewer follows: red letter for R, green
+# for G, blue for B, neutral grey for A. Keeps the buttons readable
+# at a glance even when several are off.
+_CHANNEL_BTN_COLORS = {
+    "R": "#E0606E",  # warm red, not too saturated
+    "G": "#6CC275",  # mid green
+    "B": "#5E9DD8",  # mid blue
+    "A": H.TEXT_SECONDARY,
+}
+
+
+def _channel_toggle_button(letter: str, tooltip: str) -> QPushButton:
+    btn = QPushButton(letter)
+    btn.setFixedSize(22, G.BTN_TRANSPORT_H)
+    btn.setCheckable(True)
+    btn.setChecked(True)
+    btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+    btn.setToolTip(tooltip)
+    color = _CHANNEL_BTN_COLORS[letter]
+    # Inline QSS: enabled = letter colour, disabled / muted = dim grey.
+    # The button still uses the global QPushButton border / background
+    # so it sits visually with the rest of the transport bar.
+    btn.setStyleSheet(
+        "QPushButton {"
+        f"  color: {color};"
+        f"  font-weight: 600;"
+        f"  padding: 0;"
+        "}"
+        "QPushButton:!checked {"
+        f"  color: {H.TEXT_DISABLED};"
+        f"  background: {H.BG_RAISED};"
+        "}"
+    )
+    return btn
 
 
 class _ZoomLineEditClickFilter(QObject):

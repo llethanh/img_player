@@ -106,29 +106,32 @@ class FrameDisplay(QLineEdit):  # type: ignore[misc]
     def set_frame(self, frame: int) -> None:
         """Update the displayed frame (called by the controller wiring).
 
-        Skips the update if the user is mid-typing — otherwise we'd
-        clobber what they entered. The next valid commit (Enter) or
-        focus-out re-syncs.
+        We *always* refresh — even if the user has focus and was
+        typing. Rationale: if a different source moved the playhead
+        (timeline scrub, J/L shortcut, prev/next button, the
+        playback loop itself), the user's mid-typed value is now a
+        stale intent and should not block the new ground truth from
+        appearing on screen. Effectively: the user has 1 keystroke +
+        Enter to commit a frame seek; any external change cancels
+        their edit.
         """
         if frame == self._frame:
             return
         self._frame = frame
-        if not self.hasFocus():
-            self._refresh_text()
+        self._refresh_text()
 
     def set_fps(self, fps: float) -> None:
         if abs(fps - self._fps) < 1e-6:
             return
         self._fps = max(0.1, fps)
-        if self._mode == "tc" and not self.hasFocus():
+        if self._mode == "tc":
             self._refresh_text()
 
     def set_display_mode(self, mode: DisplayMode) -> None:
         if mode == self._mode:
             return
         self._mode = mode
-        if not self.hasFocus():
-            self._refresh_text()
+        self._refresh_text()
 
     # ------------------------------------------------------------------ Internals
 
