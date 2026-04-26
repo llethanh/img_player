@@ -414,6 +414,15 @@ class ImgPlayerApp:
             return
         seq: SequenceInfo = result  # type: ignore[assignment]
         log.info("loaded sequence: %s (%d frames)", seq.display_pattern(), seq.frame_count)
+
+        # The scanner runs with probe=False to keep the open() snappy on
+        # Drive Stream / network paths — that means the SequenceInfo
+        # arrives without channel names, width or height. Read the
+        # header of the first frame now (one cheap OIIO call, no pixel
+        # decode) so the channel selector can be populated and the
+        # auto-detector has the resolution it needs.
+        seq = self._enrich_with_header(seq)
+
         self._window.update_sequence_info(seq)
         self._guess_source_colorspace(seq)
         self._controller.load_sequence(seq)
@@ -423,6 +432,35 @@ class ImgPlayerApp:
         # Remember this path for next launch and for the Recent menu.
         self._prefs.last_path = path
         self._prefs.push_recent(path)
+
+    def _enrich_with_header(self, seq: SequenceInfo) -> SequenceInfo:
+        """Fill in channel_names / width / height from the first frame's
+        header if the scanner skipped them. Returns the same seq when
+        already populated."""
+        if seq.channel_names and seq.width and seq.height:
+            return seq
+        if not seq.frames:
+            return seq
+        try:
+            from dataclasses import replace
+            from img_player.io.reader import read_header
+
+            spec = read_header(seq.frames[0].path)
+            channels = tuple(spec.channelnames or ())
+            log.info(
+                "header probe: %d channels (%s), %dx%d",
+                len(channels), ", ".join(channels[:8]) + ("…" if len(channels) > 8 else ""),
+                spec.width, spec.height,
+            )
+            return replace(
+                seq,
+                channel_names=channels or seq.channel_names,
+                width=spec.width or seq.width,
+                height=spec.height or seq.height,
+            )
+        except Exception:
+            log.exception("could not read header from %s", seq.frames[0].path)
+            return seq
 
     def _guess_source_colorspace(self, seq: SequenceInfo) -> None:
         """Auto-detect the source colorspace + the right view for it.

@@ -146,22 +146,33 @@ class TransportBar(QWidget):  # type: ignore[misc]
         self._channel_combo.currentIndexChanged.connect(self._on_channel_changed)
 
         # --- Zoom selector -------------------------------------------------
-        # Fit at the top of the list, then 200 / 150 / 100 / 50 %. The
-        # combo also reflects what the wheel did, even if the wheel
-        # picks an arbitrary value between presets — we just clear the
-        # current text in that case (the user can read the actual
-        # zoom in the viewport).
+        # The combo is *editable* solely so we can call setText() with
+        # arbitrary values like "127%" coming from the wheel — but the
+        # internal QLineEdit is read-only so the user can't type. They
+        # click the dropdown arrow to pick a preset; the wheel updates
+        # the displayed text to reflect the real zoom.
         self._zoom_combo = QComboBox()
         self._zoom_combo.setEditable(True)
         self._zoom_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        line_edit = self._zoom_combo.lineEdit()
+        if line_edit is not None:
+            line_edit.setReadOnly(True)
+            # Click in the line edit area opens the dropdown — same
+            # behaviour as Mac's display-resolution menu.
+            line_edit.setCursor(Qt.CursorShape.PointingHandCursor)
         for label in ("Fit", "200%", "150%", "100%", "50%"):
             self._zoom_combo.addItem(label)
         self._zoom_combo.setCurrentText("Fit")
         self._zoom_combo.setFixedWidth(78)
         self._zoom_combo.setFixedHeight(G.INPUT_H)
         self._zoom_combo.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
-        self._zoom_combo.setToolTip("Zoom level — wheel zooms in / out in the viewer")
-        self._zoom_combo.currentTextChanged.connect(self._on_zoom_text)
+        self._zoom_combo.setToolTip(
+            "Zoom level — pick a preset, or wheel-zoom in the viewer for arbitrary values"
+        )
+        # Listen to *activated* (= user pick from dropdown), not
+        # currentTextChanged (which fires every time we setText() from
+        # the wheel and would feedback-loop).
+        self._zoom_combo.activated.connect(self._on_zoom_picked)
 
         # --- Layout ---------------------------------------------------------
         layout = QHBoxLayout(self)
@@ -300,21 +311,22 @@ class TransportBar(QWidget):  # type: ignore[misc]
         name = self._channel_combo.itemText(index)
         self.channels_requested.emit([name])
 
-    def _on_zoom_text(self, text: str) -> None:
-        """Parse the zoom combo text and emit ``zoom_requested``.
+    def _on_zoom_picked(self, index: int) -> None:
+        """User picked a preset from the dropdown.
 
-        Accepts: ``"Fit"`` (case-insensitive) → ``None``;
-        ``"100%"`` / ``"100"`` → ``1.0``; arbitrary editable input
-        the user types is parsed as a percentage too.
+        Hooked to ``activated`` (not ``currentTextChanged``) so we
+        only fire on a real user interaction — calls to
+        ``set_zoom_display`` from the wheel back-channel don't
+        re-emit and ping-pong.
         """
-        stripped = text.strip().lower().rstrip("%")
-        if stripped in ("", "fit"):
+        text = self._zoom_combo.itemText(index).strip().lower().rstrip("%")
+        if text in ("", "fit"):
             self.zoom_requested.emit(None)
             return
         try:
-            percent = float(stripped)
+            percent = float(text)
         except ValueError:
-            return  # ignore unparseable input
+            return
         self.zoom_requested.emit(percent / 100.0)
 
     def set_zoom_display(self, factor: object) -> None:
