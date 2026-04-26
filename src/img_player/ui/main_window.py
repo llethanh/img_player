@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
+    QPushButton,
     QSizePolicy,
     QTabWidget,
     QVBoxLayout,
@@ -89,16 +90,17 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self._side_tabs = QTabWidget()
         self._side_tabs.addTab(self._color_panel, "Color")
         self._side_tabs.addTab(self._channel_panel, "Channels")
-        dock = QDockWidget("Panels", self)
-        dock.setWidget(self._side_tabs)
-        dock.setAllowedAreas(
+        # Stored on self so the burger button can toggle it.
+        self._side_dock = QDockWidget("Panels", self)
+        self._side_dock.setWidget(self._side_tabs)
+        self._side_dock.setAllowedAreas(
             Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
         )
-        dock.setFeatures(
+        self._side_dock.setFeatures(
             QDockWidget.DockWidgetFeature.DockWidgetMovable
             | QDockWidget.DockWidgetFeature.DockWidgetFloatable
         )
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._side_dock)
 
         self._build_menu()
         self._install_shortcuts()
@@ -208,6 +210,27 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self._show_tc_act.triggered.connect(self._on_toggle_timecode)
         view_menu.addAction(self._show_tc_act)
 
+        # --- Burger button → toggle the right-hand dock ------------------
+        # Lives in the menu bar's top-right corner so it's always
+        # reachable, even when the dock is hidden (otherwise users
+        # would have no way to bring it back).
+        burger = QPushButton("☰", self)
+        burger.setFixedSize(32, 22)
+        burger.setFlat(True)
+        burger.setCursor(Qt.CursorShape.PointingHandCursor)
+        burger.setToolTip("Show / hide the side panels")
+        # Inline style — the burger is a single-purpose button that
+        # doesn't need a global QSS rule, and the global QPushButton
+        # style adds borders / paddings we don't want here.
+        burger.setStyleSheet(
+            f"QPushButton {{ background: transparent; color: {H.TEXT_SECONDARY};"
+            f" border: none; font-size: {F.SIZE_MD}px; padding: 0; }}"
+            f"QPushButton:hover {{ color: {H.TEXT_PRIMARY}; }}"
+        )
+        burger.clicked.connect(self._toggle_side_dock)
+        menu_bar.setCornerWidget(burger, Qt.Corner.TopRightCorner)
+        self._burger_btn = burger
+
         # --- Help menu ----------------------------------------------------
         help_menu = menu_bar.addMenu("&Help")
         shortcuts_act = QAction("&Keyboard shortcuts…", self)
@@ -226,6 +249,15 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         # up with mismatched units between the two readouts.
         self._timeline.set_display_mode(mode)
         self._transport.set_display_mode(mode)
+
+    def _toggle_side_dock(self) -> None:
+        """Show / hide the right-hand Color/Channels dock.
+
+        Reclaims the whole window width for the viewer when the user
+        wants more screen real estate. The burger button stays in the
+        menu bar regardless, so the dock can always be brought back.
+        """
+        self._side_dock.setVisible(not self._side_dock.isVisible())
 
     def _show_shortcuts(self) -> None:
         from img_player.ui.shortcuts_dialog import ShortcutsDialog
@@ -337,6 +369,11 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         # asks the controller to seek there.
         self._transport.frame_seek_requested.connect(self.frame_requested.emit)
         self._timeline.frame_requested.connect(self.frame_requested.emit)
+        # Drag-scrub inside the image viewport routes through the same
+        # frame_requested → app._on_scrub_requested pipeline as the
+        # timeline scrubber. From the controller's point of view the
+        # two sources are indistinguishable.
+        self._viewer.gl.frame_requested.connect(self.frame_requested.emit)
 
     # --------------------------------------------------------------- Menu handlers
 

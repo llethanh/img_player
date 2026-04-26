@@ -14,8 +14,8 @@ from dataclasses import dataclass
 
 import numpy as np
 from OpenGL import GL
-from PySide6.QtCore import QSize
-from PySide6.QtGui import QSurfaceFormat
+from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtGui import QMouseEvent, QSurfaceFormat
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 
 from img_player.bench import recorder
@@ -35,9 +35,21 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
 
     Upload a frame with :meth:`set_frame` (shape HxWx3 or HxWx4, float32).
     Reconfigure the color pipeline with :meth:`set_color_params`.
+    Click + drag horizontally to scrub through the timeline; the
+    viewport emits :attr:`frame_requested` with the absolute target
+    frame, same contract as the timeline scrubber so the controller
+    handler is shared.
     """
 
     DEFAULT_BG = (0.05, 0.05, 0.05, 1.0)
+    # Click-and-drag sensitivity: 1 pixel of horizontal motion =
+    # 1 frame of timeline scrub. Feels right on HD/4K screens for the
+    # typical sequence sizes (90 - 1000 frames). Bigger sequences end
+    # up needing a couple of drags to traverse — that's intentional;
+    # the timeline scrubber is the absolute random-access path.
+    DRAG_PIXELS_PER_FRAME = 1
+
+    frame_requested = Signal(int)
 
     # ------------------------------------------------------------------ Lifecycle
 
@@ -70,6 +82,19 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
         # can use the much cheaper glTexSubImage2D upload.
         self._tex_alloc: tuple[int, int, int] = (0, 0, 0)  # (w, h, channels)
 
+        # Drag-to-scrub state. The viewport doesn't own the playback
+        # state — the controller does — so we just remember "where the
+        # drag started, and what frame we were on then" and emit
+        # absolute target frames from there.
+        self._current_frame = 0
+        self._drag_base_frame: int | None = None
+        self._drag_start_x: float = 0.0
+        # Hover cursor: the user gets a visual hint that the viewer is
+        # scrubbable. Switching to OpenHandCursor / ClosedHandCursor on
+        # press would also work — SizeHor is the more conventional
+        # "you can drag me horizontally" affordance.
+        self.setCursor(Qt.CursorShape.SizeHorCursor)
+
     def sizeHint(self) -> QSize:
         return QSize(960, 540)
 
@@ -99,6 +124,48 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
         if gamma is not None:
             self._color_params.gamma = max(0.01, gamma)
         self.update()
+
+    def set_current_frame(self, frame: int) -> None:
+        """Tell the viewport which frame is currently displayed.
+
+        Used as the base when the user starts a drag-scrub: the first
+        emitted target is ``base + dx / DRAG_PIXELS_PER_FRAME``.
+        """
+        self._current_frame = frame
+
+    # ------------------------------------------------------------------ Mouse — drag-to-scrub
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_base_frame = self._current_frame
+            self._drag_start_x = event.position().x()
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if self._drag_base_frame is None:
+            super().mouseMoveEvent(event)
+            return
+        delta_px = event.position().x() - self._drag_start_x
+        delta_frames = int(delta_px / self.DRAG_PIXELS_PER_FRAME)
+        target = self._drag_base_frame + delta_frames
+        if target != self._current_frame:
+            # We don't update _current_frame ourselves — the controller
+            # will push it back via set_current_frame when the seek
+            # actually lands. That avoids drift if a seek is rejected
+            # (e.g. clamped against in/out range).
+            self.frame_requested.emit(target)
+        event.accept()
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton and self._drag_base_frame is not None:
+            self._drag_base_frame = None
+            self.setCursor(Qt.CursorShape.SizeHorCursor)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
     # ------------------------------------------------------------------ QOpenGLWidget overrides
 

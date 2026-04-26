@@ -53,13 +53,15 @@ class C:
     # warm orange that picks up the rest of the accent palette so the
     # whole timeline reads as one family with the playhead.
     RANGE_BAR        = QColor("#E8901C")  # = ACCENT
-    # Cache bar — match the user reference: a translucent orange slot
-    # with an opaque orange border, and a slightly brighter opaque
-    # fill for the runs that are actually cached so they stand out
-    # against the half-tinted background.
-    CACHE_BAR_BORDER = QColor("#E8901C")     # ACCENT, opaque
-    CACHE_BAR        = QColor("#F5A830")     # ACCENT_BRIGHT, opaque
-    CACHE_BAR_BG     = QColor(0xE8, 0x90, 0x1C, 128)  # ACCENT @ 50% alpha
+    # Cache bar — second iteration based on user feedback:
+    #   * Slot background = pure deep black so empty / not-yet-cached
+    #     frames *clearly* read as missing.
+    #   * Each cached run = translucent orange fill + opaque orange
+    #     border. The semi-transparency makes the cached runs feel
+    #     like windows over the black slot rather than solid blocks.
+    CACHE_BAR_BG     = QColor("#141416")              # = BG_DEEP, opaque
+    CACHE_BAR        = QColor(0xE8, 0x90, 0x1C, 128)  # ACCENT @ 50% alpha
+    CACHE_BAR_BORDER = QColor("#E8901C")              # ACCENT, opaque
 
     # Timeline ticks
     TICK_MINOR = QColor("#3C3C40")

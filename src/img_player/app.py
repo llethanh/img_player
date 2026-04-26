@@ -197,6 +197,9 @@ class ImgPlayerApp:
 
     def _on_frame_changed(self, frame: int) -> None:
         self._window.timeline.set_current_frame(frame)
+        # The viewport needs to know the current frame so the next
+        # drag-scrub can use it as a base reference.
+        self._window.viewer.gl.set_current_frame(frame)
         arr = self._cache.get(frame)
         if arr is not None:
             self._display_array(arr)
