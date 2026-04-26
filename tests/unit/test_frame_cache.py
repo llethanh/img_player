@@ -130,6 +130,60 @@ def test_request_out_of_sequence_is_noop(cache_roomy: FrameCache, sequence_dir: 
     assert cache_roomy.stats().frames_cached == 0
 
 
+def test_set_channels_drops_in_flight_decode(
+    cache_roomy: FrameCache, sequence_dir: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: a channel switch issued mid-decode must not let the
+    in-flight worker pollute the freshly-cleared cache.
+
+    ``WorkerPool.clear()`` only drops queued tasks — workers already
+    running their ``read_frame()`` call cannot be cancelled. Without
+    the epoch fence in ``_decode_and_store``, those workers would
+    write a stale-channel array into the cache after the switch, and
+    the cache bar would show phantom rectangles the user cannot
+    account for.
+    """
+    import threading
+
+    seq = scan(sequence_dir)
+    cache_roomy.attach(seq)
+
+    # Block the decode until we say so. The worker thread will sit in
+    # read_frame() with the OLD channel selection captured; meanwhile
+    # the test thread switches channels and clears the cache.
+    decode_gate = threading.Event()
+    decode_started = threading.Event()
+    real_read_frame = None
+
+    def slow_read_frame(path: Path, *, channels: list[str] | None = None) -> np.ndarray:
+        decode_started.set()
+        # Block until the test releases us.
+        decode_gate.wait(timeout=5.0)
+        # Return a tiny dummy array; we just want to exercise the
+        # store path, not the real decoder.
+        return np.zeros((4, 4, 4), dtype=np.float16)
+
+    # Patch the symbol the cache module imported, not the io one.
+    import img_player.cache.frame_cache as fc_mod
+    monkeypatch.setattr(fc_mod, "read_frame", slow_read_frame)
+
+    cache_roomy.request(seq.first_frame)
+    assert decode_started.wait(timeout=2.0), "worker never picked up the request"
+
+    # Mid-decode: switch channels. This bumps the epoch and clears the
+    # (still-empty) frame dict.
+    cache_roomy.set_channels(["Z"])
+
+    # Release the worker. It will return its stale-channel array and
+    # try to store it — the epoch fence must drop it on the floor.
+    decode_gate.set()
+    assert cache_roomy.wait_idle(timeout=3.0)
+
+    assert cache_roomy.stats().frames_cached == 0, (
+        "stale-channel decode leaked into the cache after set_channels"
+    )
+
+
 def test_stats_counts_hits_and_misses(cache_roomy: FrameCache, sequence_dir: Path) -> None:
     seq = scan(sequence_dir)
     cache_roomy.attach(seq)
