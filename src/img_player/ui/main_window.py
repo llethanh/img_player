@@ -26,9 +26,9 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
-    QPushButton,
     QSizePolicy,
     QTabWidget,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -36,7 +36,7 @@ from PySide6.QtWidgets import (
 from img_player.color.ocio_manager import OCIOManager
 from img_player.ui.channel_panel import ChannelPanel
 from img_player.ui.color_panel import ColorPanel
-from img_player.ui.theme import F, H, S
+from img_player.ui.theme import F, G, H, S
 from img_player.ui.timeline import Timeline
 from img_player.ui.transport import TransportBar
 from img_player.ui.viewer_widget import ViewerWidget
@@ -214,18 +214,29 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         # Lives in the menu bar's top-right corner so it's always
         # reachable, even when the dock is hidden (otherwise users
         # would have no way to bring it back).
-        burger = QPushButton("☰", self)
-        burger.setFixedSize(32, 22)
-        burger.setFlat(True)
+        # NB: we use QToolButton rather than QPushButton on purpose —
+        # the global QSS sets `QPushButton { min-height: 28px }` which
+        # makes a button taller than the 26 px menubar and clips it
+        # off-screen. QToolButton has its own independent QSS scope.
+        burger = QToolButton(self)
+        burger.setText("☰")
+        burger.setAutoRaise(True)
+        burger.setFixedSize(36, 24)
         burger.setCursor(Qt.CursorShape.PointingHandCursor)
         burger.setToolTip("Show / hide the side panels")
-        # Inline style — the burger is a single-purpose button that
-        # doesn't need a global QSS rule, and the global QPushButton
-        # style adds borders / paddings we don't want here.
         burger.setStyleSheet(
-            f"QPushButton {{ background: transparent; color: {H.TEXT_SECONDARY};"
-            f" border: none; font-size: {F.SIZE_MD}px; padding: 0; }}"
-            f"QPushButton:hover {{ color: {H.TEXT_PRIMARY}; }}"
+            "QToolButton {"
+            f"  background: transparent;"
+            f"  color: {H.TEXT_SECONDARY};"
+            f"  border: none;"
+            f"  padding: 0;"
+            "  font-size: 16px;"   # bigger than UI default — the glyph needs presence
+            "}"
+            "QToolButton:hover {"
+            f"  color: {H.TEXT_PRIMARY};"
+            f"  background: {H.BG_HOVER};"
+            f"  border-radius: {G.RADIUS_SM}px;"
+            "}"
         )
         burger.clicked.connect(self._toggle_side_dock)
         menu_bar.setCornerWidget(burger, Qt.Corner.TopRightCorner)

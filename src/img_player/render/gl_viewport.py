@@ -42,12 +42,13 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
     """
 
     DEFAULT_BG = (0.05, 0.05, 0.05, 1.0)
-    # Click-and-drag sensitivity: 1 pixel of horizontal motion =
-    # 1 frame of timeline scrub. Feels right on HD/4K screens for the
-    # typical sequence sizes (90 - 1000 frames). Bigger sequences end
-    # up needing a couple of drags to traverse — that's intentional;
-    # the timeline scrubber is the absolute random-access path.
-    DRAG_PIXELS_PER_FRAME = 1
+    # Click-and-drag sensitivity: how many pixels of horizontal motion
+    # advance the playhead by one frame. The user found 1 px / frame
+    # too nervous on the AMD APU + standard mouse — 6 px / frame keeps
+    # the gesture coarse enough that a flick of the wrist doesn't
+    # overshoot, while still being responsive. The timeline scrubber
+    # remains the absolute random-access path for big jumps.
+    DRAG_PIXELS_PER_FRAME = 6
 
     frame_requested = Signal(int)
 
