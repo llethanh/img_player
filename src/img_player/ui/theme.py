@@ -86,6 +86,13 @@ class H:
     ACCENT_BRIGHT = "#F5A830"
     ACCENT_DIM    = "#7A4210"
 
+    # Media-specific — needed when we embed colours in QSS / rich text
+    # (status bar dots, etc.) instead of using QPainter directly.
+    PLAYHEAD  = "#F5AA28"
+    MARKER_IO = "#DC3C3C"
+    RANGE_BAR = "#56B46A"
+    CACHE_BAR = "#38B464"
+
 
 # ---------------------------------------------------------------------------
 # Typography

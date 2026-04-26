@@ -410,16 +410,33 @@ class ImgPlayerApp:
         self._window.timeline.set_cached_frames(self._cache.cached_frames())
 
     def _refresh_status(self) -> None:
-        if self._controller.sequence is None:
+        """Update the right-hand perf indicators every 500 ms.
+
+        The left-hand contextual message is owned by other handlers
+        (open / mark_in / mark_out / etc.) — we don't touch it here so
+        their messages aren't overwritten by the timer.
+        """
+        seq = self._controller.sequence
+        if seq is None:
             return
+        from img_player.ui.status_format import format_perf_html
+
         stats = self._cache.stats()
         state = self._controller.state
-        self._window.set_status(
-            f"frame {state.current_frame}  |  "
-            f"{'play' if state.is_playing else 'pause'}  |  "
-            f"cache {stats.frames_cached} frames, "
-            f"{stats.bytes_used / 1024**2:.0f}/{stats.bytes_budget / 1024**2:.0f} MB  |  "
-            f"hits {stats.hits} / misses {stats.misses} / dropped {state.dropped_frames}"
+        eff = self._controller.effective_fps()
+        cache_total = max(1, seq.frame_count)
+        cache_ratio = stats.bytes_used / max(1, stats.bytes_budget)
+        ram_gb = stats.bytes_used / 1024**3
+
+        self._window.status_right.setText(
+            format_perf_html(
+                cache_n=stats.frames_cached,
+                cache_total=cache_total,
+                cache_ratio=cache_ratio,
+                fps_effective=eff,
+                fps_target=state.fps,
+                ram_gb=ram_gb,
+            )
         )
 
 

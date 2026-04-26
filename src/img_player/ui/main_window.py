@@ -23,8 +23,10 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QDockWidget,
     QFileDialog,
+    QLabel,
     QMainWindow,
     QMessageBox,
+    QSizePolicy,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -33,6 +35,7 @@ from PySide6.QtWidgets import (
 from img_player.color.ocio_manager import OCIOManager
 from img_player.ui.channel_panel import ChannelPanel
 from img_player.ui.color_panel import ColorPanel
+from img_player.ui.theme import F, H
 from img_player.ui.timeline import Timeline
 from img_player.ui.transport import TransportBar
 from img_player.ui.viewer_widget import ViewerWidget
@@ -101,8 +104,37 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self._build_menu()
         self._install_shortcuts()
         self._wire_internal()
+        self._build_status_bar()
 
-        self.statusBar().showMessage("Ready — drop a sequence (folder or file) to start.")
+    # --------------------------------------------------------------- Status bar
+
+    def _build_status_bar(self) -> None:
+        """Two-block status bar: contextual message left, perf indicators right.
+
+        Replaces the legacy single ``showMessage()`` line so we can render
+        coloured dots (rich text) on the right while keeping a plain text
+        message on the left. ``set_status()`` keeps its old contract for
+        existing callers — it just routes to the left label now.
+        """
+        bar = self.statusBar()
+
+        self.status_left = QLabel("Ready — drop a sequence (folder or file) to start.")
+        self.status_left.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+        )
+        self.status_left.setStyleSheet(
+            f"color: {H.TEXT_SECONDARY}; font-size: {F.SIZE_XS}px;"
+        )
+
+        self.status_right = QLabel()
+        self.status_right.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        self.status_right.setTextFormat(Qt.TextFormat.RichText)
+        self.status_right.setFont(F.mono(F.SIZE_XS))
+
+        bar.addWidget(self.status_left, 1)        # stretch fills the gap
+        bar.addPermanentWidget(self.status_right) # right-anchored
 
     # --------------------------------------------------------------- Accessors
 
@@ -135,7 +167,12 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self._channel_panel.set_channels(sequence.channel_names)
 
     def set_status(self, message: str) -> None:
-        self.statusBar().showMessage(message)
+        """Set the contextual message on the *left* side of the status bar.
+
+        Kept as a method for backwards compat with all the existing call
+        sites (``Loaded …``, ``In point set to frame …``, etc.).
+        """
+        self.status_left.setText(message)
 
     # --------------------------------------------------------------- Menu / shortcuts
 
