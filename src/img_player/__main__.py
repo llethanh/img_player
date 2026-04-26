@@ -51,6 +51,41 @@ def main(argv: list[str] | None = None) -> int:
         help="Number of decode workers (default: 6). Bump for heavy-disk loads.",
     )
     parser.add_argument(
+        "--oiio-threads",
+        type=int,
+        default=None,
+        help="Threads for OIIO's internal pool (default: os.cpu_count()).",
+    )
+    parser.add_argument(
+        "--benchmark",
+        action="store_true",
+        help="Run a timed playback of PATH and write a JSON report. Quits when done.",
+    )
+    parser.add_argument(
+        "--passes",
+        type=int,
+        default=3,
+        help="Number of full sequence loops to time during --benchmark (default: 3).",
+    )
+    parser.add_argument(
+        "--warmup-frames",
+        type=int,
+        default=30,
+        help="Frames to prefetch before the bench timer starts (default: 30).",
+    )
+    parser.add_argument(
+        "--target-fps",
+        type=float,
+        default=24.0,
+        help="Playback rate during --benchmark (default: 24.0).",
+    )
+    parser.add_argument(
+        "--bench-output",
+        type=Path,
+        default=None,
+        help="Path to write the JSON report (default: perf/bench_<timestamp>.json).",
+    )
+    parser.add_argument(
         "path",
         type=Path,
         nargs="?",
@@ -64,16 +99,48 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("--scan requires a PATH.")
         return _cmd_scan(args.path, list_all=args.all)
 
-    # Default: launch the GUI (empty if no path, opening the given
-    # sequence otherwise). Users can still drag & drop once the window
-    # is open.
-    from img_player.app import DEFAULT_CACHE_BUDGET_BYTES, DEFAULT_NUM_WORKERS, run_gui
+    from img_player.app import (
+        DEFAULT_CACHE_BUDGET_BYTES,
+        DEFAULT_NUM_WORKERS,
+        DEFAULT_OIIO_THREADS,
+        run_gui,
+    )
 
     budget = (
         int(args.cache_gb * 1024**3) if args.cache_gb is not None else DEFAULT_CACHE_BUDGET_BYTES
     )
     workers = args.workers if args.workers is not None else DEFAULT_NUM_WORKERS
-    return run_gui(initial_path=args.path, cache_budget_bytes=budget, num_workers=workers)
+    # If the user didn't pass --oiio-threads, fall back to the project
+    # default (currently 1, see app.DEFAULT_OIIO_THREADS for the why).
+    oiio_threads = (
+        args.oiio_threads if args.oiio_threads is not None else DEFAULT_OIIO_THREADS
+    )
+
+    if args.benchmark:
+        if args.path is None:
+            parser.error("--benchmark requires a PATH.")
+        from img_player.bench.runner import run_benchmark
+
+        return run_benchmark(
+            args.path,
+            passes=args.passes,
+            warmup_frames=args.warmup_frames,
+            target_fps=args.target_fps,
+            output=args.bench_output,
+            cache_budget_bytes=budget,
+            num_workers=workers,
+            oiio_threads=oiio_threads,
+        )
+
+    # Default: launch the GUI (empty if no path, opening the given
+    # sequence otherwise). Users can still drag & drop once the window
+    # is open.
+    return run_gui(
+        initial_path=args.path,
+        cache_budget_bytes=budget,
+        num_workers=workers,
+        oiio_threads=oiio_threads,
+    )
 
 
 def _cmd_scan(path: Path, *, list_all: bool) -> int:

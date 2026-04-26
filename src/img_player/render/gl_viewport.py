@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ctypes
 import logging
+import time
 from dataclasses import dataclass
 
 import numpy as np
@@ -17,6 +18,7 @@ from PySide6.QtCore import QSize
 from PySide6.QtGui import QSurfaceFormat
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 
+from img_player.bench import recorder
 from img_player.color.gpu_processor import ShaderBundle, Texture1D, Texture3D
 
 log = logging.getLogger(__name__)
@@ -115,6 +117,13 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
         GL.glViewport(0, 0, max(1, w), max(1, h))
 
     def paintGL(self) -> None:
+        # Bench hook: time the whole paintGL body. Cheap (one branch, one
+        # time.monotonic) when disabled.
+        bench_enabled = recorder.is_enabled()
+        paint_t0 = time.monotonic() if bench_enabled else 0.0
+        upload_us = 0.0
+        displayed_frame = -1  # filled in below if we actually upload this paint
+
         GL.glClear(GL.GL_COLOR_BUFFER_BIT)
 
         # Apply deferred uploads inside a valid GL context.
@@ -122,11 +131,26 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
             self._apply_bundle(self._pending_bundle)
             self._pending_bundle = None
 
+        had_upload = False
         if self._pending_frame is not None:
-            self._upload_image(self._pending_frame)
+            if bench_enabled:
+                up_t0 = time.monotonic()
+                self._upload_image(self._pending_frame)
+                upload_us = (time.monotonic() - up_t0) * 1e6
+            else:
+                self._upload_image(self._pending_frame)
             self._pending_frame = None
+            had_upload = True
 
         if self._program == 0 or self._image_size == (0, 0):
+            if bench_enabled and had_upload:
+                width, height = self._image_size
+                recorder.record_paint(
+                    displayed_frame=-1,
+                    upload_us=upload_us,
+                    paint_us=(time.monotonic() - paint_t0) * 1e6,
+                    width=width, height=height, channels=self._image_channels,
+                )
             return
 
         GL.glUseProgram(self._program)
@@ -155,6 +179,15 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
 
         GL.glBindVertexArray(self._vao)
         GL.glDrawArrays(GL.GL_TRIANGLE_STRIP, 0, 4)
+
+        if bench_enabled:
+            width, height = self._image_size
+            recorder.record_paint(
+                displayed_frame=-1,
+                upload_us=upload_us,
+                paint_us=(time.monotonic() - paint_t0) * 1e6,
+                width=width, height=height, channels=self._image_channels,
+            )
 
     # ------------------------------------------------------------------ Quad / texture helpers
 
@@ -190,6 +223,12 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
         GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_T, GL.GL_CLAMP_TO_EDGE)
 
     def _upload_image(self, pixels: np.ndarray) -> None:
+        # NOTE on PBO async upload (tested 2026-04-26, see perf/PBO_NOTES.md):
+        # On a unified-memory iGPU (AMD Radeon 780M / Ryzen APU) the PBO
+        # ping-pong path measured *worse* than the direct glTexSubImage2D
+        # below — there's no PCIe DMA to pipeline, so the extra
+        # memcpy + glMapBufferRange overhead just stacks on top. Sticking
+        # with the direct path until we benchmark on a discrete GPU.
         height, width, channels = pixels.shape
         self._image_size = (width, height)
         self._image_channels = channels
@@ -219,8 +258,7 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
             self._tex_alloc = (width, height, channels)
         else:
             # Same-sized frame: reuse the texture storage and only push the
-            # pixels. This is the fast path during playback — no GPU-side
-            # reallocation, just a DMA transfer into existing memory.
+            # pixels.
             GL.glTexSubImage2D(
                 GL.GL_TEXTURE_2D,
                 0,

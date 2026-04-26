@@ -13,6 +13,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 from img_player.cache.frame_cache import FrameCache
 from img_player.color.gpu_processor import build_shader_bundle
 from img_player.color.ocio_manager import OCIOManager
+from img_player.io.reader import configure_oiio
 from img_player.player.controller import PlayerController
 from img_player.player.state import PlaybackState
 from img_player.preferences import Preferences
@@ -25,6 +26,13 @@ log = logging.getLogger(__name__)
 # Reasonable defaults for an HD VFX perso workstation — tune later via settings.
 DEFAULT_CACHE_BUDGET_BYTES = 8 * 1024**3  # 8 GB
 DEFAULT_NUM_WORKERS = 6
+# Why 1 instead of os.cpu_count():
+# On APUs with shared CPU/GPU memory (tested on AMD Radeon 780M with 16
+# logical cores), letting OIIO spawn os.cpu_count() threads *per decode*
+# saturates DRAM bandwidth — which also slows down the glTexSubImage2D
+# memcpy on the Qt main thread. Empirically threads=1 with 6 workers
+# gives +47% playback fps vs threads=16. See perf/BASELINE.md.
+DEFAULT_OIIO_THREADS: int | None = 1
 
 
 class _ScanRunner(QObject):  # type: ignore[misc]
@@ -57,10 +65,15 @@ class ImgPlayerApp:
         *,
         cache_budget_bytes: int = DEFAULT_CACHE_BUDGET_BYTES,
         num_workers: int = DEFAULT_NUM_WORKERS,
+        oiio_threads: int | None = DEFAULT_OIIO_THREADS,
     ) -> None:
         self._qapp = QApplication.instance() or QApplication(argv)
         self._qapp.setOrganizationName("img_player")
         self._qapp.setApplicationName("img_player")
+
+        # Configure OIIO's global thread pool *before* we spin up the cache —
+        # any in-flight decode would otherwise see the default value.
+        configure_oiio(oiio_threads)
 
         self._prefs = Preferences()
 
@@ -447,6 +460,7 @@ def run_gui(
     *,
     cache_budget_bytes: int = DEFAULT_CACHE_BUDGET_BYTES,
     num_workers: int = DEFAULT_NUM_WORKERS,
+    oiio_threads: int | None = DEFAULT_OIIO_THREADS,
 ) -> int:
     """Public entry point used by ``python -m img_player``."""
     logging.basicConfig(
@@ -456,5 +470,6 @@ def run_gui(
         argv or sys.argv,
         cache_budget_bytes=cache_budget_bytes,
         num_workers=num_workers,
+        oiio_threads=oiio_threads,
     )
     return app.run(initial_path=initial_path)
