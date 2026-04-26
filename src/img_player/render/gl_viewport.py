@@ -223,6 +223,12 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
         GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_T, GL.GL_CLAMP_TO_EDGE)
 
     def _upload_image(self, pixels: np.ndarray) -> None:
+        # NOTE on PBO async upload (tested 2026-04-26, see perf/PBO_NOTES.md):
+        # On a unified-memory iGPU (AMD Radeon 780M / Ryzen APU) the PBO
+        # ping-pong path measured *worse* than the direct glTexSubImage2D
+        # below — there's no PCIe DMA to pipeline, so the extra
+        # memcpy + glMapBufferRange overhead just stacks on top. Sticking
+        # with the direct path until we benchmark on a discrete GPU.
         height, width, channels = pixels.shape
         self._image_size = (width, height)
         self._image_channels = channels
@@ -252,8 +258,7 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
             self._tex_alloc = (width, height, channels)
         else:
             # Same-sized frame: reuse the texture storage and only push the
-            # pixels. This is the fast path during playback — no GPU-side
-            # reallocation, just a DMA transfer into existing memory.
+            # pixels.
             GL.glTexSubImage2D(
                 GL.GL_TEXTURE_2D,
                 0,

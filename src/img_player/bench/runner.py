@@ -27,6 +27,7 @@ from PySide6.QtCore import QTimer
 from img_player.app import (
     DEFAULT_CACHE_BUDGET_BYTES,
     DEFAULT_NUM_WORKERS,
+    DEFAULT_OIIO_THREADS,
     ImgPlayerApp,
 )
 from img_player.bench import recorder
@@ -190,6 +191,7 @@ def run_benchmark(
     output: Path | None = None,
     cache_budget_bytes: int = DEFAULT_CACHE_BUDGET_BYTES,
     num_workers: int = DEFAULT_NUM_WORKERS,
+    oiio_threads: int | None = DEFAULT_OIIO_THREADS,
 ) -> int:
     """Bootstraps the app, plays N passes, and writes a JSON report."""
     logging.basicConfig(
@@ -202,6 +204,7 @@ def run_benchmark(
         sys.argv,
         cache_budget_bytes=cache_budget_bytes,
         num_workers=num_workers,
+        oiio_threads=oiio_threads,
     )
     session = BenchmarkSession(
         app,

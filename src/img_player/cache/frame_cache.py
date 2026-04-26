@@ -19,6 +19,11 @@ log = logging.getLogger(__name__)
 
 _DEFAULT_BUDGET_BYTES = 8 * 1024**3  # 8 GB
 _DEFAULT_NUM_WORKERS = 4
+# Eviction multiplier for frames that lie *behind* the playhead in the
+# current playback direction. They cost more because we'll only revisit
+# them after a full loop wrap — so we throw them out first to free space
+# for what's coming up next.
+_BEHIND_PLAYHEAD_PENALTY = 3.0
 
 
 @dataclass(frozen=True)
@@ -56,6 +61,9 @@ class FrameCache:
         self._sequence: SequenceInfo | None = None
         self._paths_by_frame: dict[int, Path] = {}
         self._current_frame = 0
+        # +1 = forward play, -1 = reverse. Used to skew eviction so frames
+        # ahead of the playhead are preserved over frames already behind.
+        self._direction = 1
         self._pool = WorkerPool(num_workers=num_workers, name="decode")
 
         # Counters (guarded by _lock)
@@ -109,6 +117,12 @@ class FrameCache:
         """Inform the cache of the playhead position (used for eviction scoring)."""
         with self._lock:
             self._current_frame = frame
+
+    def set_direction(self, direction: int) -> None:
+        """+1 forward / -1 reverse. Tells eviction which side of the playhead
+        is "future" (cheap to evict on the past side)."""
+        with self._lock:
+            self._direction = 1 if direction >= 0 else -1
 
     def get(self, frame: int) -> np.ndarray | None:
         """Non-blocking fetch. Returns None if the frame is not cached."""
@@ -201,15 +215,31 @@ class FrameCache:
             self._evict_if_over_budget()
 
     def _evict_if_over_budget(self) -> None:
-        """Must be called with _lock held."""
+        """Must be called with _lock held.
+
+        Scoring rule: distance from the playhead, with frames *behind* the
+        playhead in the current play direction multiplied by
+        ``_BEHIND_PLAYHEAD_PENALTY``. The frame with the highest score is
+        evicted first. This keeps the prefetch window in front of the head
+        intact even when budget is tight, and prevents the case where a
+        cache miss pushes us to re-decode a frame we just played.
+        """
         if self._bytes_used <= self._budget:
             return
-        by_distance = sorted(
-            self._frames.keys(),
-            key=lambda f: abs(f - self._current_frame),
-            reverse=True,
-        )
-        for f in by_distance:
+        cur = self._current_frame
+        d = self._direction
+        penalty = _BEHIND_PLAYHEAD_PENALTY
+
+        def score(f: int) -> float:
+            # Signed delta along the play direction: positive = ahead, negative = behind.
+            delta = (f - cur) * d
+            if delta < 0:
+                return -delta * penalty
+            return float(delta)
+
+        # Highest score = furthest in eviction priority order.
+        by_priority = sorted(self._frames.keys(), key=score, reverse=True)
+        for f in by_priority:
             if self._bytes_used <= self._budget:
                 break
             arr = self._frames.pop(f)

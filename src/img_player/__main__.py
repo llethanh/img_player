@@ -51,6 +51,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Number of decode workers (default: 6). Bump for heavy-disk loads.",
     )
     parser.add_argument(
+        "--oiio-threads",
+        type=int,
+        default=None,
+        help="Threads for OIIO's internal pool (default: os.cpu_count()).",
+    )
+    parser.add_argument(
         "--benchmark",
         action="store_true",
         help="Run a timed playback of PATH and write a JSON report. Quits when done.",
@@ -93,12 +99,22 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("--scan requires a PATH.")
         return _cmd_scan(args.path, list_all=args.all)
 
-    from img_player.app import DEFAULT_CACHE_BUDGET_BYTES, DEFAULT_NUM_WORKERS, run_gui
+    from img_player.app import (
+        DEFAULT_CACHE_BUDGET_BYTES,
+        DEFAULT_NUM_WORKERS,
+        DEFAULT_OIIO_THREADS,
+        run_gui,
+    )
 
     budget = (
         int(args.cache_gb * 1024**3) if args.cache_gb is not None else DEFAULT_CACHE_BUDGET_BYTES
     )
     workers = args.workers if args.workers is not None else DEFAULT_NUM_WORKERS
+    # If the user didn't pass --oiio-threads, fall back to the project
+    # default (currently 1, see app.DEFAULT_OIIO_THREADS for the why).
+    oiio_threads = (
+        args.oiio_threads if args.oiio_threads is not None else DEFAULT_OIIO_THREADS
+    )
 
     if args.benchmark:
         if args.path is None:
@@ -113,12 +129,18 @@ def main(argv: list[str] | None = None) -> int:
             output=args.bench_output,
             cache_budget_bytes=budget,
             num_workers=workers,
+            oiio_threads=oiio_threads,
         )
 
     # Default: launch the GUI (empty if no path, opening the given
     # sequence otherwise). Users can still drag & drop once the window
     # is open.
-    return run_gui(initial_path=args.path, cache_budget_bytes=budget, num_workers=workers)
+    return run_gui(
+        initial_path=args.path,
+        cache_budget_bytes=budget,
+        num_workers=workers,
+        oiio_threads=oiio_threads,
+    )
 
 
 def _cmd_scan(path: Path, *, list_all: bool) -> int:

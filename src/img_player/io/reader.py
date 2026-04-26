@@ -2,15 +2,55 @@
 
 from __future__ import annotations
 
+import logging
+import os
 from collections.abc import Sequence
 from pathlib import Path
 
 import numpy as np
 import OpenImageIO as oiio
 
+log = logging.getLogger(__name__)
+
 
 class FrameReadError(RuntimeError):
     """Raised when a frame cannot be decoded (missing file, bad format, ...)."""
+
+
+def configure_oiio(threads: int | None = None) -> int:
+    """Set the OpenImageIO global thread pool size.
+
+    OIIO uses a *single* shared thread pool across the whole process. Our
+    own decode worker pool runs ``N`` Python workers that each call into
+    OIIO in parallel — OIIO's pool is what lets each individual decode
+    parallelise (e.g. across EXR scanlines or channels).
+
+    Sizing rule of thumb:
+    * ``None`` (default) → use ``os.cpu_count()``. OIIO is free to use
+      every logical core, but it shares them across all in-flight decodes
+      so we don't actually create N×workers threads.
+    * Pass an explicit number to constrain it (useful when sharing the
+      machine with other heavy work).
+
+    Returns the value that was actually applied so the caller can log it.
+    """
+    desired = threads if threads is not None else (os.cpu_count() or 1)
+    desired = max(1, int(desired))
+    try:
+        oiio.attribute("threads", desired)
+    except Exception:
+        log.exception("OIIO: failed to set 'threads' attribute to %d", desired)
+        return -1
+
+    # Best-effort: also nudge the EXR plugin specifically. Older OIIO
+    # builds may not expose this attribute; ignore failures.
+    try:
+        oiio.attribute("exr_threads", desired)
+    except Exception:
+        pass
+
+    log.info("OIIO threads attribute set to %d (was reading defaults)", desired)
+    return desired
 
 
 def read_frame(

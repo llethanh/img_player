@@ -7,6 +7,7 @@ widgets subscribe to ``frame_changed`` (for rendering) and ``state_changed``
 
 from __future__ import annotations
 
+import gc
 import logging
 from dataclasses import replace
 from typing import Any
@@ -75,6 +76,16 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
     def play(self) -> None:
         if self._sequence is None or self._state.is_playing:
             return
+        # GC tweak: collect *now* (so we start clean), freeze long-lived
+        # objects (Qt widgets, OCIO config, cached frames) so the GC stops
+        # walking them, then disable the cyclic collector entirely while
+        # playing. This kills the p99 paint spikes that show up as 200 ms
+        # frame stalls in the baseline. We re-enable on pause() — the GC
+        # then runs once and catches anything that piled up.
+        gc.collect()
+        gc.freeze()
+        gc.disable()
+
         self._update(is_playing=True)
         self._timer.start(self._interval_ms())
 
@@ -82,6 +93,13 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
         if not self._state.is_playing:
             return
         self._timer.stop()
+        # Restore GC. unfreeze() moves the frozen set back to the regular
+        # generations so they can eventually be collected; enable() turns
+        # the cyclic collector back on; collect() does one immediate pass
+        # to catch the playback-time garbage we deferred.
+        gc.unfreeze()
+        gc.enable()
+        gc.collect()
         self._update(is_playing=False)
 
     def stop(self) -> None:
@@ -116,7 +134,9 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
 
     def set_direction(self, direction: int) -> None:
         """Set playback direction: +1 forward, -1 backward."""
-        self._update(direction=1 if direction >= 0 else -1)
+        d = 1 if direction >= 0 else -1
+        self._update(direction=d)
+        self._cache.set_direction(d)
 
     def set_in_out(self, in_frame: int | None, out_frame: int | None) -> None:
         self._update(in_frame=in_frame, out_frame=out_frame)
@@ -143,6 +163,7 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
         # the UI pick the nearest available frame to display.
         self._update(current_frame=next_frame, direction=next_dir)
         self._cache.set_current_frame(next_frame)
+        self._cache.set_direction(next_dir)
         self._prefetch_from(next_frame, next_dir)
         cache_hit = self._cache.contains(next_frame)
         if not cache_hit:

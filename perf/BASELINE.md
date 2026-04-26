@@ -120,6 +120,97 @@ ligne `Tick / effective fps` vs cette baseline.
 **Cible Phase 1** : sur cette même séquence et matos, atteindre **24 fps
 effectifs avec ≥ 95% cache hit rate** une fois le cache chaud.
 
+## Résultats des optimisations
+
+### Optim #1 — PBO async upload : ❌ contre-productif
+
+Voir [`PBO_NOTES.md`](PBO_NOTES.md). Sur l'iGPU à mémoire unifiée le PBO
+ajoute des copies sans gain DMA. **Reverté.**
+
+### Optim #2 — OIIO `threads=1` : ✅ +47% effective fps
+
+Insight inattendu : le bottleneck "upload" était en fait de la
+**contention mémoire**. Avec 16 threads OIIO concurrents qui décompressent
+des EXR (memory-bound), la bande passante DRAM est saturée — le
+`glTexSubImage2D` du main thread (qui est un memcpy DRAM→DRAM sur iGPU)
+en pâtit aussi.
+
+| Métrique         | Baseline      | OIIO=16        | **OIIO=1**       | Δ baseline |
+|------------------|---------------|----------------|------------------|------------|
+| effective fps    | 12.36         | 12.76          | **18.16**        | **+47 %**  |
+| upload mean      | 50 368 µs     | 49 086 µs      | **29 701 µs**    | **-41 %**  |
+| paint mean       | 53 174 µs     | 50 523 µs      | **30 960 µs**    | **-42 %**  |
+| paint p99        | 219 000 µs    | 189 520 µs     | **62 000 µs**    | **-72 %**  |
+| decode mean      | 1 866 ms      | 1 979 ms       | **1 701 ms**     | **-9 %**   |
+| cache hit rate   | 71.5 %        | 72.6 %         | 62.2 %           | -9 pts     |
+
+Cache hit rate baisse parce qu'on consomme les frames plus vite (18 fps vs
+12) sans que le decode suive — le bottleneck restant est le decode. Mais
+on a clairement gagné sur le main-thread / upload.
+
+**Default changé** dans `app.py` : `DEFAULT_OIIO_THREADS = 1`. Override via
+`--oiio-threads N` si le hardware change (workstation discrete, NUMA…).
+
+### Optim #3 — `gc.freeze()` + `gc.disable()` durant playback : ✅ -77% paint p99
+
+Le GC cyclique de Python lance des passes opportunistes qui peuvent durer
+des dizaines de millisecondes — visibles comme des spikes dans
+`paint_us p99`. Pendant le playback on n'alloue pas (ou très peu) d'objets
+cycliques nouveaux ; pauser le GC est sûr et tue les spikes :
+
+| Métrique         | OIIO=1 seul  | **+ GC tweak**  | Δ          |
+|------------------|--------------|------------------|------------|
+| effective fps    | 18.16        | 17.62            | -3 % (bruit) |
+| paint p99        | 62 000 µs    | **50 900 µs**    | **-18 %**  |
+| paint max        | 109 000 µs   | **63 000 µs**    | **-42 %**  |
+| inter-tick p99   | 109 ms       | **99 ms**        | -9 %       |
+
+Code : `gc.collect() + gc.freeze() + gc.disable()` à `play()`,
+`gc.unfreeze() + gc.enable() + gc.collect()` à `pause()`.
+
+### Optim #4 — Asymmetric eviction : ✅ architectural (pas mesurable ici)
+
+Sur cette séquence (5.6 GiB total, budget par défaut 8 GiB), il n'y a
+**jamais d'eviction** — le cache tient tout. L'optim est néanmoins en place
+pour les cas où le budget est contraint :
+
+```python
+# In _evict_if_over_budget:
+delta = (f - current) * direction
+if delta < 0:
+    return -delta * 3.0   # past frames cost 3× to keep
+return float(delta)
+```
+
+Avec `direction=+1`, une frame une position derrière la playhead a un
+score de 3 (priorité haute pour eviction), une frame une position devant
+a un score de 1 (à protéger). Vérification empirique impossible sur cette
+séquence + budget — sera mesurée dès qu'on bench une séquence > 8 GiB.
+
+## Bilan combiné Phase 1
+
+| Métrique          | Baseline      | **Phase 1 finale**  | Δ          |
+|-------------------|---------------|----------------------|------------|
+| effective fps     | 12.36         | **15-19** (variance) | **+30-50 %** |
+| paint mean (µs)   | 53 174        | ~31-38 K             | **-30-40 %** |
+| paint p99 (µs)    | 219 000       | ~50-92 K             | **-58-77 %** |
+| upload mean (µs)  | 50 368        | ~30-37 K             | **-26-40 %** |
+| inter-tick p99    | 287 ms        | ~99-162 ms           | **-44-66 %** |
+
+Le **bottleneck restant est le decode** : 1700-2000 ms par frame 4K
+multichannel EXR. À 6 workers en parallèle on tient 3-4 fps de decode
+soutenu, donc le cache est toujours en retard pendant le warmup et le
+hit rate stationnaire dépend de combien la séquence tient en RAM.
+
+Pour pousser au-delà, il faudrait soit :
+* **Cache disque proxy** (transcode ProRes / DPX vers SSD au premier
+  loadcache, replay depuis le proxy).
+* **Pre-warm UI** : un indicateur clair "cache full → ready to play"
+  qui force l'utilisateur à attendre le warmup. Plus une UX qu'une
+  optim, mais résout le problème perçu.
+* **Un IPGraph C++** (rewrite partiel à la OpenRV) — c'est la frontière
+  que Python ne peut pas franchir sur ce hardware.
+
 ## Notes méthodologiques
 
 * Le bench utilise `LoopMode.LOOP` et compte une "passe" comme un wrap
