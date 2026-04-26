@@ -23,6 +23,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QDockWidget,
     QFileDialog,
+    QHBoxLayout,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -224,22 +225,37 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         burger.setFixedSize(36, 24)
         burger.setCursor(Qt.CursorShape.PointingHandCursor)
         burger.setToolTip("Show / hide the side panels")
+        # Orange glyph — picks up the rest of the accent palette so
+        # the burger reads as part of the same family as the playhead
+        # and the play button. ACCENT_BRIGHT on hover for a small
+        # glow-up; the hover background uses BG_HOVER so the rounded
+        # patch is visible against the menubar.
         burger.setStyleSheet(
             "QToolButton {"
             f"  background: transparent;"
-            f"  color: {H.TEXT_SECONDARY};"
+            f"  color: {H.ACCENT};"
             f"  border: none;"
             f"  padding: 0;"
-            "  font-size: 16px;"   # bigger than UI default — the glyph needs presence
+            "  font-size: 16px;"
             "}"
             "QToolButton:hover {"
-            f"  color: {H.TEXT_PRIMARY};"
+            f"  color: {H.ACCENT_BRIGHT};"
             f"  background: {H.BG_HOVER};"
             f"  border-radius: {G.RADIUS_SM}px;"
             "}"
         )
         burger.clicked.connect(self._toggle_side_dock)
-        menu_bar.setCornerWidget(burger, Qt.Corner.TopRightCorner)
+
+        # The burger is wrapped in a transparent widget so we can give
+        # it a tiny right margin — `setCornerWidget` would otherwise
+        # paste it flush against the window edge.
+        burger_wrapper = QWidget(self)
+        burger_wrapper.setStyleSheet("background: transparent;")
+        wrap_layout = QHBoxLayout(burger_wrapper)
+        wrap_layout.setContentsMargins(0, 0, S.MD, 0)  # right padding
+        wrap_layout.setSpacing(0)
+        wrap_layout.addWidget(burger)
+        menu_bar.setCornerWidget(burger_wrapper, Qt.Corner.TopRightCorner)
         self._burger_btn = burger
 
         # --- Help menu ----------------------------------------------------
