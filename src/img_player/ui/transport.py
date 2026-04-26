@@ -169,7 +169,10 @@ class TransportBar(QWidget):  # type: ignore[misc]
             # to combo.showPopup(). See _ZoomLineEditClickFilter below.
             self._zoom_click_filter = _ZoomLineEditClickFilter(self._zoom_combo)
             line_edit.installEventFilter(self._zoom_click_filter)
-        for label in ("Fit", "200%", "150%", "100%", "50%"):
+        # Presets ordered top → bottom from largest zoom to smallest;
+        # Fit pinned at the very top so the user always finds it
+        # without scrolling.
+        for label in ("Fit", "200%", "150%", "100%", "50%", "25%", "15%", "10%"):
             self._zoom_combo.addItem(label)
         self._zoom_combo.setCurrentText("Fit")
         self._zoom_combo.setFixedWidth(78)
