@@ -303,6 +303,22 @@ class TransportBar(QWidget):  # type: ignore[misc]
         the FrameDisplay so it stays in sync with the timeline."""
         self._frame_display.set_display_mode(mode)
 
+    def set_frame_immediate(self, frame: int) -> None:
+        """Update the frame readout *now*, ahead of the controller.
+
+        ``update_from_state`` only fires after the controller's seek
+        completes — and the seek itself is debounced ~20 ms by
+        ``app.py`` to coalesce rapid scrubs. That makes the readout
+        feel laggy: the timeline cursor jumps under the mouse but the
+        number above it limps behind. This entry point lets the scrub
+        handler push the *requested* frame straight into the display
+        for a snappy feel; the eventual ``state_changed`` will refresh
+        it again with whatever frame the controller actually settled
+        on (typically the same — at most a one-frame correction when
+        the request was clamped to the in/out range).
+        """
+        self._frame_display.set_frame(frame)
+
     def set_available_channels(self, channels: tuple[str, ...]) -> None:
         """Replace the channel-selector content with grouped channels.
 
