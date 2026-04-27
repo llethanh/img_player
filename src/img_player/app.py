@@ -201,6 +201,11 @@ class ImgPlayerApp:
             # already the viewport so just show()ing is enough.
             if toolbar_mode == ToolbarMode.DOCK:
                 self._window.annotation_dock.show()
+        # Sync the transport's ✏ toggle button with the persisted
+        # visibility so the visual matches reality at boot.
+        self._window.transport.set_annotation_toggle_active(
+            self._prefs.annotation_toolbar_visible
+        )
 
         # Path of the sidecar for the currently-open sequence — set
         # by ``_open_path`` when a sequence is loaded, used by
@@ -500,6 +505,25 @@ class ImgPlayerApp:
             self._on_toolbar_floating_pos_changed
         )
 
+        # Store -> timeline + transport (slice 4): when the set of
+        # annotated frames changes, the timeline repaints its markers
+        # and the transport's prev/next-annotation buttons re-enable
+        # themselves accordingly.
+        self._annotation_store.annotated_frames_changed.connect(
+            self._on_annotated_frames_changed
+        )
+
+        # Transport annotation buttons -> store / toolbar.
+        self._window.transport.annotation_toggle_clicked.connect(
+            self._toggle_toolbar_visible
+        )
+        self._window.transport.annotation_prev_clicked.connect(
+            self._on_annotation_prev
+        )
+        self._window.transport.annotation_next_clicked.connect(
+            self._on_annotation_next
+        )
+
         # Initialise the overlay from the toolbar's defaults so a user
         # who jumps straight to drawing has the expected color/size.
         self._annotation_overlay.set_color(self._annotation_toolbar.current_color())
@@ -542,6 +566,17 @@ class ImgPlayerApp:
             self._window,
             activated=self._redo_annotation,
         )
+        # Prev / next annotated frame.
+        QShortcut(
+            QKeySequence("["),
+            self._window,
+            activated=self._on_annotation_prev,
+        )
+        QShortcut(
+            QKeySequence("]"),
+            self._window,
+            activated=self._on_annotation_next,
+        )
 
     # ------------------------------------------------------------------ Handlers
 
@@ -553,6 +588,9 @@ class ImgPlayerApp:
         # The annotation overlay paints strokes for the current
         # frame — keep it in sync.
         self._annotation_overlay.set_current_frame(frame)
+        # Prev/next-annotation transport buttons depend on the
+        # playhead position vs the annotated set — re-evaluate.
+        self._refresh_annotation_nav_buttons()
         arr = self._cache.get(frame)
         if arr is not None:
             self._display_array(arr)
@@ -651,6 +689,51 @@ class ImgPlayerApp:
                 self._window.annotation_dock.show()
             self._window.set_status("Annotations : toolbar visible (D pour masquer)")
         self._prefs.annotation_toolbar_visible = not was_visible
+        # Reflect the new state on the transport's ✏ button so the
+        # checkable visual matches reality whether the user toggled
+        # via D, the toolbar's hide-on-pen-off, or the button itself.
+        self._window.transport.set_annotation_toggle_active(not was_visible)
+
+    def _on_annotation_prev(self) -> None:
+        """``[`` or transport prev button — seek to the highest
+        annotated frame strictly less than the current frame. No-op
+        if none (button is disabled in that case but we double-check
+        to keep the keyboard path robust)."""
+        cur = self._controller.state.current_frame
+        candidates = [
+            f for f in self._annotation_store.annotated_frames() if f < cur
+        ]
+        if candidates:
+            self._controller.seek(max(candidates))
+
+    def _on_annotation_next(self) -> None:
+        """``]`` or transport next button — seek to the lowest
+        annotated frame strictly greater than the current frame."""
+        cur = self._controller.state.current_frame
+        candidates = [
+            f for f in self._annotation_store.annotated_frames() if f > cur
+        ]
+        if candidates:
+            self._controller.seek(min(candidates))
+
+    def _on_annotated_frames_changed(self) -> None:
+        """Pushes the new annotated-frames set to the timeline (markers
+        repaint) and re-evaluates whether the transport's prev/next
+        buttons are reachable from the current playhead."""
+        annotated = self._annotation_store.annotated_frames()
+        self._window.timeline.set_annotated_frames(annotated)
+        self._refresh_annotation_nav_buttons()
+
+    def _refresh_annotation_nav_buttons(self) -> None:
+        """Enable / disable the transport prev/next buttons based on
+        the current playhead position relative to the annotated set.
+        Called from ``_on_annotated_frames_changed`` (set changed) and
+        ``_on_frame_changed`` (playhead moved)."""
+        annotated = self._annotation_store.annotated_frames()
+        cur = self._controller.state.current_frame
+        prev_avail = any(f < cur for f in annotated)
+        next_avail = any(f > cur for f in annotated)
+        self._window.transport.set_annotation_nav_enabled(prev_avail, next_avail)
 
     def _toggle_pen_mode(self) -> None:
         """``P`` — toggle the pen tool through the toolbar.

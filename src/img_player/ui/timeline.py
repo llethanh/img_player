@@ -67,6 +67,7 @@ class Timeline(QWidget):  # type: ignore[misc]
         self._fps = 24.0
         self._display_mode: DisplayMode = "frames"
         self._cached_frames: frozenset[int] = frozenset()
+        self._annotated_frames: frozenset[int] = frozenset()
         self._scrubbing = False
 
         self._label_font: QFont = F.mono(F.SIZE_XS)
@@ -108,6 +109,17 @@ class Timeline(QWidget):  # type: ignore[misc]
         self._cached_frames = frames
         self.update()
 
+    def set_annotated_frames(self, frames: frozenset[int]) -> None:
+        """Frames with at least one annotation stroke. Drives the
+        accent-coloured triangle markers above the cache bar.
+
+        Idempotent: same set → no repaint.
+        """
+        if frames == self._annotated_frames:
+            return
+        self._annotated_frames = frames
+        self.update()
+
     # ------------------------------------------------------------------ Painting
 
     def paintEvent(self, event: QPaintEvent) -> None:
@@ -125,6 +137,7 @@ class Timeline(QWidget):  # type: ignore[misc]
         self._draw_in_out_markers(painter)
         self._draw_playhead(painter)
         self._draw_cache_bar(painter)
+        self._draw_annotation_markers(painter)
 
     def _usable_width(self) -> int:
         return max(1, int(self.width() - 2 * self.MARGIN_X))
@@ -277,6 +290,38 @@ class Timeline(QWidget):  # type: ignore[misc]
 
     def _half_frame_width(self) -> float:
         return 0.5 * self._usable_width() / self._total_frames()
+
+    def _draw_annotation_markers(self, painter: QPainter) -> None:
+        """Small accent triangle pointing down for each annotated frame.
+
+        Sits in the slack between the range bar (y=31) and the cache
+        bar (y=41), so the markers don't fight the playhead's
+        triangle at the top or the cache fill below. Width tuned so
+        adjacent markers in a dense stretch don't visually merge.
+        """
+        if not self._annotated_frames:
+            return
+
+        marker_h = 5.0
+        marker_w = 5.0
+        # Position: 4 px above the cache bar top, pointing down.
+        tip_y = self.CACHE_TOP - 1
+        base_y = tip_y - marker_h
+
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(C.ACCENT_BRIGHT)
+
+        in_range = sorted(
+            f for f in self._annotated_frames if self._first <= f <= self._last
+        )
+        for frame in in_range:
+            x = self._frame_to_x(frame)
+            tri = QPolygonF([
+                QPointF(x - marker_w / 2.0, base_y),
+                QPointF(x + marker_w / 2.0, base_y),
+                QPointF(x, tip_y),
+            ])
+            painter.drawPolygon(tri)
 
     # ------------------------------------------------------------------ Mouse
 

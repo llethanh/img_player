@@ -67,6 +67,14 @@ class TransportBar(QWidget):  # type: ignore[misc]
     # toggling is free runtime cost and does not invalidate the
     # frame cache.
     channel_mask_changed = Signal(tuple)
+    # Annotation transport buttons (slice 4): the user can toggle the
+    # toolbar visibility, and jump to the previous / next annotated
+    # frame. App.py decides what "previous / next" means by reading
+    # the AnnotationStore, and disables the buttons when there's
+    # nothing on either side.
+    annotation_toggle_clicked = Signal()
+    annotation_prev_clicked = Signal()
+    annotation_next_clicked = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -126,6 +134,31 @@ class TransportBar(QWidget):  # type: ignore[misc]
         self._play_btn.clicked.connect(self.forward_play_clicked.emit)
         self._next_btn.clicked.connect(lambda: self.step_clicked.emit(1))
         self._last_btn.clicked.connect(lambda: self.jump_to_ends.emit(1))
+
+        # --- Annotation controls (slice 4) ---------------------------------
+        # Sit between the playback nav (last_btn) and FPS — a separate
+        # logical group, exposed via three signals (toggle / prev /
+        # next). The toggle button is checkable and reflects whether
+        # the toolbar is currently visible.
+        self._annotation_prev_btn = _text_button(
+            "⏮", "Frame annotée précédente ([)"
+        )
+        self._annotation_toggle_btn = _text_button(
+            "✏", "Afficher / masquer la toolbar d'annotation (D)"
+        )
+        self._annotation_toggle_btn.setCheckable(True)
+        self._annotation_next_btn = _text_button(
+            "⏭", "Frame annotée suivante (])"
+        )
+        self._annotation_prev_btn.clicked.connect(self.annotation_prev_clicked.emit)
+        self._annotation_toggle_btn.clicked.connect(
+            self.annotation_toggle_clicked.emit
+        )
+        self._annotation_next_btn.clicked.connect(self.annotation_next_clicked.emit)
+        # Disabled by default — App.py enables them once the store has
+        # annotated frames on either side of the current playhead.
+        self._annotation_prev_btn.setEnabled(False)
+        self._annotation_next_btn.setEnabled(False)
 
         # --- FPS ------------------------------------------------------------
         self._fps_combo = QComboBox()
@@ -236,6 +269,11 @@ class TransportBar(QWidget):  # type: ignore[misc]
         layout.addWidget(self._last_btn)
 
         layout.addWidget(_separator())
+        layout.addWidget(self._annotation_prev_btn)
+        layout.addWidget(self._annotation_toggle_btn)
+        layout.addWidget(self._annotation_next_btn)
+
+        layout.addWidget(_separator())
         fps_label = QLabel("FPS")
         fps_label.setFixedWidth(24)
         layout.addWidget(fps_label)
@@ -302,6 +340,33 @@ class TransportBar(QWidget):  # type: ignore[misc]
         """Propagate the global frame/timecode toggle (View menu) to
         the FrameDisplay so it stays in sync with the timeline."""
         self._frame_display.set_display_mode(mode)
+
+    def set_annotation_nav_enabled(self, prev_avail: bool, next_avail: bool) -> None:
+        """Grey out the prev / next annotation buttons when there's
+        nothing on either side of the current playhead.
+
+        Driven by ``App`` from the AnnotationStore's
+        ``annotated_frames_changed`` signal and from frame changes.
+        Tooltip stays informative either way; tooltip text is only
+        cosmetic so we don't bother swapping it.
+        """
+        self._annotation_prev_btn.setEnabled(prev_avail)
+        self._annotation_next_btn.setEnabled(next_avail)
+
+    def set_annotation_toggle_active(self, active: bool) -> None:
+        """Reflect the toolbar's visibility on the ✏ button.
+
+        ``True`` when the toolbar is shown — the button is checked,
+        the user has visual confirmation that pressing D again will
+        hide it. ``False`` resets to the unchecked state.
+        """
+        if self._annotation_toggle_btn.isChecked() == active:
+            return
+        self._annotation_toggle_btn.blockSignals(True)
+        try:
+            self._annotation_toggle_btn.setChecked(active)
+        finally:
+            self._annotation_toggle_btn.blockSignals(False)
 
     def set_frame_immediate(self, frame: int) -> None:
         """Update the frame readout *now*, ahead of the controller.
