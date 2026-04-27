@@ -114,8 +114,16 @@ class ImgPlayerApp:
         # real GPU. At shutdown we persist them to ~/.cache/img_player/
         # profile.json so the next boot can reuse the same tune
         # without re-running compute_tune. Stay None until late-bind.
-        self._applied_hw: HardwareProfile | None = None
-        self._applied_tune: PerformanceTune | None = None
+        #
+        # Note: ``_desired_tune`` is the *pre-runtime-constraint* tune
+        # (compute_tune + profile + CLI overrides). The runtime
+        # safety clamp is intentionally NOT persisted — re-evaluating
+        # it from the next boot's actual RAM headroom is the whole
+        # point of slice 3. Persisting the clamped value would lock
+        # the user into a tight-RAM tune even after they freed the
+        # memory.
+        self._desired_hw: HardwareProfile | None = None
+        self._desired_tune: PerformanceTune | None = None
 
         self._qapp = QApplication.instance() or QApplication(argv)
         self._qapp.setOrganizationName("img_player")
@@ -219,9 +227,9 @@ class ImgPlayerApp:
         # ran (initializeGL never fired — e.g. crash at startup), we
         # have nothing to save and that's fine.
         skip = bool(self._cli_args is not None and self._cli_args.skip_calibration)
-        if not skip and self._applied_hw is not None and self._applied_tune is not None:
+        if not skip and self._desired_hw is not None and self._desired_tune is not None:
             try:
-                save_profile(build_profile(self._applied_hw, self._applied_tune))
+                save_profile(build_profile(self._desired_hw, self._desired_tune))
             except Exception as err:  # pragma: no cover — best effort
                 log.warning("[calibration] save failed at shutdown: %s", err)
 
@@ -325,13 +333,21 @@ class ImgPlayerApp:
                 self._cache._budget / 1024**3,
             )
 
-        # Slice 6: remember what we ended up with so _shutdown can
-        # persist it as the calibration profile for the next boot.
-        # Note we save the FINAL tune (post runtime constraints), not
-        # the intermediate auto + CLI override result, so the next
-        # boot picks up exactly what we were running with.
-        self._applied_hw = hw
-        self._applied_tune = final
+        # Slice 6: remember what we want to persist as the calibration
+        # profile at shutdown.
+        #
+        # We save ``after_cli`` (compute_tune → profile → CLI), NOT
+        # ``final`` (which is ``after_cli`` minus the runtime
+        # memory-pressure clamp). The clamp is a per-boot safety —
+        # re-running it on the next launch from the next launch's
+        # actual ``available_ram_gb`` is the right behaviour. If we
+        # persisted the clamped value, a single tight-RAM session
+        # (Notion + browser + Drive open at boot) would lock the user
+        # into a tiny cache for all future launches even after they
+        # freed memory. The boot pipeline already re-applies the
+        # clamp every time, so the safety is preserved.
+        self._desired_hw = hw
+        self._desired_tune = after_cli
 
     # ------------------------------------------------------------------ Wiring
 
