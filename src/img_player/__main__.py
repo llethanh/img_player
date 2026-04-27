@@ -11,9 +11,13 @@ from typing import TYPE_CHECKING
 from img_player import __version__
 from img_player.perf import (
     PerformanceTune,
+    RuntimeState,
     apply_cli_overrides,
+    apply_runtime_constraints,
     compute_tune,
     detect_hardware,
+    log_applied_tune,
+    log_runtime_state,
     log_tune_resolution,
 )
 
@@ -140,12 +144,21 @@ def _resolve_tune(args: argparse.Namespace) -> PerformanceTune:
     ``use_pbo=False``). Slice 4 will re-run this same pipeline once
     the renderer is known, giving us the dGPU-tuned values.
 
-    Pure logic except for the log line, which is the user-visible
-    "what did the auto-tune actually decide" message.
+    Precedence (highest wins last):
+
+    1. ``compute_tune`` — heuristics from the static profile.
+    2. ``apply_cli_overrides`` — user-passed flags (``--workers`` etc.).
+    3. ``apply_runtime_constraints`` — refuses to swap, even if the
+       user asked for a cache that doesn't fit. The user can close
+       Nuke / DaVinci and retry; the app stays responsive in the
+       meantime.
+
+    Side effects: emits the ``[hw-tune]`` log lines that surface to
+    the user (and to bug reports) what the resolver actually decided.
     """
     hw = detect_hardware(gpu_renderer=None)
     auto = compute_tune(hw)
-    final = apply_cli_overrides(
+    after_cli = apply_cli_overrides(
         auto,
         cache_gb=args.cache_gb,
         num_workers=args.workers,
@@ -153,7 +166,13 @@ def _resolve_tune(args: argparse.Namespace) -> PerformanceTune:
         no_pbo=args.no_pbo,
         force_pbo=args.force_pbo,
     )
-    log_tune_resolution(hw, auto, final)
+    log_tune_resolution(hw, auto, after_cli)
+
+    state = RuntimeState.snapshot()
+    final = apply_runtime_constraints(after_cli, state)
+    log_runtime_state(state, after_cli, final)
+
+    log_applied_tune(final)
     return final
 
 

@@ -307,21 +307,23 @@ def apply_cli_overrides(
 def log_tune_resolution(
     hw: HardwareProfile,
     auto: PerformanceTune,
-    final: PerformanceTune,
+    after_cli: PerformanceTune,
     log: logging.Logger | None = None,
 ) -> None:
-    """Emit the ``[hw-tune]`` lines documented in spec §3.
+    """Emit the ``[hw-tune]`` detection / heuristic / overrides lines.
 
-    Three scenarios:
+    Logs four blocks:
 
-    * **No overrides applied** — `auto == final` — we log the
-      detection result and the auto values.
-    * **Some overrides applied** — we additionally log a list of
-      the changed fields and the final, resolved values.
+    1. ``cpu_threads=…`` — raw detection (CPU + RAM + renderer).
+    2. ``gpu_kind=…`` — classification result.
+    3. ``auto: …`` — what the heuristics produced.
+    4. ``CLI overrides: …`` — only when the user passed at least one
+       perf flag, lists the changed fields.
 
-    Kept here (and not in ``app.py``) so it can be reused by the
-    benchmark runner and any future entry point with the same
-    formatting.
+    The final ``applied: …`` line is emitted by ``log_applied_tune``
+    after the runtime memory check has had a chance to clamp the
+    cache further (spec §6). Splitting these two lets the user see
+    one truthful "applied" line at the bottom rather than two.
     """
     log = log or logger
     renderer = hw.gpu_renderer if hw.gpu_renderer else "None (will be detected at first paint)"
@@ -341,17 +343,30 @@ def log_tune_resolution(
     )
 
     overrides: list[str] = []
-    if final.num_workers != auto.num_workers:
-        overrides.append(f"num_workers={final.num_workers}")
-    if final.cache_gb != auto.cache_gb:
-        overrides.append(f"cache_gb={final.cache_gb:.1f}")
-    if final.oiio_threads != auto.oiio_threads:
-        overrides.append(f"oiio_threads={final.oiio_threads}")
-    if final.use_pbo != auto.use_pbo:
-        overrides.append(f"use_pbo={final.use_pbo}")
+    if after_cli.num_workers != auto.num_workers:
+        overrides.append(f"num_workers={after_cli.num_workers}")
+    if after_cli.cache_gb != auto.cache_gb:
+        overrides.append(f"cache_gb={after_cli.cache_gb:.1f}")
+    if after_cli.oiio_threads != auto.oiio_threads:
+        overrides.append(f"oiio_threads={after_cli.oiio_threads}")
+    if after_cli.use_pbo != auto.use_pbo:
+        overrides.append(f"use_pbo={after_cli.use_pbo}")
     if overrides:
         log.info("[hw-tune] CLI overrides: %s", ", ".join(overrides))
 
+
+def log_applied_tune(
+    final: PerformanceTune,
+    log: logging.Logger | None = None,
+) -> None:
+    """Emit the final ``[hw-tune] applied: …`` line.
+
+    Called as the *last* tune-related log, after CLI overrides and
+    runtime memory constraints have been applied — so the value it
+    prints is the one the rest of the app will actually use. Easy
+    to grep in a bug report: just look for ``[hw-tune] applied:``.
+    """
+    log = log or logger
     log.info(
         "[hw-tune] applied: num_workers=%d, cache_gb=%.1f, oiio_threads=%d, use_pbo=%s",
         final.num_workers,

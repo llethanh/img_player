@@ -27,16 +27,26 @@ from img_player.perf.hardware import (
     classify_gpu,
     compute_tune,
     detect_hardware,
+    log_applied_tune,
     log_tune_resolution,
+)
+from img_player.perf.runtime_state import (
+    RuntimeState,
+    apply_runtime_constraints,
+    log_runtime_state,
 )
 
 __all__ = [
     "GpuKind",
     "HardwareProfile",
     "PerformanceTune",
+    "RuntimeState",
     "apply_cli_overrides",
+    "apply_runtime_constraints",
     "classify_gpu",
     "compute_tune",
     "detect_hardware",
+    "log_applied_tune",
+    "log_runtime_state",
     "log_tune_resolution",
 ]
