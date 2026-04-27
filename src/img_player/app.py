@@ -11,6 +11,14 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtWidgets import QApplication, QMessageBox
 
+from img_player.annotate import (
+    AnnotationOverlay,
+    AnnotationStore,
+    ToolKind,
+    load_annotations,
+    save_annotations,
+)
+from img_player.annotate.persistence import sidecar_path
 from img_player.cache.frame_cache import FrameCache
 from img_player.color.gpu_processor import build_shader_bundle
 from img_player.color.ocio_manager import OCIOManager
@@ -155,6 +163,26 @@ class ImgPlayerApp:
             self._controller, self._cache, parent=self._window
         )
 
+        # Annotations (slice 2 of the feature, see
+        # docs/specs/2026-04-27-annotations-design.md). The store is
+        # the source of truth for strokes; the overlay is a
+        # transparent QWidget child of the GL viewport that captures
+        # pen input and paints existing strokes on top of the image.
+        # No tool is active by default — the user toggles draw mode
+        # with the D shortcut (slice 3 will replace this with a
+        # full toolbar UI).
+        self._annotation_store = AnnotationStore(parent=self._window)
+        self._annotation_overlay = AnnotationOverlay(
+            self._window.viewer.gl,
+            self._annotation_store,
+            parent=self._window,
+        )
+        # Path of the sidecar for the currently-open sequence — set
+        # by ``_open_path`` when a sequence is loaded, used by
+        # ``_shutdown`` to save. ``None`` when no sequence is open.
+        self._annotations_path: Path | None = None
+        self._annotations_basename: str | None = None
+
         # A light-touch status timer so we can surface cache hit/miss info.
         self._status_timer = QTimer(self._window)
         self._status_timer.setInterval(500)
@@ -221,6 +249,21 @@ class ImgPlayerApp:
         _apply_preferences_to_window(self)
 
     def _shutdown(self) -> None:
+        # Save annotations to the sidecar JSON if a sequence is open.
+        # Done first so a later Qt teardown exception doesn't lose
+        # them. ``save_annotations`` is best-effort and never raises
+        # — read-only Drive Stream sessions log a warning and the
+        # annotations are lost gracefully.
+        if (
+            self._annotations_path is not None
+            and self._annotations_basename is not None
+        ):
+            save_annotations(
+                self._annotations_path,
+                self._annotation_store,
+                basename=self._annotations_basename,
+            )
+
         # Slice 6: persist the calibration profile if late-bind ran.
         # We do this before window/timer teardown so a Qt teardown
         # exception doesn't lose the profile write. If late-bind never
@@ -408,6 +451,41 @@ class ImgPlayerApp:
         # ColorPanel -> GL viewport
         self._window.color_panel.color_params_changed.connect(self._on_color_params)
 
+        # Annotations: keyboard-driven for slice 2 (slice 3 adds a
+        # toolbar UI). Shortcuts deliberately registered on the
+        # window so they fire from anywhere in the app, not just
+        # when the GL viewport has focus. Existing shortcut
+        # convention (Q* in main_window.py): they're disabled while
+        # a QLineEdit owns focus, so typing a frame number doesn't
+        # accidentally toggle the pen.
+        from PySide6.QtGui import QKeySequence, QShortcut
+
+        QShortcut(
+            QKeySequence("D"),
+            self._window,
+            activated=self._toggle_pen_mode,
+        )
+        QShortcut(
+            QKeySequence("E"),
+            self._window,
+            activated=self._toggle_eraser_mode,
+        )
+        QShortcut(
+            QKeySequence("A"),
+            self._window,
+            activated=self._toggle_show_annotations_during_play,
+        )
+        QShortcut(
+            QKeySequence.StandardKey.Undo,
+            self._window,
+            activated=self._undo_annotation,
+        )
+        QShortcut(
+            QKeySequence.StandardKey.Redo,
+            self._window,
+            activated=self._redo_annotation,
+        )
+
     # ------------------------------------------------------------------ Handlers
 
     def _on_frame_changed(self, frame: int) -> None:
@@ -415,6 +493,9 @@ class ImgPlayerApp:
         # The viewport needs to know the current frame so the next
         # drag-scrub can use it as a base reference.
         self._window.viewer.gl.set_current_frame(frame)
+        # The annotation overlay paints strokes for the current
+        # frame — keep it in sync.
+        self._annotation_overlay.set_current_frame(frame)
         arr = self._cache.get(frame)
         if arr is not None:
             self._display_array(arr)
@@ -476,12 +557,65 @@ class ImgPlayerApp:
         # Timeline needs in/out markers and the fps for its timecode labels.
         self._window.timeline.set_in_out(state.in_frame, state.out_frame)
         self._window.timeline.set_fps(state.fps)
+        # Tell the annotation overlay whether to render: hidden during
+        # play unless the show-during-playback toggle is on.
+        self._annotation_overlay.set_is_playing(state.is_playing)
 
     def _on_play_toggled(self) -> None:
         if self._controller.state.is_playing:
             self._controller.pause()
         else:
             self._controller.play()
+
+    # -------------------------- Annotation shortcuts --------------------------
+    # These are slice 2 of the annotations feature. Slice 3 will add a
+    # toolbar UI that mirrors the same state and provides palette /
+    # size pickers; the keyboard shortcuts below stay working.
+
+    def _toggle_pen_mode(self) -> None:
+        """``D`` — toggle the pen tool. Switching FROM pen lands on
+        NONE (pass-through); switching from any other state lands on
+        PEN. Status bar message confirms the new mode for the user."""
+        if self._annotation_overlay.tool == ToolKind.PEN:
+            self._annotation_overlay.set_tool(ToolKind.NONE)
+            self._window.set_status("Annotation : pen off")
+        else:
+            self._annotation_overlay.set_tool(ToolKind.PEN)
+            self._window.set_status("Annotation : pen on (clic-glisser pour dessiner)")
+
+    def _toggle_eraser_mode(self) -> None:
+        """``E`` — toggle the eraser tool. Same exclusive logic as
+        :meth:`_toggle_pen_mode`."""
+        if self._annotation_overlay.tool == ToolKind.ERASER:
+            self._annotation_overlay.set_tool(ToolKind.NONE)
+            self._window.set_status("Annotation : eraser off")
+        else:
+            self._annotation_overlay.set_tool(ToolKind.ERASER)
+            self._window.set_status(
+                "Annotation : eraser on (clic sur un trait pour le supprimer)"
+            )
+
+    def _toggle_show_annotations_during_play(self) -> None:
+        """``A`` — flip the store's flag and ask the overlay to repaint."""
+        new = not self._annotation_store.show_during_playback
+        self._annotation_store.show_during_playback = new
+        # The overlay's paintEvent reads the flag — trigger a repaint.
+        self._annotation_overlay.update()
+        self._window.set_status(
+            f"Annotations pendant lecture : {'visibles' if new else 'masquées'}"
+        )
+
+    def _undo_annotation(self) -> None:
+        """``Ctrl+Z`` — undo on the current frame's stack only."""
+        frame = self._controller.state.current_frame
+        if not self._annotation_store.undo(frame):
+            self._window.set_status("Annotation : rien à annuler sur cette frame")
+
+    def _redo_annotation(self) -> None:
+        """``Ctrl+Y`` — redo on the current frame's stack only."""
+        frame = self._controller.state.current_frame
+        if not self._annotation_store.redo(frame):
+            self._window.set_status("Annotation : rien à rétablir sur cette frame")
 
     def _on_channel_mask_changed(self, mask: tuple) -> None:
         """Forward the four RGBA visibility booleans to the GL viewport.
@@ -689,6 +823,34 @@ class ImgPlayerApp:
         # Remember this path for next launch and for the Recent menu.
         self._prefs.last_path = path
         self._prefs.push_recent(path)
+
+        # Load any persisted annotations for this sequence. The
+        # sidecar lives next to the frame files; basename routes to
+        # the right sub-payload when several sequences share a dir.
+        # Strip trailing separators ('.', '_') from the base_name so
+        # 'render.' and 'render' both map to the same JSON key — a
+        # cosmetic detail, but it would be confusing if a previously-
+        # saved sequence's notes silently disappeared after a tool
+        # change in the scanner.
+        self._annotations_path = sidecar_path(seq.directory)
+        self._annotations_basename = seq.base_name.rstrip("._-") or seq.base_name
+        loaded = load_annotations(
+            self._annotations_path,
+            basename=self._annotations_basename,
+        )
+        if loaded is not None:
+            # Replace the in-memory store contents (reuse the live
+            # store object so its signal subscribers stay wired).
+            self._annotation_store.load_from_dict(loaded.to_dict()["frames"])
+            log.info(
+                "[annotations] loaded %d annotated frames from %s",
+                len(self._annotation_store.annotated_frames()),
+                self._annotations_path,
+            )
+        else:
+            # Fresh start — clear any leftover state from a previous
+            # sequence in this session.
+            self._annotation_store.load_from_dict({})
 
     def _enrich_with_header(self, seq: SequenceInfo) -> SequenceInfo:
         """Fill in channel_names / width / height from the first frame's
