@@ -112,7 +112,10 @@ class _ColorSwatch(QToolButton):
             # 1 px subtle border so a pure-white swatch doesn't
             # disappear on a near-white panel background.
             painter.setPen(QColor(255, 255, 255, 60))
-        painter.drawRoundedRect(rect, 3.0, 3.0)
+        # Circular swatches — feels more "color picker"-like than
+        # rounded squares and visually distinct from the square tool
+        # buttons (pen / eraser) just above.
+        painter.drawEllipse(rect)
 
 
 class AnnotationToolbar(QWidget):
@@ -275,14 +278,20 @@ class AnnotationToolbar(QWidget):
         tool_row.setSpacing(4)
 
         self._pen_btn = QToolButton(self)
-        self._pen_btn.setText("✎")
+        # ✏️ = U+270F LOWER RIGHT PENCIL + U+FE0F variation selector.
+        # The selector forces emoji presentation; without it the pencil
+        # falls back to the monochrome text glyph on most systems.
+        self._pen_btn.setText("✏️")
         self._pen_btn.setToolTip("Pen (P) — clic-glisser pour dessiner")
         self._pen_btn.setCheckable(True)
         self._pen_btn.setFixedSize(36, 28)
         self._pen_btn.clicked.connect(self._on_pen_clicked)
 
         self._eraser_btn = QToolButton(self)
-        self._eraser_btn.setText("⌫")
+        # 🧽 = U+1F9FD SPONGE. Native emoji rendering by default — no
+        # selector needed. Visually distinct from the pen and reads
+        # "remove / clean" universally.
+        self._eraser_btn.setText("🧽")
         self._eraser_btn.setToolTip("Eraser (E) — clic sur un trait pour le supprimer")
         self._eraser_btn.setCheckable(True)
         self._eraser_btn.setFixedSize(36, 28)

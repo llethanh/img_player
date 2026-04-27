@@ -140,15 +140,23 @@ class TransportBar(QWidget):  # type: ignore[misc]
         # logical group, exposed via three signals (toggle / prev /
         # next). The toggle button is checkable and reflects whether
         # the toolbar is currently visible.
+        # ⏮️ / ⏭️ — track-skip emojis with U+FE0F variation selector for
+        # consistent emoji-presentation across systems (the bare
+        # codepoints have Emoji_Presentation=Yes by default, but the
+        # selector is belt-and-braces against any future renderer
+        # that reads them as text). ✏️ is U+270F LOWER RIGHT PENCIL,
+        # which is text-by-default — the selector is REQUIRED here to
+        # get the colorful pencil glyph the user picked from the
+        # original toolbar mockup.
         self._annotation_prev_btn = _text_button(
-            "⏮", "Frame annotée précédente ([)"
+            "⏮️", "Frame annotée précédente ([)"
         )
         self._annotation_toggle_btn = _text_button(
-            "✏", "Afficher / masquer la toolbar d'annotation (D)"
+            "✏️", "Afficher / masquer la toolbar d'annotation (D)"
         )
         self._annotation_toggle_btn.setCheckable(True)
         self._annotation_next_btn = _text_button(
-            "⏭", "Frame annotée suivante (])"
+            "⏭️", "Frame annotée suivante (])"
         )
         self._annotation_prev_btn.clicked.connect(self.annotation_prev_clicked.emit)
         self._annotation_toggle_btn.clicked.connect(
