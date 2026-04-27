@@ -276,6 +276,26 @@ class FrameCache:
             self._bytes_used += arr.nbytes
             self._evict_if_over_budget()
 
+    def shrink_budget(self, new_bytes: int) -> None:
+        """Reduce the budget at runtime and force an immediate eviction.
+
+        Used by the runtime memory-pressure monitor (slice 5) to give
+        memory back to the OS when ``psutil.swap_memory().used`` rises
+        during playback. Atomic under the existing lock — concurrent
+        decodes that finish during this call will respect the new
+        budget when they run their store-time eviction.
+
+        **Never grows.** Once the cache has been shrunk for the
+        session, it stays shrunk; the user gets a chance to close
+        other apps and restart for a roomier budget. Auto-grow would
+        oscillate under bursty memory pressure.
+        """
+        with self._lock:
+            if new_bytes >= self._budget:
+                return
+            self._budget = max(0, new_bytes)
+            self._evict_if_over_budget()
+
     def _evict_if_over_budget(self) -> None:
         """Must be called with _lock held.
 

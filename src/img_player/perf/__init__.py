@@ -30,6 +30,7 @@ from img_player.perf.hardware import (
     log_applied_tune,
     log_tune_resolution,
 )
+from img_player.perf.runtime_monitor import RuntimeMonitor
 from img_player.perf.runtime_state import (
     RuntimeState,
     apply_runtime_constraints,
@@ -40,6 +41,7 @@ __all__ = [
     "GpuKind",
     "HardwareProfile",
     "PerformanceTune",
+    "RuntimeMonitor",
     "RuntimeState",
     "apply_cli_overrides",
     "apply_runtime_constraints",

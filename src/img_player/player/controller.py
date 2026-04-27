@@ -40,8 +40,19 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
     PREFETCH_AHEAD = 64
     PREFETCH_BEHIND = 8
 
+    # Throttle rate for the live metric signals (effective_fps_changed /
+    # cache_hit_rate_changed). The status bar only needs to refresh
+    # ~once a second; emitting at every tick (24 Hz) would be wasted
+    # work for the UI layout system.
+    _METRIC_EMIT_INTERVAL_S = 1.0
+
     frame_changed = Signal(int)
     state_changed = Signal(object)  # emits PlaybackState
+    # Live metric signals consumed by the UI status bar (slice 5).
+    # Emitted at most once a second while playing; cleared / silent
+    # while paused or before enough samples have accumulated.
+    effective_fps_changed = Signal(float)
+    cache_hit_rate_changed = Signal(float)
 
     def __init__(self, cache: FrameCache, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -57,6 +68,19 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
         # combo. Cleared on play / pause / seek so the metric reflects
         # the *current* playback, not stale data from a previous run.
         self._tick_timestamps: deque[float] = deque(maxlen=_TICK_WINDOW)
+        # Parallel rolling window of cache-hit booleans so we can compute
+        # an instantaneous hit rate over the same window as
+        # ``effective_fps``. The runtime monitor (slice 5) reads this to
+        # detect "the prefetch isn't keeping up".
+        self._tick_hits: deque[bool] = deque(maxlen=_TICK_WINDOW)
+        # Last monotonic clock at which we emitted the live-metric signals.
+        # Throttles the emit rate to ``_METRIC_EMIT_INTERVAL_S`` so the
+        # status bar refreshes at human pace, not at tick frequency.
+        self._last_metric_emit: float = 0.0
+        # Mutable mirror of PREFETCH_AHEAD that the runtime monitor can
+        # shrink mid-playback when the cache hit rate drops. Initialised
+        # to the class default so existing call sites stay correct.
+        self._prefetch_ahead: int = type(self).PREFETCH_AHEAD
 
     # ------------------------------------------------------------------ Properties
 
@@ -87,6 +111,39 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
         if span <= 0:
             return None
         return (len(self._tick_timestamps) - 1) / span
+
+    def cache_hit_rate(self) -> float | None:
+        """Rolling cache-hit rate over the same window as effective_fps.
+
+        Differs from ``cache.stats().hits / .misses`` (which is
+        process-lifetime): this returns the rate over the last
+        ``_TICK_WINDOW`` ticks only, so the runtime monitor can
+        detect a *recent* prefetch shortfall without being averaged
+        out by the long history.
+
+        Returns ``None`` until at least 4 ticks have accumulated —
+        below that, the rate is too noisy to act on.
+        """
+        if len(self._tick_hits) < 4:
+            return None
+        return sum(1 for h in self._tick_hits if h) / len(self._tick_hits)
+
+    def get_prefetch_ahead(self) -> int:
+        """Current prefetch window size. Mirrors ``PREFETCH_AHEAD`` until
+        the runtime monitor decides to shrink it mid-playback."""
+        return self._prefetch_ahead
+
+    def set_prefetch_ahead(self, value: int) -> None:
+        """Adjust the prefetch window at runtime.
+
+        Called by the runtime monitor when ``cache_hit_rate`` drops
+        below the threshold for a sustained window: a smaller
+        prefetch front means the workers focus on what we'll actually
+        display next instead of pre-decoding far frames the cache
+        can't hold anyway. Floors at 4 — below that we'd be one
+        cache miss away from a permanent stall.
+        """
+        self._prefetch_ahead = max(4, int(value))
 
     # ------------------------------------------------------------------ Commands
 
@@ -131,6 +188,8 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
         # playback session, not the previous one (which may have ended
         # at a wildly different rate).
         self._tick_timestamps.clear()
+        self._tick_hits.clear()
+        self._last_metric_emit = 0.0
 
         self._update(is_playing=True)
         self._timer.start(self._interval_ms())
@@ -149,6 +208,8 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
         # Drop the rolling window so effective_fps() returns None until
         # the next play() — paused players don't have a meaningful fps.
         self._tick_timestamps.clear()
+        self._tick_hits.clear()
+        self._last_metric_emit = 0.0
         self._update(is_playing=False)
 
     def stop(self) -> None:
@@ -177,6 +238,8 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
         # don't reflect the post-seek decode pressure (we're likely to
         # land on a non-cached frame which slows the next few ticks).
         self._tick_timestamps.clear()
+        self._tick_hits.clear()
+        self._last_metric_emit = 0.0
         self._try_render(count_misses=False)
 
     def step(self, delta: int) -> None:
@@ -252,6 +315,10 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
         self._cache.set_direction(next_dir)
         self._prefetch_from(next_frame, next_dir)
         cache_hit = self._cache.contains(next_frame)
+        # Mirror the hit/miss into the rolling window the runtime
+        # monitor reads via cache_hit_rate(). Same window size as the
+        # fps deque, so both metrics describe the same time slice.
+        self._tick_hits.append(cache_hit)
         if not cache_hit:
             self._update(dropped_frames=self._state.dropped_frames + 1)
         # Bench hook: record the tick decision (no-op when bench is off).
@@ -259,9 +326,24 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
             recorder.record_tick(
                 requested_frame=next_frame,
                 cache_hit=cache_hit,
-                pending_decodes=self._cache._pool.pending(),  # noqa: SLF001
+                pending_decodes=self._cache._pool.pending(),
             )
         self.frame_changed.emit(next_frame)
+
+        # Throttled live metrics emit (slice 5). Runs at most once a
+        # second so the status bar redraws at human pace. We keep the
+        # throttle inside _tick instead of using a separate QTimer to
+        # avoid one more timer object on the event loop hot path.
+        now = time.monotonic()
+        if now - self._last_metric_emit >= self._METRIC_EMIT_INTERVAL_S:
+            self._last_metric_emit = now
+            fps = self.effective_fps()
+            if fps is not None:
+                self.effective_fps_changed.emit(fps)
+            hr = self.cache_hit_rate()
+            if hr is not None:
+                self.cache_hit_rate_changed.emit(hr)
+
         if should_stop:
             self.pause()
 
@@ -304,9 +386,9 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
         handled by :meth:`_prefetch_full_sequence` on seek and load.
         """
         if direction >= 0:
-            self._cache.request_range(frame, frame + self.PREFETCH_AHEAD, direction=1)
+            self._cache.request_range(frame, frame + self._prefetch_ahead, direction=1)
         else:
-            self._cache.request_range(frame - self.PREFETCH_AHEAD, frame, direction=-1)
+            self._cache.request_range(frame - self._prefetch_ahead, frame, direction=-1)
 
     # Frames *behind* the playhead in the current play direction are
     # only revisited on a loop wrap, so we treat them as significantly

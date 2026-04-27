@@ -16,6 +16,7 @@ from img_player.color.gpu_processor import build_shader_bundle
 from img_player.color.ocio_manager import OCIOManager
 from img_player.io.reader import configure_oiio
 from img_player.perf import (
+    RuntimeMonitor,
     RuntimeState,
     apply_cli_overrides,
     apply_runtime_constraints,
@@ -122,6 +123,15 @@ class ImgPlayerApp:
         )
         self._controller = PlayerController(self._cache)
         self._window = MainWindow(self._ocio)
+
+        # Slice 5: 1 Hz watchdog that auto-corrects mid-playback. Hooks
+        # the controller's state_changed signal itself, so we just
+        # construct it and connect its three user-facing signals to
+        # the status bar. Parented to the window so its QTimer is
+        # cleaned up at shutdown.
+        self._runtime_monitor = RuntimeMonitor(
+            self._controller, self._cache, parent=self._window
+        )
 
         # A light-touch status timer so we can surface cache hit/miss info.
         self._status_timer = QTimer(self._window)
@@ -277,6 +287,17 @@ class ImgPlayerApp:
     # ------------------------------------------------------------------ Wiring
 
     def _wire(self) -> None:
+        # Runtime monitor (slice 5) → status bar. The monitor only
+        # emits French user-facing strings; we route them straight to
+        # set_status so the user sees plain language ("la machine ne
+        # suit pas le rythme", "fermez d'autres applications…")
+        # whenever the watchdog catches a degraded condition. The
+        # status-bar UI stays untouched — same set_status path as
+        # every other transient message in the app.
+        self._runtime_monitor.playback_struggle.connect(self._window.set_status)
+        self._runtime_monitor.memory_pressure.connect(self._window.set_status)
+        self._runtime_monitor.frame_pacing_drop.connect(self._window.set_status)
+
         # GL viewport -> late-bind tune. The viewport emits this signal
         # exactly once per session, on its first ``initializeGL``,
         # carrying the real ``glGetString(GL_RENDERER)``. We then re-run
