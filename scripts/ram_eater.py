@@ -46,23 +46,51 @@ def main() -> None:
         default=600.0,
         help="How long to hold the allocation (default: 600 = 10 min).",
     )
+    parser.add_argument(
+        "--chunk-mb",
+        type=int,
+        default=256,
+        help=(
+            "Allocate in chunks of this many MB (default: 256). Smaller "
+            "chunks tolerate fragmented memory; large monolithic allocs "
+            "can fail even when total free RAM is enough."
+        ),
+    )
     args = parser.parse_args()
+    print(f"[ram_eater] target = {args.gb} GB, chunk = {args.chunk_mb} MB", flush=True)
 
-    bytes_per_float32 = 4
-    n_elements = int(args.gb * 1024**3 // bytes_per_float32)
+    chunk_bytes = args.chunk_mb * 1024 * 1024
+    n_per_chunk = chunk_bytes // 4  # float32 = 4 bytes
+    total_bytes = int(args.gb * 1024**3)
+    n_chunks = max(1, total_bytes // chunk_bytes)
 
-    print(f"[ram_eater] allocating {args.gb} GB ({n_elements:,} float32 elements)...")
-    buf = np.zeros(n_elements, dtype=np.float32)
-    print(f"[ram_eater] allocated. id={id(buf)}. holding for {args.seconds}s...")
-    print("[ram_eater] (Ctrl-C to release early)")
+    bufs: list[np.ndarray] = []
+    try:
+        for i in range(n_chunks):
+            bufs.append(np.zeros(n_per_chunk, dtype=np.float32))
+            allocated_gb = (i + 1) * chunk_bytes / 1024**3
+            print(
+                f"[ram_eater] chunk {i+1}/{n_chunks} done, total {allocated_gb:.2f} GB",
+                flush=True,
+            )
+    except MemoryError as err:
+        print(
+            f"[ram_eater] hit MemoryError at chunk {len(bufs)+1}: {err}. "
+            f"Holding {len(bufs) * args.chunk_mb / 1024:.2f} GB anyway.",
+            flush=True,
+        )
 
+    print(
+        f"[ram_eater] holding {len(bufs)} chunks for {args.seconds}s — Ctrl-C to release",
+        flush=True,
+    )
     try:
         time.sleep(args.seconds)
     except KeyboardInterrupt:
-        print("[ram_eater] interrupted, releasing.")
+        print("[ram_eater] interrupted, releasing.", flush=True)
     finally:
-        del buf
-        print("[ram_eater] done.")
+        del bufs
+        print("[ram_eater] done.", flush=True)
 
 
 if __name__ == "__main__":
