@@ -16,15 +16,21 @@ from img_player.color.gpu_processor import build_shader_bundle
 from img_player.color.ocio_manager import OCIOManager
 from img_player.io.reader import configure_oiio
 from img_player.perf import (
+    HardwareProfile,
+    PerformanceTune,
     RuntimeMonitor,
     RuntimeState,
     apply_cli_overrides,
+    apply_profile_to_tune,
     apply_runtime_constraints,
+    build_profile,
     compute_tune,
     detect_hardware,
+    load_profile,
     log_applied_tune,
     log_runtime_state,
     log_tune_resolution,
+    save_profile,
 )
 from img_player.player.controller import PlayerController
 from img_player.player.state import PlaybackState
@@ -102,6 +108,14 @@ class ImgPlayerApp:
         # Track the OIIO thread count we last asked for so the late-
         # bind can detect a change and re-call ``configure_oiio``.
         self._oiio_threads_active: int | None = oiio_threads
+
+        # Calibration tracking (slice 6). Both fields are populated
+        # by the late-bind handler once the GL context reveals the
+        # real GPU. At shutdown we persist them to ~/.cache/img_player/
+        # profile.json so the next boot can reuse the same tune
+        # without re-running compute_tune. Stay None until late-bind.
+        self._applied_hw: HardwareProfile | None = None
+        self._applied_tune: PerformanceTune | None = None
 
         self._qapp = QApplication.instance() or QApplication(argv)
         self._qapp.setOrganizationName("img_player")
@@ -199,6 +213,18 @@ class ImgPlayerApp:
         _apply_preferences_to_window(self)
 
     def _shutdown(self) -> None:
+        # Slice 6: persist the calibration profile if late-bind ran.
+        # We do this before window/timer teardown so a Qt teardown
+        # exception doesn't lose the profile write. If late-bind never
+        # ran (initializeGL never fired — e.g. crash at startup), we
+        # have nothing to save and that's fine.
+        skip = bool(self._cli_args is not None and self._cli_args.skip_calibration)
+        if not skip and self._applied_hw is not None and self._applied_tune is not None:
+            try:
+                save_profile(build_profile(self._applied_hw, self._applied_tune))
+            except Exception as err:  # pragma: no cover — best effort
+                log.warning("[calibration] save failed at shutdown: %s", err)
+
         # Persist window geometry so it reopens at the same size /
         # position; persist the dock-layout state so the side panels
         # come back collapsed / floating / wherever the user left them.
@@ -242,9 +268,24 @@ class ImgPlayerApp:
         """
         hw = detect_hardware(gpu_renderer=renderer)
         auto = compute_tune(hw)
+        # Slice 6: apply the persisted profile to the late-bind tune
+        # too, otherwise oiio_threads and use_pbo from the profile
+        # would be silently overwritten by the freshly-computed
+        # heuristics. The profile is the source of truth for this
+        # machine — load it once, apply it everywhere a tune is
+        # resolved.
+        skip_cal = bool(
+            self._cli_args is not None
+            and (self._cli_args.skip_calibration or self._cli_args.recalibrate)
+        )
+        post_profile = (
+            apply_profile_to_tune(auto, load_profile(), hw)
+            if not skip_cal
+            else auto
+        )
         if self._cli_args is not None:
             after_cli = apply_cli_overrides(
-                auto,
+                post_profile,
                 cache_gb=self._cli_args.cache_gb,
                 num_workers=self._cli_args.workers,
                 oiio_threads=self._cli_args.oiio_threads,
@@ -252,7 +293,7 @@ class ImgPlayerApp:
                 force_pbo=self._cli_args.force_pbo,
             )
         else:
-            after_cli = auto
+            after_cli = post_profile
         log.info("[hw-tune] late-bind (post-GL): re-running auto-tune with %s", renderer)
         log_tune_resolution(hw, auto, after_cli)
 
@@ -283,6 +324,14 @@ class ImgPlayerApp:
                 final.cache_gb,
                 self._cache._budget / 1024**3,
             )
+
+        # Slice 6: remember what we ended up with so _shutdown can
+        # persist it as the calibration profile for the next boot.
+        # Note we save the FINAL tune (post runtime constraints), not
+        # the intermediate auto + CLI override result, so the next
+        # boot picks up exactly what we were running with.
+        self._applied_hw = hw
+        self._applied_tune = final
 
     # ------------------------------------------------------------------ Wiring
 

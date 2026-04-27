@@ -19,6 +19,15 @@ See `docs/specs/2026-04-26-hw-adaptive-perf-design.md` for the full
 design.
 """
 
+from img_player.perf.calibration import (
+    CalibrationProfile,
+    apply_profile_to_tune,
+    build_profile,
+    hw_signature,
+    load_profile,
+    profile_path,
+    save_profile,
+)
 from img_player.perf.hardware import (
     GpuKind,
     HardwareProfile,
@@ -38,17 +47,24 @@ from img_player.perf.runtime_state import (
 )
 
 __all__ = [
+    "CalibrationProfile",
     "GpuKind",
     "HardwareProfile",
     "PerformanceTune",
     "RuntimeMonitor",
     "RuntimeState",
     "apply_cli_overrides",
+    "apply_profile_to_tune",
     "apply_runtime_constraints",
+    "build_profile",
     "classify_gpu",
     "compute_tune",
     "detect_hardware",
+    "hw_signature",
+    "load_profile",
     "log_applied_tune",
     "log_runtime_state",
     "log_tune_resolution",
+    "profile_path",
+    "save_profile",
 ]

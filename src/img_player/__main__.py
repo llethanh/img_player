@@ -13,9 +13,11 @@ from img_player.perf import (
     PerformanceTune,
     RuntimeState,
     apply_cli_overrides,
+    apply_profile_to_tune,
     apply_runtime_constraints,
     compute_tune,
     detect_hardware,
+    load_profile,
     log_applied_tune,
     log_runtime_state,
     log_tune_resolution,
@@ -96,6 +98,24 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Force the PBO async upload path even on integrated GPU. Mostly for debugging.",
     )
 
+    # Calibration flags (slice 6). The profile.json under the user's
+    # cache dir reuses the previously-applied tune across boots.
+    # --skip-calibration ignores it entirely (debugging / CI).
+    # --recalibrate deletes/ignores the existing one and forces a
+    # fresh compute_tune for this session, which then becomes the
+    # new persisted profile at shutdown.
+    cal_group = parser.add_mutually_exclusive_group()
+    cal_group.add_argument(
+        "--skip-calibration",
+        action="store_true",
+        help="Don't read or write the per-machine profile.json. Useful for CI and debugging.",
+    )
+    cal_group.add_argument(
+        "--recalibrate",
+        action="store_true",
+        help="Ignore the existing profile.json and force a fresh tune computation this session.",
+    )
+
     parser.add_argument(
         "--benchmark",
         action="store_true",
@@ -158,8 +178,20 @@ def _resolve_tune(args: argparse.Namespace) -> PerformanceTune:
     """
     hw = detect_hardware(gpu_renderer=None)
     auto = compute_tune(hw)
+    # Calibration profile (slice 6): if a previous session on this
+    # exact hardware persisted its tune, replace the heuristic-
+    # computed one with it BEFORE we apply CLI overrides. CLI flags
+    # still win after this. With --skip-calibration or
+    # --recalibrate, the profile is intentionally bypassed for this
+    # boot; --recalibrate also means the freshly-computed tune
+    # becomes the new persisted profile at shutdown.
+    if not args.skip_calibration and not args.recalibrate:
+        profile = load_profile()
+        post_profile = apply_profile_to_tune(auto, profile, hw)
+    else:
+        post_profile = auto
     after_cli = apply_cli_overrides(
-        auto,
+        post_profile,
         cache_gb=args.cache_gb,
         num_workers=args.workers,
         oiio_threads=args.oiio_threads,
