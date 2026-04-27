@@ -437,27 +437,51 @@ class AnnotationOverlay(QWidget):
         pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         painter.setPen(pen)
 
+        # Project the polyline into widget space once.
+        widget_pts = [
+            image_to_widget(
+                image_xy=p,
+                widget_size=widget_size,
+                img_size=img_size,
+                factor=factor,
+                pan=pan,
+            )
+            for p in points
+        ]
+
         path = QPainterPath()
-        first = image_to_widget(
-            image_xy=points[0],
-            widget_size=widget_size,
-            img_size=img_size,
-            factor=factor,
-            pan=pan,
-        )
-        path.moveTo(*first)
-        if len(points) == 1:
+        path.moveTo(*widget_pts[0])
+
+        if len(widget_pts) == 1:
             # A click without movement — render as a dot. moveTo + a
             # zero-length lineTo leaves a round-cap dot of pen width.
-            path.lineTo(*first)
+            path.lineTo(*widget_pts[0])
+        elif len(widget_pts) == 2:
+            # Only two samples: a quadratic curve has nothing to smooth
+            # over, fall back to a straight segment.
+            path.lineTo(*widget_pts[1])
         else:
-            for p in points[1:]:
-                wxy = image_to_widget(
-                    image_xy=p,
-                    widget_size=widget_size,
-                    img_size=img_size,
-                    factor=factor,
-                    pan=pan,
-                )
-                path.lineTo(*wxy)
+            # Smoothing: trace quadratic Bézier segments using each
+            # captured point as a control point and the midpoint
+            # between consecutive points as anchors. The mouse-event
+            # sampling rate (~60-125 Hz on Windows) leaves visible
+            # polygonal joints between consecutive points when the
+            # user drags fast — this midpoint-quadratic technique
+            # rounds those joints into smooth curves at zero data
+            # cost (the stored polyline is unchanged; only the
+            # rendered path commands differ).
+            #
+            # Reference: the same trick used in inkscape, paper.js,
+            # rough sketch tools, and the canonical "smooth signature
+            # capture" pattern. Tangent continuity is automatic at
+            # the midpoint anchors.
+            for i in range(1, len(widget_pts) - 1):
+                mid_x = (widget_pts[i][0] + widget_pts[i + 1][0]) / 2.0
+                mid_y = (widget_pts[i][1] + widget_pts[i + 1][1]) / 2.0
+                path.quadTo(*widget_pts[i], mid_x, mid_y)
+            # The final segment from the last midpoint to the actual
+            # last sample — keep it sharp so the stroke ends exactly
+            # where the user released the mouse.
+            path.lineTo(*widget_pts[-1])
+
         painter.drawPath(path)

@@ -887,6 +887,13 @@ class ImgPlayerApp:
         # state_changed (after the debounced seek) re-asserts the
         # final value; in the common case it matches what we set here.
         self._window.transport.set_frame_immediate(frame)
+        # Same reasoning for the annotation overlay: without this push,
+        # the overlay would keep painting the strokes of the frame we
+        # *left* until the debounced seek lands. The user sees an
+        # annotation "stick" to the cursor during the drag — exactly
+        # the bug reported. Pushing the frame here removes the lag
+        # without altering the seek path.
+        self._annotation_overlay.set_current_frame(frame)
         # Defer the expensive part.
         self._pending_seek = frame
         self._scrub_debounce.start()
