@@ -310,6 +310,12 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
     # uses it to re-run the perf tune now that the real GPU
     # classification is known (slice 4 late-bind, spec §4).
     gpu_renderer_detected = Signal(str)
+    # Emitted whenever the image-to-widget transform changes — i.e.
+    # zoom factor, pan offset, or widget size. The annotation overlay
+    # listens to repaint its strokes in sync with the image. Plain
+    # ``Signal()`` (no args): consumers ask for the current state via
+    # :meth:`current_transform` / :meth:`image_size` when they need it.
+    transform_changed = Signal()
 
     # ------------------------------------------------------------------ Lifecycle
 
@@ -479,6 +485,35 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
         else:
             self._zoom_factor = max(self.MIN_ZOOM, min(self.MAX_ZOOM, float(factor)))
         self.update()
+        self.transform_changed.emit()
+
+    def current_transform(self) -> tuple[float, float, float]:
+        """The image→widget transform parameters as ``(factor, pan_x, pan_y)``.
+
+        ``factor`` is image-pixels-per-widget-pixel: in fit mode (when
+        ``_zoom_factor is None``) we return the computed fit ratio, so
+        callers always get a numeric factor. ``pan_x`` and ``pan_y``
+        are widget-pixel offsets from the centred position (0, 0).
+
+        Used by the annotation overlay to map image-space stroke coords
+        to widget pixels for rendering, and the inverse for capture.
+        """
+        factor = (
+            self._compute_fit_factor()
+            if self._zoom_factor is None
+            else self._zoom_factor
+        )
+        return (factor, self._pan_x, self._pan_y)
+
+    def image_size(self) -> tuple[int, int]:
+        """Image dimensions in pixels as ``(width, height)``.
+
+        Returns ``(0, 0)`` until the first frame has been uploaded.
+        The annotation overlay treats ``(0, 0)`` as "no transform yet,
+        skip rendering" — so a still-loading viewport renders nothing
+        instead of dividing by zero.
+        """
+        return self._image_size
 
     # ------------------------------------------------------------------ Mouse — drag-to-scrub
 
@@ -520,6 +555,7 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
             self._pan_x = self._pan_base_offset[0] + dx
             self._pan_y = self._pan_base_offset[1] + dy
             self.update()
+            self.transform_changed.emit()
             event.accept()
             return
         super().mouseMoveEvent(event)
@@ -596,8 +632,10 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
 
         # Tell the rest of the UI (= the transport's zoom combo) so
         # it can reflect the new value without us setting it from
-        # here.
+        # here. Also notify the annotation overlay that the transform
+        # changed so it can repaint its strokes in sync.
         self.zoom_changed.emit(new_zoom)
+        self.transform_changed.emit()
         event.accept()
 
     # ------------------------------------------------------------------ QOpenGLWidget overrides
@@ -621,6 +659,11 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
 
     def resizeGL(self, w: int, h: int) -> None:
         GL.glViewport(0, 0, max(1, w), max(1, h))
+        # In fit mode, the effective zoom factor is computed from the
+        # widget size — so a resize changes the transform even if
+        # _zoom_factor and pan are untouched. The annotation overlay
+        # needs to know.
+        self.transform_changed.emit()
 
     def paintGL(self) -> None:
         # Bench hook: time the whole paintGL body. Cheap (one branch, one
@@ -755,8 +798,13 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
         path as the default.
         """
         height, width, channels = pixels.shape
+        size_changed = (width, height) != self._image_size
         self._image_size = (width, height)
         self._image_channels = channels
+        if size_changed:
+            # Image dimensions feed into the fit-factor formula and the
+            # image→widget centring offset — the overlay needs to know.
+            self.transform_changed.emit()
         gl_format = GL.GL_RGBA if channels == 4 else GL.GL_RGB
         gl_type = GL.GL_HALF_FLOAT if pixels.dtype == np.float16 else GL.GL_FLOAT
         # Always use 16F internal storage — plenty of precision for display,
