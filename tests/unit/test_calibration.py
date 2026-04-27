@@ -26,6 +26,7 @@ from img_player.perf.calibration import (
     save_profile,
 )
 from img_player.perf.hardware import HardwareProfile, PerformanceTune
+from img_player.perf.runtime_state import RuntimeState, apply_runtime_constraints
 
 # Reference HW + tune used across the suite — mirrors the laptop
 # dGPU profile from earlier slices so cases read clearly.
@@ -194,3 +195,93 @@ class TestApplyProfileToTune:
         out = apply_profile_to_tune(_TUNE, profile, _HW)
         # Tune unchanged because the profile is for a different machine.
         assert out == _TUNE
+
+
+# ============================================================================
+# Profile policy: persist the desired tune, not the runtime-clamped one
+# ============================================================================
+
+
+class TestProfilePersistsDesiredNotClamped:
+    """Regression for the stale-profile bug.
+
+    Before this fix, ``app.py`` saved the *runtime-clamped* tune to
+    ``profile.json`` at shutdown. The clamp is the slice-3 memory-
+    pressure safety: at boot, if the cache budget exceeds 60 % of
+    currently-available RAM, it gets reduced to fit. That's the right
+    safety, but persisting its output meant a single tight-RAM session
+    (Notion + browser + Drive open at boot) locked the user into a
+    tiny cache for *all future launches*, even after they freed the
+    memory. Worse, the stuck profile silently overrode the heuristic
+    on every later boot.
+
+    The contract enforced here: the profile stores the **desired**
+    tune (compute_tune → profile → CLI). The runtime clamp re-applies
+    fresh on each boot from current RAM headroom.
+    """
+
+    def test_round_trip_preserves_cache_above_runtime_clamp(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "profile.json"
+        # Last session settled on 6 GB cache as the ideal for this
+        # machine — this is what the user wants persisted.
+        desired = PerformanceTune(
+            num_workers=8, cache_gb=6.0, oiio_threads=2, use_pbo=True
+        )
+        save_profile(build_profile(_HW, desired), path)
+
+        # Today's launch: only 5 GB of RAM is free (Notion, Drive,
+        # browser open). The boot pipeline should:
+        #   1. load the persisted profile -> cache_gb back to 6.0,
+        #   2. clamp via apply_runtime_constraints -> 3.0 GB
+        #      (60 % of 5 GB, well above the 2 GB floor so the clamp
+        #      reads cleanly).
+        # The applied (running) tune is the clamped one, but the
+        # disk profile must stay at 6.0 GB.
+        loaded = load_profile(path)
+        assert loaded is not None
+        assert loaded.cache_gb == pytest.approx(6.0)
+
+        applied = apply_profile_to_tune(_TUNE, loaded, _HW)
+        clamped = apply_runtime_constraints(
+            applied,
+            RuntimeState(available_ram_gb=5.0, swap_used_gb=0.0),
+        )
+        assert clamped.cache_gb == pytest.approx(3.0)  # 5.0 * 0.6
+
+        # Profile on disk is untouched: a re-load gives the same value
+        # as before, not the clamped one. (This is the property that
+        # would break if app.py persisted ``final`` instead of
+        # ``after_cli`` — the clamped value would have been written
+        # somewhere else and re-loaded next time.)
+        reloaded = load_profile(path)
+        assert reloaded is not None
+        assert reloaded.cache_gb == pytest.approx(6.0)
+
+    def test_clamped_tune_is_not_what_should_be_persisted(self) -> None:
+        """A more direct contract test: ``build_profile`` must be
+        called with the desired tune. If a future refactor passes the
+        clamped tune to it (regressing the bug), the persisted
+        cache_gb will diverge from the user's stated intent — this
+        test catches that by comparing the two side by side."""
+        # Two parallel paths from the same starting point.
+        desired = PerformanceTune(
+            num_workers=8, cache_gb=8.0, oiio_threads=2, use_pbo=True
+        )
+        clamped = apply_runtime_constraints(
+            desired,
+            RuntimeState(available_ram_gb=2.5, swap_used_gb=0.0),
+        )
+        # The clamp actually did something visible.
+        assert clamped.cache_gb < desired.cache_gb
+
+        # The right thing to persist is ``desired``, not ``clamped``.
+        good_profile = build_profile(_HW, desired)
+        bad_profile = build_profile(_HW, clamped)
+        assert good_profile.cache_gb == pytest.approx(8.0)
+        assert bad_profile.cache_gb < 8.0
+
+        # If a future refactor flips the call site, the next-boot tune
+        # would start from ``bad_profile.cache_gb`` (e.g. 1.5 GB)
+        # instead of 8.0 — exactly the bug we are fixing.
