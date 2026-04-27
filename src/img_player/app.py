@@ -14,6 +14,8 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 from img_player.annotate import (
     AnnotationOverlay,
     AnnotationStore,
+    AnnotationToolbar,
+    ToolbarMode,
     ToolKind,
     load_annotations,
     save_annotations,
@@ -163,20 +165,43 @@ class ImgPlayerApp:
             self._controller, self._cache, parent=self._window
         )
 
-        # Annotations (slice 2 of the feature, see
+        # Annotations (slices 2-3 of the feature, see
         # docs/specs/2026-04-27-annotations-design.md). The store is
         # the source of truth for strokes; the overlay is a
         # transparent QWidget child of the GL viewport that captures
-        # pen input and paints existing strokes on top of the image.
-        # No tool is active by default — the user toggles draw mode
-        # with the D shortcut (slice 3 will replace this with a
-        # full toolbar UI).
+        # pen input and paints existing strokes on top of the image;
+        # the toolbar is a composite widget with pen / eraser / palette
+        # / size / undo / redo + a pin button to bascule float ⇄ dock.
         self._annotation_store = AnnotationStore(parent=self._window)
         self._annotation_overlay = AnnotationOverlay(
             self._window.viewer.gl,
             self._annotation_store,
             parent=self._window,
         )
+
+        # Toolbar — load mode + position from prefs.
+        toolbar_mode = (
+            ToolbarMode.DOCK
+            if self._prefs.annotation_toolbar_mode == "dock"
+            else ToolbarMode.FLOAT
+        )
+        self._annotation_toolbar = AnnotationToolbar(
+            self._window.viewer.gl,
+            self._window.annotation_dock,
+            initial_mode=toolbar_mode,
+            initial_floating_pos=self._prefs.annotation_toolbar_pos,
+            parent=self._window,
+        )
+        # Toolbar starts hidden by default. The user opens it with D
+        # or via the Annotations transport button (slice 4).
+        self._annotation_toolbar.setVisible(self._prefs.annotation_toolbar_visible)
+        if self._prefs.annotation_toolbar_visible:
+            # If we want it visible AND we are in dock mode, reveal
+            # the dock too. In float mode the toolbar's parent is
+            # already the viewport so just show()ing is enough.
+            if toolbar_mode == ToolbarMode.DOCK:
+                self._window.annotation_dock.show()
+
         # Path of the sidecar for the currently-open sequence — set
         # by ``_open_path`` when a sequence is loaded, used by
         # ``_shutdown`` to save. ``None`` when no sequence is open.
@@ -451,17 +476,49 @@ class ImgPlayerApp:
         # ColorPanel -> GL viewport
         self._window.color_panel.color_params_changed.connect(self._on_color_params)
 
-        # Annotations: keyboard-driven for slice 2 (slice 3 adds a
-        # toolbar UI). Shortcuts deliberately registered on the
-        # window so they fire from anywhere in the app, not just
-        # when the GL viewport has focus. Existing shortcut
-        # convention (Q* in main_window.py): they're disabled while
-        # a QLineEdit owns focus, so typing a frame number doesn't
-        # accidentally toggle the pen.
+        # Annotations: toolbar wiring + keyboard shortcuts.
+        #
+        # Toolbar -> overlay / store: the toolbar is the UI source of
+        # truth for which tool / color / size is active; we forward
+        # those to the overlay when they change. Undo / redo dispatch
+        # against the current frame's stack.
+        self._annotation_toolbar.tool_changed.connect(
+            self._annotation_overlay.set_tool
+        )
+        self._annotation_toolbar.color_changed.connect(
+            self._annotation_overlay.set_color
+        )
+        self._annotation_toolbar.size_changed.connect(
+            self._annotation_overlay.set_size
+        )
+        self._annotation_toolbar.undo_requested.connect(self._undo_annotation)
+        self._annotation_toolbar.redo_requested.connect(self._redo_annotation)
+        # Persist mode + float position to prefs so the toolbar
+        # comes back where the user left it next session.
+        self._annotation_toolbar.mode_changed.connect(self._on_toolbar_mode_changed)
+        self._annotation_toolbar.floating_pos_changed.connect(
+            self._on_toolbar_floating_pos_changed
+        )
+
+        # Initialise the overlay from the toolbar's defaults so a user
+        # who jumps straight to drawing has the expected color/size.
+        self._annotation_overlay.set_color(self._annotation_toolbar.current_color())
+        self._annotation_overlay.set_size(self._annotation_toolbar.current_size())
+
+        # Keyboard shortcuts: parented to the window so they fire
+        # from anywhere in the app, not just when the GL viewport has
+        # focus. Existing convention (main_window.py): blocked while a
+        # QLineEdit owns focus, so typing a frame number can't toggle
+        # the pen.
         from PySide6.QtGui import QKeySequence, QShortcut
 
         QShortcut(
             QKeySequence("D"),
+            self._window,
+            activated=self._toggle_toolbar_visible,
+        )
+        QShortcut(
+            QKeySequence("P"),
             self._window,
             activated=self._toggle_pen_mode,
         )
@@ -572,28 +629,73 @@ class ImgPlayerApp:
     # toolbar UI that mirrors the same state and provides palette /
     # size pickers; the keyboard shortcuts below stay working.
 
-    def _toggle_pen_mode(self) -> None:
-        """``D`` — toggle the pen tool. Switching FROM pen lands on
-        NONE (pass-through); switching from any other state lands on
-        PEN. Status bar message confirms the new mode for the user."""
-        if self._annotation_overlay.tool == ToolKind.PEN:
-            self._annotation_overlay.set_tool(ToolKind.NONE)
-            self._window.set_status("Annotation : pen off")
+    def _toggle_toolbar_visible(self) -> None:
+        """``D`` — show or hide the annotation toolbar.
+
+        In float mode the toolbar overlays the viewport; in dock mode
+        it lives in a right-side dock. Either way, hiding it returns
+        the viewport to a clean review state and disables the active
+        tool (so the mouse passes through to drag-scrub etc.).
+        """
+        was_visible = self._annotation_toolbar.isVisible()
+        if was_visible:
+            # Hide and disable any active tool.
+            self._annotation_toolbar.hide()
+            if self._annotation_toolbar.mode() == ToolbarMode.DOCK:
+                self._window.annotation_dock.hide()
+            self._annotation_toolbar.set_current_tool(ToolKind.NONE)
+            self._window.set_status("Annotations : toolbar masquée")
         else:
-            self._annotation_overlay.set_tool(ToolKind.PEN)
-            self._window.set_status("Annotation : pen on (clic-glisser pour dessiner)")
+            self._annotation_toolbar.show()
+            if self._annotation_toolbar.mode() == ToolbarMode.DOCK:
+                self._window.annotation_dock.show()
+            self._window.set_status("Annotations : toolbar visible (D pour masquer)")
+        self._prefs.annotation_toolbar_visible = not was_visible
+
+    def _toggle_pen_mode(self) -> None:
+        """``P`` — toggle the pen tool through the toolbar.
+
+        Going through the toolbar (instead of straight to the overlay)
+        keeps its UI checkboxes in sync — clicking the pen icon and
+        pressing P are now interchangeable.
+        """
+        new_tool = (
+            ToolKind.NONE
+            if self._annotation_toolbar.current_tool() == ToolKind.PEN
+            else ToolKind.PEN
+        )
+        # If the toolbar is hidden, show it so the user gets visual
+        # feedback (the shortcut would otherwise just emit signals).
+        if not self._annotation_toolbar.isVisible():
+            self._toggle_toolbar_visible()
+        self._annotation_toolbar.set_current_tool(new_tool)
+        self._window.set_status(
+            "Annotation : pen on" if new_tool == ToolKind.PEN else "Annotation : pen off"
+        )
 
     def _toggle_eraser_mode(self) -> None:
-        """``E`` — toggle the eraser tool. Same exclusive logic as
-        :meth:`_toggle_pen_mode`."""
-        if self._annotation_overlay.tool == ToolKind.ERASER:
-            self._annotation_overlay.set_tool(ToolKind.NONE)
-            self._window.set_status("Annotation : eraser off")
-        else:
-            self._annotation_overlay.set_tool(ToolKind.ERASER)
-            self._window.set_status(
-                "Annotation : eraser on (clic sur un trait pour le supprimer)"
-            )
+        """``E`` — toggle the eraser tool through the toolbar."""
+        new_tool = (
+            ToolKind.NONE
+            if self._annotation_toolbar.current_tool() == ToolKind.ERASER
+            else ToolKind.ERASER
+        )
+        if not self._annotation_toolbar.isVisible():
+            self._toggle_toolbar_visible()
+        self._annotation_toolbar.set_current_tool(new_tool)
+        self._window.set_status(
+            "Annotation : eraser on"
+            if new_tool == ToolKind.ERASER
+            else "Annotation : eraser off"
+        )
+
+    def _on_toolbar_mode_changed(self, mode: ToolbarMode) -> None:
+        """Persist the new mode to prefs."""
+        self._prefs.annotation_toolbar_mode = mode.value
+
+    def _on_toolbar_floating_pos_changed(self, x: int, y: int) -> None:
+        """Persist the float-mode position after the user drags it."""
+        self._prefs.annotation_toolbar_pos = (x, y)
 
     def _toggle_show_annotations_during_play(self) -> None:
         """``A`` — flip the store's flag and ask the overlay to repaint."""

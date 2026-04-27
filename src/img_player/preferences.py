@@ -148,3 +148,58 @@ class Preferences:
             self._s.setValue("window/state", value)
         else:
             self._s.remove("window/state")
+
+    # ------------------------------------------------------------------ Annotation toolbar (slice 3)
+
+    @property
+    def annotation_toolbar_mode(self) -> str:
+        """``"float"`` (overlay on the viewport) or ``"dock"`` (right side).
+
+        Default is ``"float"`` — the lighter-touch mode for first-time
+        discovery. Persisted across sessions so the user's choice
+        sticks.
+        """
+        raw = self._s.value("annotation_toolbar/mode", "float")
+        return raw if raw in ("float", "dock") else "float"
+
+    @annotation_toolbar_mode.setter
+    def annotation_toolbar_mode(self, value: str) -> None:
+        if value not in ("float", "dock"):
+            value = "float"
+        self._s.setValue("annotation_toolbar/mode", value)
+
+    @property
+    def annotation_toolbar_pos(self) -> tuple[int, int]:
+        """``(x, y)`` position of the toolbar when in float mode.
+
+        Coordinates relative to the GL viewport (top-left = 0,0).
+        Default is ``(12, 12)`` — comfortable margin from the corner
+        without covering the most common region of interest.
+        """
+        x = self._s.value("annotation_toolbar/x")
+        y = self._s.value("annotation_toolbar/y")
+        try:
+            return (int(x), int(y)) if x is not None and y is not None else (12, 12)
+        except (TypeError, ValueError):
+            return (12, 12)
+
+    @annotation_toolbar_pos.setter
+    def annotation_toolbar_pos(self, value: tuple[int, int]) -> None:
+        try:
+            x, y = int(value[0]), int(value[1])
+        except (TypeError, ValueError, IndexError):
+            return
+        self._s.setValue("annotation_toolbar/x", x)
+        self._s.setValue("annotation_toolbar/y", y)
+
+    @property
+    def annotation_toolbar_visible(self) -> bool:
+        """Whether to show the toolbar at startup. Default: hidden."""
+        raw = self._s.value("annotation_toolbar/visible", False)
+        if isinstance(raw, str):
+            return raw.lower() in ("true", "1", "yes")
+        return bool(raw)
+
+    @annotation_toolbar_visible.setter
+    def annotation_toolbar_visible(self, value: bool) -> None:
+        self._s.setValue("annotation_toolbar/visible", bool(value))
