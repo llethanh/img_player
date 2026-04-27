@@ -545,6 +545,13 @@ class ImgPlayerApp:
         # Immediate visual feedback: show whatever's closest in cache.
         self._show_best_available(frame)
         self._window.timeline.set_current_frame(frame)
+        # Push the requested frame straight into the readout. Without
+        # this, the number lags by one debounce window (~20 ms) plus
+        # whatever decode time the seek racks up — the cursor jumps
+        # under the mouse but the digits limp behind. The eventual
+        # state_changed (after the debounced seek) re-asserts the
+        # final value; in the common case it matches what we set here.
+        self._window.transport.set_frame_immediate(frame)
         # Defer the expensive part.
         self._pending_seek = frame
         self._scrub_debounce.start()
