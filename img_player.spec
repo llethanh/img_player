@@ -119,7 +119,8 @@ a = Analysis(  # noqa: F821 — Analysis is injected by PyInstaller
         "PySide6.QtSerialPort",
         "PySide6.QtSpatialAudio",
         "PySide6.QtSql",
-        "PySide6.QtSvg",
+        # NOTE: PySide6.QtSvg is needed by ui/icons.py (transport icons,
+        # burger menu, etc.) — keep it bundled.
         "PySide6.QtTest",
         "PySide6.QtWebChannel",
         "PySide6.QtWebEngineCore",

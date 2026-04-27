@@ -6,6 +6,13 @@ REM and invokes PyInstaller via the spec file at the repo root.
 setlocal enableextensions
 set ENV_NAME=img_player
 
+REM ---- Move into the bat's own directory FIRST ------------------------
+REM We pushd here (not later) so that the Google-Drive check below is
+REM about *the repo's location*, not about the calling shell's cwd.
+REM Otherwise calling this bat with its full path from a shell that
+REM happens to be inside Google Drive would falsely abort the build.
+pushd "%~dp0"
+
 REM ---- Refuse to build inside a synced cloud folder -------------------
 REM Google Drive Stream / OneDrive will fight Windows Defender and end
 REM up deleting img_player.exe (or worse, the OIIO DLLs). PyInstaller
@@ -68,7 +75,7 @@ if errorlevel 1 (
 )
 
 REM ---- Clean previous build outputs -----------------------------------
-pushd "%~dp0"
+REM (pushd already done at the top of the file.)
 if exist build  rmdir /s /q build
 if exist dist   rmdir /s /q dist
 
