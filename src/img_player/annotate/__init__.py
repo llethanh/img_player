@@ -27,15 +27,31 @@ from img_player.annotate.persistence import (
 )
 from img_player.annotate.store import Action, ActionKind, AnnotationStore
 from img_player.annotate.stroke import Stroke
+from img_player.annotate.toolbar import (
+    DEFAULT_COLOR,
+    DEFAULT_SIZE,
+    MAX_SIZE,
+    MIN_SIZE,
+    PALETTE,
+    AnnotationToolbar,
+    ToolbarMode,
+)
 
 __all__ = [
     "Action",
     "ActionKind",
     "AnnotationOverlay",
     "AnnotationStore",
+    "AnnotationToolbar",
+    "DEFAULT_COLOR",
+    "DEFAULT_SIZE",
+    "MAX_SIZE",
+    "MIN_SIZE",
+    "PALETTE",
     "SCHEMA_VERSION",
     "Stroke",
     "ToolKind",
+    "ToolbarMode",
     "image_to_widget",
     "load_annotations",
     "nearest_stroke_index",

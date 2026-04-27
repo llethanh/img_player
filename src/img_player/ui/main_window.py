@@ -112,6 +112,27 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         )
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._side_dock)
 
+        # Empty dock placeholder for the annotation toolbar's "dock"
+        # mode. It starts hidden — `App` populates it with the
+        # AnnotationToolbar widget when the user picks dock mode. By
+        # being a real QDockWidget with an objectName, it participates
+        # in saveState / restoreState so its position stays put across
+        # sessions.
+        self._annotation_dock = QDockWidget("Annotations", self)
+        self._annotation_dock.setObjectName("annotation_dock")
+        self._annotation_dock.setAllowedAreas(
+            Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
+        )
+        self._annotation_dock.setFeatures(
+            QDockWidget.DockWidgetFeature.DockWidgetMovable
+            | QDockWidget.DockWidgetFeature.DockWidgetFloatable
+            | QDockWidget.DockWidgetFeature.DockWidgetClosable
+        )
+        self.addDockWidget(
+            Qt.DockWidgetArea.RightDockWidgetArea, self._annotation_dock
+        )
+        self._annotation_dock.hide()  # only shown when toolbar is in dock mode
+
         self._build_menu()
         self._install_shortcuts()
         self._wire_internal()
@@ -156,6 +177,13 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
     @property
     def color_panel(self) -> ColorPanel:
         return self._color_panel
+
+    @property
+    def annotation_dock(self) -> QDockWidget:
+        """The empty placeholder dock the AnnotationToolbar reparents
+        into when the user picks dock mode. Owned by MainWindow so its
+        position participates in saveState / restoreState."""
+        return self._annotation_dock
 
     @property
     def channel_panel(self) -> ChannelPanel:
