@@ -306,10 +306,46 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
         self._tick_timestamps.append(time.monotonic())
         next_frame, next_dir, should_stop = self._advance()
 
-        # The playhead always moves forward at the configured FPS —
-        # otherwise the user sees no sign of playback while the cache
-        # catches up. On a cache miss we count a dropped frame and let
-        # the UI pick the nearest available frame to display.
+        # Cache-bound playback: stall the playhead instead of running
+        # ahead of the cache fill bar. Per user feedback ("qd on lance
+        # la lecture, je voudrais que le curseur n'aille pas plus vite
+        # que la barre de chargement"). The previous behaviour
+        # (always advance, show nearest cached frame as fallback) had
+        # a confusing UX — the cursor lies about progress.
+        #
+        # The exception is ``should_stop`` (ONCE mode reaching the end):
+        # we always honour the stop, even if the final frame isn't
+        # cached, otherwise we'd loop forever waiting for a frame at a
+        # boundary the user explicitly asked us to stop on.
+        if not should_stop and not self._cache.contains(next_frame):
+            # Stay on the current frame. Re-issue the prefetch so the
+            # worker pool keeps loading toward the would-be next
+            # frame. Direction matters for the prefetch heuristic.
+            self._cache.set_current_frame(self._state.current_frame)
+            self._cache.set_direction(next_dir)
+            self._prefetch_from(self._state.current_frame, next_dir)
+            # Record the stall in the rolling window — the runtime
+            # monitor (slice 5) reads this to surface "Lecture
+            # difficile" warnings if stalls dominate.
+            self._tick_hits.append(False)
+            # No frame_changed emit — current_frame didn't move, so
+            # downstream consumers (timeline cursor, frame display,
+            # annotation overlay) can stay where they are.
+
+            # Bench hook: log the stall as a missed tick.
+            if recorder.is_enabled():
+                recorder.record_tick(
+                    requested_frame=next_frame,
+                    cache_hit=False,
+                    pending_decodes=self._cache._pool.pending(),
+                )
+            # Live metric emit still runs — status bar's effective
+            # fps drops naturally when stalls dominate.
+            self._maybe_emit_metrics()
+            return
+
+        # Normal advance — the next frame is cached (or we're forced
+        # by should_stop).
         self._update(current_frame=next_frame, direction=next_dir)
         self._cache.set_current_frame(next_frame)
         self._cache.set_direction(next_dir)
@@ -320,6 +356,9 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
         # fps deque, so both metrics describe the same time slice.
         self._tick_hits.append(cache_hit)
         if not cache_hit:
+            # Reachable only via should_stop on a missed boundary
+            # frame; counting it preserves the dropped_frames
+            # semantic (= "we displayed something we shouldn't have").
             self._update(dropped_frames=self._state.dropped_frames + 1)
         # Bench hook: record the tick decision (no-op when bench is off).
         if recorder.is_enabled():
@@ -330,10 +369,16 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
             )
         self.frame_changed.emit(next_frame)
 
-        # Throttled live metrics emit (slice 5). Runs at most once a
-        # second so the status bar redraws at human pace. We keep the
-        # throttle inside _tick instead of using a separate QTimer to
-        # avoid one more timer object on the event loop hot path.
+        self._maybe_emit_metrics()
+
+        if should_stop:
+            self.pause()
+
+    def _maybe_emit_metrics(self) -> None:
+        """Throttled live metrics emit (slice 5). Runs at most once
+        a second so the status bar redraws at human pace. Extracted
+        from ``_tick`` so it can run on both the advance path and
+        the stall path."""
         now = time.monotonic()
         if now - self._last_metric_emit >= self._METRIC_EMIT_INTERVAL_S:
             self._last_metric_emit = now
@@ -343,9 +388,6 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
             hr = self.cache_hit_rate()
             if hr is not None:
                 self.cache_hit_rate_changed.emit(hr)
-
-        if should_stop:
-            self.pause()
 
     def _advance(self) -> tuple[int, int, bool]:
         """Return (next_frame, next_direction, should_pause_after)."""

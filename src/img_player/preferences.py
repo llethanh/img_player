@@ -149,6 +149,41 @@ class Preferences:
         else:
             self._s.remove("window/state")
 
+    # ------------------------------------------------------------------ Side-tabs + display mode
+
+    @property
+    def side_tab_index(self) -> int:
+        """Index of the active tab in the right-side dock (Color = 0,
+        Comments = 1). ``QMainWindow.saveState()`` covers the dock's
+        position / floating / visibility but NOT a child QTabWidget's
+        currentIndex — hence the explicit pref.
+        """
+        try:
+            return int(self._s.value("side_tab/index", 0))
+        except (TypeError, ValueError):
+            return 0
+
+    @side_tab_index.setter
+    def side_tab_index(self, value: int) -> None:
+        try:
+            self._s.setValue("side_tab/index", int(value))
+        except (TypeError, ValueError):
+            return
+
+    @property
+    def display_timecode(self) -> bool:
+        """``True`` if the View → Show timecode toggle was on at last
+        close. The Ctrl+T action mirrors this in the menu state.
+        """
+        raw = self._s.value("view/display_timecode", False)
+        if isinstance(raw, str):
+            return raw.lower() in ("true", "1", "yes")
+        return bool(raw)
+
+    @display_timecode.setter
+    def display_timecode(self, value: bool) -> None:
+        self._s.setValue("view/display_timecode", bool(value))
+
     # ------------------------------------------------------------------ Annotation toolbar (slice 3)
 
     @property

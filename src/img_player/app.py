@@ -311,6 +311,13 @@ class ImgPlayerApp:
         # come back collapsed / floating / wherever the user left them.
         self._prefs.window_geometry = bytes(self._window.saveGeometry())
         self._prefs.window_state = bytes(self._window.saveState())
+        # Side-tab selection (Color vs Comments) and view-mode toggle
+        # (frames vs timecode) live OUTSIDE saveState — store them
+        # explicitly so the user gets back exactly the layout they
+        # left. ``QTabWidget.currentIndex`` and the view menu's
+        # checked QAction aren't covered by Qt's dock-state blob.
+        self._prefs.side_tab_index = self._window.side_tab_index()
+        self._prefs.display_timecode = self._window.display_timecode()
         self._status_timer.stop()
         self._wait_timer.stop()
         self._cache_bar_timer.stop()
@@ -1375,6 +1382,19 @@ def _apply_preferences_to_window(app: ImgPlayerApp) -> None:
         # restoreState reapplies dock visibility / position / floating
         # from the previous session.
         app._window.restoreState(state)
+
+    # Side-tab selection (Color vs Comments) — falls outside of
+    # saveState's coverage, restore explicitly. set_side_tab_index
+    # clamps against the current tab count, so an old preference
+    # value pointing at a tab that no longer exists is a no-op
+    # rather than a crash.
+    app._window.set_side_tab_index(prefs.side_tab_index)
+
+    # View mode (frames vs timecode) — same reasoning, the View
+    # menu's QAction state isn't part of saveState. The setter
+    # routes through the same slot the user click triggers, so the
+    # timeline + transport's frame display update accordingly.
+    app._window.set_display_timecode(prefs.display_timecode)
 
     # Color defaults — only apply if they still exist in the current OCIO config.
     cs_list = set(app._ocio.list_colorspaces())

@@ -211,6 +211,35 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         moves."""
         return self._comment_panel
 
+    def side_tab_index(self) -> int:
+        """Currently selected tab in the right-side dock. Persisted
+        across sessions via :class:`Preferences.side_tab_index`."""
+        return self._side_tabs.currentIndex()
+
+    def set_side_tab_index(self, index: int) -> None:
+        """Restore the previously-selected side-tab. Clamped against
+        the actual tab count so a future redesign that removes a tab
+        doesn't crash an old preference value."""
+        tab_count = self._side_tabs.count()
+        if tab_count == 0:
+            return
+        clamped = max(0, min(int(index), tab_count - 1))
+        self._side_tabs.setCurrentIndex(clamped)
+
+    def display_timecode(self) -> bool:
+        """Current state of the View → Show timecode toggle."""
+        return self._show_tc_act.isChecked()
+
+    def set_display_timecode(self, enabled: bool) -> None:
+        """Restore the timecode-display preference. Drives both the
+        QAction's checked state and the dependent widgets (timeline
+        + transport's frame display)."""
+        self._show_tc_act.setChecked(bool(enabled))
+        # The QAction's ``triggered`` signal fires on user click, not
+        # on programmatic ``setChecked`` — call the slot directly so
+        # the timeline + transport pick up the mode.
+        self._on_toggle_timecode(bool(enabled))
+
     @property
     def transport(self) -> TransportBar:
         return self._transport
