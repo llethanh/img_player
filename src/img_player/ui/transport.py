@@ -596,19 +596,18 @@ def _icon_button(icon: QIcon, tooltip: str) -> QPushButton:
 
 def _text_button(label: str, tooltip: str) -> QPushButton:
     btn = QPushButton(label)
-    # Widened from BTN_TEXT_W (32) to 38 so the larger emoji glyphs
-    # don't clip on the left/right of the button. Height stays at
-    # BTN_TRANSPORT_H so the row keeps a consistent baseline.
-    btn.setFixedSize(44, G.BTN_TRANSPORT_H)
+    # Square buttons matching the icon-button footprint
+    # (BTN_TRANSPORT_W × BTN_TRANSPORT_H). Font size is dialled
+    # down to 11 pt — slightly smaller than 13 pt but with room
+    # to breathe inside the square so the emoji is not clipped
+    # left/right. Trade-off favoured "square + uncut" per user
+    # feedback (v0.5.2).
+    btn.setFixedSize(G.BTN_TRANSPORT_W, G.BTN_TRANSPORT_H)
     btn.setToolTip(tooltip)
     btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-    # Emoji glyphs render at the button's font size — the global
-    # QSS ``QPushButton {…}`` rule wins over ``btn.setFont()`` so
-    # we have to push the bigger size through QSS. 13 pt roughly
-    # matches the 18 px SVG icons next to it; ``padding: 0`` and
-    # the wider 38 px box keep the glyph from being clipped on
-    # the sides (user feedback v0.5.2).
-    btn.setStyleSheet("QPushButton { font-size: 13pt; padding: 0; }")
+    # Global QSS ``QPushButton {…}`` overrides ``btn.setFont()`` —
+    # push font-size through an inline stylesheet so it wins.
+    btn.setStyleSheet("QPushButton { font-size: 11pt; padding: 0; }")
     return btn
 
 
