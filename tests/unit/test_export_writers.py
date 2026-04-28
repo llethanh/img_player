@@ -191,6 +191,46 @@ class TestVideoWriter:
         finally:
             container.close()
 
+    def test_rgb_color_order_preserved(self, tmp_path: Path) -> None:
+        """Regression test (v0.5.0.1): a pure-red input frame must
+        decode back as red, not blue. Catches the R/B-swap bug from
+        labeling RGB pixels as bgr24 to PyAV.
+
+        FFV1 is lossless so we can assert exact dominance of the red
+        channel.
+        """
+        import av
+        # 24 frames of solid red (255, 0, 0).
+        red = np.zeros((64, 64, 3), dtype=np.uint8)
+        red[..., 0] = 255  # R
+        settings = ExportSettings(
+            output_dir=tmp_path,
+            in_frame=1, out_frame=10,
+            format_key="ffv1_mkv",
+        )
+        w = build_writer(settings, basename="rgb_check")
+        w.open(settings, 64, 64, 24.0)
+        for i in range(10):
+            w.write_frame(red, i)
+        w.close()
+        # Decode and inspect the first frame's average colour.
+        container = av.open(str(w.output_path()), mode="r")
+        try:
+            stream = container.streams.video[0]
+            frames = list(container.decode(stream))
+            assert frames, "no frames decoded"
+            decoded = frames[0].to_ndarray(format="rgb24")
+            r_mean = decoded[..., 0].mean()
+            g_mean = decoded[..., 1].mean()
+            b_mean = decoded[..., 2].mean()
+            # FFV1 RGB → YUV → RGB round-trip is bit-exact for
+            # primary colours, so we assert strict dominance.
+            assert r_mean > 240, f"R should dominate, got R={r_mean}"
+            assert g_mean < 30, f"G should be near zero, got G={g_mean}"
+            assert b_mean < 30, f"B should be near zero, got B={b_mean}"
+        finally:
+            container.close()
+
     def test_abort_removes_partial_video(self, tmp_path: Path) -> None:
         settings = ExportSettings(
             output_dir=tmp_path,

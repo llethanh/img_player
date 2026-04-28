@@ -15,15 +15,15 @@ from img_player.export.writers.image_seq import ImageSequenceWriter  # for build
 log = logging.getLogger(__name__)
 
 
-# Engine always feeds the writer 8-bit BGR or BGRA arrays — PyAV's
-# `VideoFrame.from_ndarray` is happiest with that, and the codec
-# reformats internally to its target pix_fmt. A 10-bit pipeline would
-# pay off only on very specific codecs (ProRes 4444, DNxHR HQX, v210)
-# and adds complexity (different dtype, gbrap10le frame layout). We
-# stay 8-bit for v0.5 — the visible quality gap is below noise floor
-# for typical review usage.
-_INPUT_PIX_FMT_RGB = "bgr24"
-_INPUT_PIX_FMT_RGBA = "bgra"
+# The engine feeds us 8-bit RGB or RGBA arrays (the OIIO reader
+# returns R/G/B/A channels and the renderer keeps that ordering).
+# PyAV reformats internally to the codec's target pix_fmt — but
+# only after we tell it the *correct* input pixel order. Using
+# "bgr24" here when the buffer is actually RGB swaps R↔B at the
+# YUV conversion → warm tones turn blue, blues turn orange.
+# v0.5: shipped with that bug; v0.5.0.1 fixes it.
+_INPUT_PIX_FMT_RGB = "rgb24"
+_INPUT_PIX_FMT_RGBA = "rgba"
 
 
 class VideoWriter(BaseWriter):
