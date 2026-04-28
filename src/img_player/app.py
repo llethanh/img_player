@@ -15,6 +15,7 @@ from img_player.annotate import (
     AnnotationOverlay,
     AnnotationStore,
     AnnotationToolbar,
+    EphemeralStrokeManager,
     ToolbarMode,
     ToolKind,
     load_annotations,
@@ -180,6 +181,18 @@ class ImgPlayerApp:
         # the toolbar is a composite widget with pen / eraser / palette
         # / size / undo / redo + a pin button to bascule float ⇄ dock.
         self._annotation_store = AnnotationStore(parent=self._window)
+        # Ephemeral mode (v0.4.1) — companion store for live, fading,
+        # never-saved strokes. Owned at app-level so its QTimer
+        # survives a sequence reload (we just call clear_all() to
+        # drop ghosts from the previous sequence).
+        self._ephemeral_manager = EphemeralStrokeManager(parent=self._window)
+        # Seed the duration from the persisted preset preference.
+        from img_player.annotate.toolbar import EPHEMERAL_PRESETS_S
+        try:
+            preset_idx = self._prefs.ephemeral_duration_preset
+            self._ephemeral_manager.set_duration(EPHEMERAL_PRESETS_S[preset_idx])
+        except (IndexError, ValueError):
+            pass  # manager already has its 5s default
         self._annotation_overlay = AnnotationOverlay(
             self._window.viewer.gl,
             self._annotation_store,
@@ -192,11 +205,17 @@ class ImgPlayerApp:
             if self._prefs.annotation_toolbar_mode == "dock"
             else ToolbarMode.FLOAT
         )
+        # Inject the manager into the overlay so ephemeral routes work
+        # at the very first mouseRelease — before any signal-wiring
+        # below has a chance to fire.
+        self._annotation_overlay.set_ephemeral_manager(self._ephemeral_manager)
+
         self._annotation_toolbar = AnnotationToolbar(
             self._window.viewer.gl,
             self._window.annotation_dock,
             initial_mode=toolbar_mode,
             initial_floating_pos=self._prefs.annotation_toolbar_pos,
+            initial_ephemeral_preset=self._prefs.ephemeral_duration_preset,
             parent=self._window,
         )
         # Toolbar starts hidden by default. The user opens it with D
@@ -506,6 +525,16 @@ class ImgPlayerApp:
         self._annotation_toolbar.undo_requested.connect(self._undo_annotation)
         self._annotation_toolbar.redo_requested.connect(self._redo_annotation)
         self._annotation_toolbar.clear_requested.connect(self._clear_annotations)
+        # Ephemeral mode (v0.4.1) — toolbar drives overlay (routing
+        # decision) and manager (fade duration), and we persist the
+        # preset on each change so a restart picks up where the user
+        # left off.
+        self._annotation_toolbar.ephemeral_mode_changed.connect(
+            self._on_ephemeral_mode_changed
+        )
+        self._annotation_toolbar.ephemeral_duration_changed.connect(
+            self._on_ephemeral_duration_changed
+        )
 
         # Annotation save prompt — runs from MainWindow.closeEvent
         # before the window actually closes. Returning False from
@@ -597,6 +626,14 @@ class ImgPlayerApp:
             QKeySequence("]"),
             self._window,
             activated=self._on_annotation_next,
+        )
+        # G — toggle ephemeral mode (v0.4.1, mnemonic "ghost"). The
+        # shortcut goes through the toolbar so the UI state stays in
+        # sync with the overlay routing.
+        QShortcut(
+            QKeySequence("G"),
+            self._window,
+            activated=self._toggle_ephemeral_mode,
         )
 
     # ------------------------------------------------------------------ Handlers
@@ -837,23 +874,56 @@ class ImgPlayerApp:
         )
 
     def _undo_annotation(self) -> None:
-        """``Ctrl+Z`` — undo on the current frame's stack only."""
+        """``Ctrl+Z`` — undo on the current frame's stack, or kill
+        the last live ephemeral stroke when the mode is active.
+
+        The mode-based routing (introduced in v0.4.1) is intentionally
+        based on the toolbar's *current* state — not on the per-stroke
+        press-time snapshot — because Ctrl+Z fires *outside* of any
+        drag, so there's no snapshot to consult.
+        """
+        if self._annotation_toolbar.is_ephemeral_mode():
+            if not self._ephemeral_manager.kill_last():
+                self._window.set_status(
+                    "Éphémère : aucun trait vivant à supprimer"
+                )
+            return
         frame = self._controller.state.current_frame
         if not self._annotation_store.undo(frame):
             self._window.set_status("Annotation : rien à annuler sur cette frame")
 
     def _redo_annotation(self) -> None:
-        """``Ctrl+Y`` — redo on the current frame's stack only."""
+        """``Ctrl+Y`` — redo on the current frame's stack only.
+
+        No-op in ephemeral mode by design (spec §2 Q4c) — a faded
+        stroke is gone for good, we never resurrect.
+        """
+        if self._annotation_toolbar.is_ephemeral_mode():
+            return
         frame = self._controller.state.current_frame
         if not self._annotation_store.redo(frame):
             self._window.set_status("Annotation : rien à rétablir sur cette frame")
 
     def _clear_annotations(self) -> None:
-        """Toolbar's Clear button — wipe every stroke on the current
-        frame. Each removal lands as its own undo entry, so the user
-        can walk back stroke-by-stroke if they clicked Clear by
-        accident.
+        """Toolbar's Clear button — context-sensitive (v0.4.1).
+
+        * Persistent mode: wipe every stroke on the current frame,
+          each removal landing as its own undo entry.
+        * Ephemeral mode: wipe every live ephemeral stroke instantly.
+          Not undoable (matches the rest of the ephemeral semantics).
         """
+        if self._annotation_toolbar.is_ephemeral_mode():
+            count = self._ephemeral_manager.clear_all()
+            if count == 0:
+                self._window.set_status(
+                    "Éphémère : aucun trait vivant à effacer"
+                )
+            else:
+                plural = "s" if count > 1 else ""
+                self._window.set_status(
+                    f"Éphémère : {count} trait{plural} effacé{plural}"
+                )
+            return
         frame = self._controller.state.current_frame
         count = self._annotation_store.clear_frame(frame)
         if count == 0:
@@ -864,6 +934,39 @@ class ImgPlayerApp:
                 f"Annotation : {count} trait{plural} effacé{plural} "
                 f"(Ctrl+Z pour annuler)"
             )
+
+    # ------------------------------------------------------------------ Ephemeral wiring (v0.4.1)
+
+    def _on_ephemeral_mode_changed(self, on: bool) -> None:
+        """Toolbar's 👻 toggled. Mirror to overlay + status hint."""
+        self._annotation_overlay.set_ephemeral_mode(on)
+        if on:
+            self._window.set_status(
+                "Mode éphémère activé — les traits s'effacent tout seuls "
+                "(non sauvegardés)"
+            )
+        else:
+            self._window.set_status("Mode persistant rétabli")
+
+    def _on_ephemeral_duration_changed(self, seconds: float) -> None:
+        """Toolbar's preset dot clicked. Push duration to the manager
+        and persist the preset index for next session."""
+        self._ephemeral_manager.set_duration(seconds)
+        self._prefs.ephemeral_duration_preset = (
+            self._annotation_toolbar.ephemeral_preset_index()
+        )
+
+    def _toggle_ephemeral_mode(self) -> None:
+        """``G`` keyboard shortcut — flip the toolbar toggle.
+
+        We go through the toolbar (not directly through the overlay)
+        so the toolbar's UI state — checked button, preset bar
+        visibility, pen glyph swap, eraser disabling — stays in sync.
+        The toolbar emits the change-signal which app.py routes back
+        to overlay + status bar via the wiring above.
+        """
+        new_state = not self._annotation_toolbar.is_ephemeral_mode()
+        self._annotation_toolbar.set_ephemeral_mode(new_state)
 
     def _prompt_save_annotations(self) -> bool:
         """Close-time prompt: ask whether to save review notes
@@ -1180,6 +1283,12 @@ class ImgPlayerApp:
         # Remember this path for next launch and for the Recent menu.
         self._prefs.last_path = path
         self._prefs.push_recent(path)
+
+        # Drop any live ephemeral strokes from the previous sequence
+        # (v0.4.1) — they're image-space anchored, not frame-bound,
+        # so they would otherwise float on the new sequence's first
+        # frame until they fade. Cheap and idempotent.
+        self._ephemeral_manager.clear_all()
 
         # Load any persisted annotations for this sequence. The
         # sidecar lives next to the frame files; basename routes to

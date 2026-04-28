@@ -238,3 +238,35 @@ class Preferences:
     @annotation_toolbar_visible.setter
     def annotation_toolbar_visible(self, value: bool) -> None:
         self._s.setValue("annotation_toolbar/visible", bool(value))
+
+    # ------------------------------------------------------------------ Ephemeral annotations (v0.4.1)
+
+    @property
+    def ephemeral_duration_preset(self) -> int:
+        """Index of the active ephemeral fade preset.
+
+        ``0`` = court (~2 s), ``1`` = moyen (~5 s, default),
+        ``2`` = long (~10 s). Persisted across sessions so the user's
+        last-picked rhythm survives an app restart. We only persist the
+        preset *index* — the seconds-mapping lives in the toolbar code,
+        keeping this preference free of "magic numbers" that would
+        drift if the mapping changes.
+        """
+        try:
+            v = int(self._s.value("ephemeral/duration_preset", 1))
+        except (TypeError, ValueError):
+            return 1
+        return v if v in (0, 1, 2) else 1
+
+    @ephemeral_duration_preset.setter
+    def ephemeral_duration_preset(self, value: int) -> None:
+        # Silent reject for out-of-range values — same defensive
+        # pattern as side_tab_index above. A bad value in QSettings
+        # shouldn't crash the app at boot.
+        try:
+            v = int(value)
+        except (TypeError, ValueError):
+            return
+        if v not in (0, 1, 2):
+            return
+        self._s.setValue("ephemeral/duration_preset", v)

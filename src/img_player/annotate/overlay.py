@@ -30,6 +30,7 @@ from PySide6.QtCore import QCoreApplication, QEvent, QObject, Qt
 from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QWidget
 
+from img_player.annotate.ephemeral import EphemeralStrokeManager
 from img_player.annotate.store import AnnotationStore
 from img_player.annotate.stroke import Stroke
 from img_player.render.gl_viewport import GLViewport
@@ -210,6 +211,20 @@ class AnnotationOverlay(QWidget):
         # actively drawing. Points are in image-space.
         self._current_stroke_points: list[tuple[float, float]] | None = None
 
+        # Ephemeral mode (v0.4.1) — when True, finished pen strokes
+        # are routed to the EphemeralStrokeManager instead of the
+        # AnnotationStore. The manager owns the live list + the
+        # fade timer; we just hand strokes off and read back at
+        # paintEvent. Set by app.py via set_ephemeral_mode().
+        self._ephemeral_mode: bool = False
+        self._ephemeral_manager: EphemeralStrokeManager | None = None
+        # Snapshot of _ephemeral_mode taken at mousePress, read at
+        # mouseRelease. This binds the routing decision to press-time
+        # so a mid-drag mode toggle (keyboard G or click on the
+        # toolbar) doesn't reroute a stroke half-way through. Cleared
+        # back to None when the drag ends.
+        self._current_stroke_is_ephemeral: bool | None = None
+
         # When a non-left mouse button starts a drag (e.g. middle for
         # pan), we forward the entire press → move* → release sequence
         # to the GL viewport so the user can still pan / right-click /
@@ -287,6 +302,35 @@ class AnnotationOverlay(QWidget):
     def tool(self) -> ToolKind:
         return self._tool
 
+    # ------------------------------------------------------------------ Ephemeral wiring (v0.4.1)
+
+    def set_ephemeral_manager(self, manager: EphemeralStrokeManager) -> None:
+        """Inject the live-strokes manager. Call once at app startup.
+
+        The manager is owned by ``app.py`` (so its lifetime is tied
+        to the application, not to a single overlay instance — which
+        could be re-created on a sequence change). We also subscribe
+        to its ``repaint_needed`` signal so the alpha animation
+        renders smoothly without us polling.
+        """
+        self._ephemeral_manager = manager
+        manager.repaint_needed.connect(self.update)
+
+    def set_ephemeral_mode(self, on: bool) -> None:
+        """Toggle ephemeral mode.
+
+        While on, strokes finished by a left-button release route to
+        ``EphemeralStrokeManager.add()`` instead of
+        ``AnnotationStore.add_stroke()``. The actual stroke geometry,
+        smoothing, and tool capture logic is unchanged — only the
+        sink differs.
+        """
+        self._ephemeral_mode = bool(on)
+
+    @property
+    def ephemeral_mode(self) -> bool:
+        return self._ephemeral_mode
+
     # ------------------------------------------------------------------ Event filter (resize)
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
@@ -325,6 +369,11 @@ class AnnotationOverlay(QWidget):
 
         if self._tool == ToolKind.PEN:
             self._current_stroke_points = [cursor_image]
+            # Snapshot the current mode so a mid-drag toggle doesn't
+            # reroute the finished stroke. The user's intent is
+            # decided at press-time: "I started this stroke in
+            # ephemeral/persistent mode, that's where it goes".
+            self._current_stroke_is_ephemeral = self._ephemeral_mode
             self.update()
             event.accept()
         elif self._tool == ToolKind.ERASER:
@@ -373,10 +422,19 @@ class AnnotationOverlay(QWidget):
             super().mouseReleaseEvent(event)
             return
         points = tuple(self._current_stroke_points)
+        is_ephemeral = self._current_stroke_is_ephemeral
         self._current_stroke_points = None
+        self._current_stroke_is_ephemeral = None
         if len(points) >= 1:
             stroke = Stroke(points=points, color=self._color, size=self._size)
-            self._store.add_stroke(self._current_frame, stroke)
+            # Route based on the press-time snapshot. If the manager
+            # wasn't injected (test harness, partial wiring) we fall
+            # back to persistent — failing safe rather than dropping
+            # the stroke on the floor.
+            if is_ephemeral and self._ephemeral_manager is not None:
+                self._ephemeral_manager.add(stroke)
+            else:
+                self._store.add_stroke(self._current_frame, stroke)
         event.accept()
 
     def _cursor_in_image_space(
@@ -422,6 +480,8 @@ class AnnotationOverlay(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         try:
+            # Pass 1 — persistent strokes attached to the current frame,
+            # at full alpha (current behaviour, unchanged).
             for stroke in self._store.strokes_at(self._current_frame):
                 self._draw_stroke(
                     painter,
@@ -433,8 +493,30 @@ class AnnotationOverlay(QWidget):
                     factor,
                     (pan_x, pan_y),
                 )
-            # In-progress stroke (during a pen drag) — paint it with
-            # the current tool color/size.
+            # Pass 2 — live ephemeral strokes (v0.4.1). Painted on
+            # top of persistent so a fading gesture stays visible
+            # over the underlying review notes. Each stroke gets its
+            # own alpha based on how long it has been alive.
+            # Rendered regardless of self._is_playing — the spec is
+            # explicit that ephemeral is presentation-grade and must
+            # always show during playback.
+            if self._ephemeral_manager is not None:
+                for stroke, alpha in self._ephemeral_manager.live_strokes_with_alpha():
+                    self._draw_stroke(
+                        painter,
+                        stroke.points,
+                        stroke.color,
+                        stroke.size,
+                        widget_size,
+                        img_size,
+                        factor,
+                        (pan_x, pan_y),
+                        alpha=alpha,
+                    )
+            # Pass 3 — in-progress stroke (during a pen drag). Paint
+            # it with the current tool color/size at full alpha. Even
+            # an ephemeral-mode in-progress stroke renders solid
+            # until release — the timer doesn't see it yet.
             if self._current_stroke_points is not None:
                 self._draw_stroke(
                     painter,
@@ -459,9 +541,23 @@ class AnnotationOverlay(QWidget):
         img_size: tuple[int, int],
         factor: float,
         pan: tuple[float, float],
+        *,
+        alpha: float = 1.0,
     ) -> None:
-        """Draw a single stroke onto ``painter``."""
-        pen = QPen(QColor(color))
+        """Draw a single stroke onto ``painter``.
+
+        ``alpha`` defaults to ``1.0`` (full opacity) so persistent
+        strokes keep behaving exactly as before. Ephemeral strokes
+        pass an alpha in ``[0, 1]`` computed from their age via
+        :func:`~img_player.annotate.ephemeral.alpha_at`.
+        """
+        pen_color = QColor(color)
+        # Multiply (not overwrite) the alpha — if the user picked a
+        # color with built-in transparency (e.g. an #RRGGBBAA from
+        # the palette), the fade still respects the original alpha.
+        if alpha != 1.0:
+            pen_color.setAlphaF(max(0.0, min(1.0, alpha)) * pen_color.alphaF())
+        pen = QPen(pen_color)
         # ``size`` is in image-pixels; multiply by factor so the
         # rendered stroke stays visually proportional to the image
         # at any zoom level.
