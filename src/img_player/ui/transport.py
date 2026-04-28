@@ -599,6 +599,14 @@ def _text_button(label: str, tooltip: str) -> QPushButton:
     btn.setFixedSize(G.BTN_TEXT_W, G.BTN_TRANSPORT_H)
     btn.setToolTip(tooltip)
     btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+    # Emoji glyphs render at the button's font size — the default
+    # ~13 pt makes them visibly smaller than the 18 px SVG icons
+    # next to them. Bumping to 15 pt brings the emoji bounding box
+    # in line with the SVG transport icons so the row reads as a
+    # uniform set of controls (user feedback v0.5.2).
+    font = btn.font()
+    font.setPointSize(15)
+    btn.setFont(font)
     return btn
 
 
