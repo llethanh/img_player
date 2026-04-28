@@ -81,12 +81,14 @@ MIN_SIZE = 1.0
 MAX_SIZE = 30.0
 
 # Ephemeral fade duration presets — 3 fixed values mapped to a
-# spec-driven label (court/moyen/long). The toolbar holds the
-# integer index; the seconds-mapping lives here so a renaming or
-# tuning round only touches one place. Default index 1 (5 s) at
-# boot when no preference is stored. See spec §6.3.
-EPHEMERAL_PRESETS_S: tuple[float, ...] = (2.0, 5.0, 10.0)
-DEFAULT_EPHEMERAL_PRESET_INDEX = 1
+# spec-driven label (moyen/court/long). User-requested order
+# (v0.4.1.1): the leftmost dot is the default-and-most-common
+# duration ("moyen"), so users land on a sane value without having
+# to read the tooltip. Court and long flank it on either side.
+# The toolbar holds the integer index; the seconds-mapping lives
+# here so a renaming or tuning round only touches one place.
+EPHEMERAL_PRESETS_S: tuple[float, ...] = (5.0, 2.0, 10.0)
+DEFAULT_EPHEMERAL_PRESET_INDEX = 0
 # Cyan accent used for the toolbar's outer border when ephemeral
 # mode is active — same value as the "blue note" swatch in PALETTE
 # so the visual language stays internally consistent.
@@ -700,12 +702,14 @@ class AnnotationToolbar(QWidget):
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(4)
 
-        # Three buttons : "court", "moyen", "long". Bullet glyphs
-        # are rendered at three different point sizes so the
-        # gradient is visible at a glance.
+        # Three buttons : "moyen" (default, leftmost), then "court"
+        # and "long" flanking. Each glyph is rendered at a different
+        # point size so the gradient hints at the duration without
+        # needing the tooltip. Visual position MATCHES value order
+        # in EPHEMERAL_PRESETS_S — index 0 first, etc.
         labels = (
+            ("●", 12, "Moyen · ~5 s — usage courant (défaut)"),
             ("●", 9, "Court · ~2 s — fade rapide pour gestes brefs"),
-            ("●", 12, "Moyen · ~5 s — usage courant"),
             ("●", 16, "Long · ~10 s — pour expliquer en plusieurs phrases"),
         )
 
@@ -722,10 +726,31 @@ class AnnotationToolbar(QWidget):
             btn.setToolTip(tooltip)
             btn.setFixedSize(20, 18)
             btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-            # Inline font-size override so the bullets actually look
-            # different from each other — a single Qt point change
-            # reads at this UI scale.
-            btn.setStyleSheet(f"QToolButton {{ font-size: {point_size}px; padding: 0; }}")
+            # Color-on-select : the active preset's glyph turns cyan
+            # (the same accent as the toolbar's ephemeral border) so
+            # which one is picked reads instantly. ``:checked`` is
+            # the QSS pseudo-class that maps to QAbstractButton's
+            # checked state.
+            btn.setStyleSheet(
+                f"QToolButton {{"
+                f"  font-size: {point_size}px;"
+                f"  padding: 0;"
+                f"  color: #8A8A8E;"  # muted grey when not selected
+                f"  background: transparent;"
+                f"  border: none;"
+                f"}}"
+                f"QToolButton:checked {{"
+                f"  color: {_EPHEMERAL_ACCENT};"  # cyan when selected
+                f"  background: rgba(74, 141, 232, 36);"  # subtle cyan halo
+                f"  border-radius: 4px;"
+                f"}}"
+                f"QToolButton:hover {{"
+                f"  color: #C0C0C4;"
+                f"}}"
+                f"QToolButton:checked:hover {{"
+                f"  color: {_EPHEMERAL_ACCENT};"
+                f"}}"
+            )
             # Closure capture: bind ``i`` at definition time, not at
             # call time, otherwise every lambda would emit index 2.
             btn.clicked.connect(
