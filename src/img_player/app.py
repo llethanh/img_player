@@ -496,6 +496,8 @@ class ImgPlayerApp:
         self._window.direction_play_requested.connect(self._on_direction_play)
         self._window.mark_in_requested.connect(self._on_mark_in)
         self._window.mark_out_requested.connect(self._on_mark_out)
+        self._window.set_in_at_requested.connect(self._on_set_in_at)
+        self._window.set_out_at_requested.connect(self._on_set_out_at)
         self._window.clear_in_out_requested.connect(lambda: self._controller.set_in_out(None, None))
         self._window.loop_mode_requested.connect(self._controller.set_loop_mode)
         self._window.channels_requested.connect(self._on_channels_requested)
@@ -1447,6 +1449,24 @@ class ImgPlayerApp:
         cur = self._controller.state.current_frame
         self._controller.set_in_out(self._controller.state.in_frame, cur)
         self._window.set_status(f"Out point set to frame {cur}")
+
+    def _on_set_in_at(self, frame: int) -> None:
+        """Ctrl-click drag on the timeline LEFT of the cursor →
+        place / drag the in-point at ``frame``. Clamped so it never
+        ends up past the current out-point (keeps in ≤ out)."""
+        out = self._controller.state.out_frame
+        if out is not None and frame > out:
+            frame = out
+        self._controller.set_in_out(frame, out)
+
+    def _on_set_out_at(self, frame: int) -> None:
+        """Ctrl-click drag RIGHT of the cursor → place / drag the
+        out-point at ``frame``. Clamped so it never ends up before
+        the current in-point."""
+        in_f = self._controller.state.in_frame
+        if in_f is not None and frame < in_f:
+            frame = in_f
+        self._controller.set_in_out(in_f, frame)
 
     def _open_path(self, path: Path) -> None:
         """Scan `path` off the main thread so the UI stays responsive."""

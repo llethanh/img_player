@@ -70,6 +70,13 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
     direction_play_requested = Signal(int)  # +1 forward, -1 reverse (J/L)
     mark_in_requested = Signal()  # set in-point at current frame (I)
     mark_out_requested = Signal()  # set out-point at current frame (O)
+    # Ctrl-click on the timeline drags an explicit in/out frame —
+    # forwarded straight from Timeline.set_in_at_requested /
+    # set_out_at_requested. Different signal from mark_in/out
+    # because it carries a frame number rather than "use the
+    # current playhead".
+    set_in_at_requested = Signal(int)
+    set_out_at_requested = Signal(int)
     clear_in_out_requested = Signal()  # reset in/out range (Shift+R)
     loop_mode_requested = Signal(object)  # LoopMode
 
@@ -570,6 +577,9 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self._transport.zoom_requested.connect(self.zoom_requested.emit)
         self._viewer.gl.zoom_changed.connect(self._transport.set_zoom_display)
         self._timeline.frame_requested.connect(self.frame_requested.emit)
+        # Ctrl-click drag → forward the in/out frame request.
+        self._timeline.set_in_at_requested.connect(self.set_in_at_requested.emit)
+        self._timeline.set_out_at_requested.connect(self.set_out_at_requested.emit)
         # Drag-scrub inside the image viewport routes through the same
         # frame_requested → app._on_scrub_requested pipeline as the
         # timeline scrubber. From the controller's point of view the

@@ -41,6 +41,13 @@ class Timeline(QWidget):  # type: ignore[misc]
     """
 
     frame_requested = Signal(int)
+    # Ctrl + click on the timeline: places (and lets the user drag)
+    # an in or out point depending on which side of the playhead
+    # the click landed. Same gesture as Nuke's timeline. Emits the
+    # frame number under the cursor; the controller decides what
+    # to do with the previously-set in/out value.
+    set_in_at_requested = Signal(int)
+    set_out_at_requested = Signal(int)
 
     # ---- Geometry (from charter) -------------------------------------
     MARGIN_X      = 8
@@ -77,6 +84,13 @@ class Timeline(QWidget):  # type: ignore[misc]
         self._annotated_frames: frozenset[int] = frozenset()
         self._commented_frames: frozenset[int] = frozenset()
         self._scrubbing = False
+        # Drag mode for Ctrl-modified mouse interactions:
+        #   None         → normal scrub
+        #   "drag_in"    → moving the in-point
+        #   "drag_out"   → moving the out-point
+        # Decided at press time based on which side of the playhead
+        # the click landed; held until mouseRelease.
+        self._drag_mode: str | None = None
 
         self._label_font: QFont = F.mono(F.SIZE_XS)
 
@@ -428,16 +442,45 @@ class Timeline(QWidget):  # type: ignore[misc]
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() != Qt.MouseButton.LeftButton:
             return
+        x = event.position().x()
+        ctrl = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+        if ctrl and self._last > self._first:
+            # Ctrl + click → in/out drag mode. Choose IN or OUT
+            # based on which side of the playhead the click
+            # landed: left of cursor = in, right = out. The user
+            # can then drag (still holding Ctrl) to fine-tune the
+            # marker until release.
+            click_frame = self._x_to_frame(x)
+            if click_frame <= self._current:
+                self._drag_mode = "drag_in"
+                self.set_in_at_requested.emit(click_frame)
+            else:
+                self._drag_mode = "drag_out"
+                self.set_out_at_requested.emit(click_frame)
+            self.update()
+            return
         self._scrubbing = True
-        self._emit_for_x(event.position().x())
+        self._emit_for_x(x)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        x = event.position().x()
+        if self._drag_mode is not None:
+            if self._last <= self._first:
+                return
+            frame = self._x_to_frame(x)
+            if self._drag_mode == "drag_in":
+                self.set_in_at_requested.emit(frame)
+            else:
+                self.set_out_at_requested.emit(frame)
+            self.update()
+            return
         if self._scrubbing:
-            self._emit_for_x(event.position().x())
+            self._emit_for_x(x)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         del event
         self._scrubbing = False
+        self._drag_mode = None
 
     def _emit_for_x(self, x: float) -> None:
         if self._last <= self._first:

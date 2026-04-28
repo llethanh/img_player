@@ -174,6 +174,18 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
     def play(self) -> None:
         if self._sequence is None or self._state.is_playing:
             return
+        # If the user parked the cursor outside the in/out range
+        # while paused (allowed since v0.5.2), snap it back inside
+        # NOW so playback starts on a frame that's actually part of
+        # the loop. Choose the direction-appropriate boundary so a
+        # forward press lands on the in-point and a reverse press
+        # lands on the out-point.
+        cur = self._state.current_frame
+        lo = self._effective_in_frame()
+        hi = self._effective_out_frame()
+        if cur < lo or cur > hi:
+            target = lo if self._state.direction >= 0 else hi
+            self.seek(target)
         # GC tweak: collect *now* (so we start clean), freeze long-lived
         # objects (Qt widgets, OCIO config, cached frames) so the GC stops
         # walking them, then disable the cyclic collector entirely while
@@ -222,7 +234,15 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
     def seek(self, frame: int) -> None:
         if self._sequence is None:
             return
-        clamped = self._clamp(frame)
+        # User-initiated seeks (timeline scrub, ←/→ keys, frame
+        # input box) are free to land OUTSIDE the in/out range —
+        # only the sequence's absolute first/last act as hard
+        # bounds. The in/out range is a *playback* constraint, not
+        # a *navigation* one (matches Nuke / RV behaviour and was
+        # the v0.5.2 user request). Playback itself still respects
+        # the range via ``_advance``; if the user starts playback
+        # while parked outside it, ``_tick`` snaps back in.
+        clamped = self._clamp_to_sequence(frame)
         self._cache.clear_pending()
         self._update(current_frame=clamped)
         self._cache.set_current_frame(clamped)
@@ -284,13 +304,11 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
             self.play()
 
     def set_in_out(self, in_frame: int | None, out_frame: int | None) -> None:
+        # No auto-snap of the current frame anymore — the user is
+        # allowed to park the cursor outside the in/out range.
+        # Playback ``_tick`` is the only place that snaps, and only
+        # when the user actually presses play.
         self._update(in_frame=in_frame, out_frame=out_frame)
-        if self._sequence is not None:
-            clamped = self._clamp(self._state.current_frame)
-            if clamped != self._state.current_frame:
-                self._update(current_frame=clamped)
-                self._cache.set_current_frame(clamped)
-                self.frame_changed.emit(clamped)
 
     def shutdown(self) -> None:
         self._timer.stop()
@@ -486,6 +504,15 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
 
     def _clamp(self, frame: int) -> int:
         return max(self._effective_in_frame(), min(self._effective_out_frame(), frame))
+
+    def _clamp_to_sequence(self, frame: int) -> int:
+        """Clamp ``frame`` to the sequence's absolute bounds (first /
+        last frame), ignoring any in/out range. Used by ``seek`` so
+        the user can scrub freely outside the playback range — the
+        in/out is a constraint on PLAYBACK, not navigation."""
+        if self._sequence is None:
+            return frame
+        return max(self._sequence.first_frame, min(self._sequence.last_frame, frame))
 
     def _update(self, **kwargs: Any) -> None:
         new_state = replace(self._state, **kwargs)
