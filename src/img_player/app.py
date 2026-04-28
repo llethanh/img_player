@@ -1252,19 +1252,15 @@ class ImgPlayerApp:
         # Drop live ephemeral strokes (they were image-anchored to
         # the previous sequence).
         self._ephemeral_manager.clear_all()
-        # Reset the viewport — paint a solid dark-grey buffer so the
-        # user sees "nothing loaded". We deliberately don't reuse
-        # the missing-frame checkerboard: that would falsely suggest
-        # something went wrong when the user just clicked New on
-        # purpose.
+        # Reset the viewport — drop the image entirely so the user
+        # gets the same "no sequence loaded" look as at first
+        # launch. We deliberately avoid pushing any placeholder
+        # buffer (a centred grey square would falsely suggest
+        # something is loaded).
         try:
-            from img_player.cache.missing_placeholder import (
-                get_empty_placeholder,
-            )
-            placeholder = get_empty_placeholder(512, 512)
-            self._window.viewer.gl.set_frame(placeholder)
+            self._window.viewer.gl.clear_image()
         except Exception:
-            log.exception("[new] failed to reset viewport")
+            log.exception("[new] failed to clear viewport")
         # Clear timeline UI.
         self._window.timeline.set_range(0, 0)
         self._window.timeline.set_cached_frames(frozenset())

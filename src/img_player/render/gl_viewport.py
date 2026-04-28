@@ -411,6 +411,21 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
         self._pending_frame = np.ascontiguousarray(pixels)
         self.update()
 
+    def clear_image(self) -> None:
+        """Drop the current image without uploading a new one.
+
+        Restores the "no sequence loaded" look the user sees at
+        first launch — the viewport's ``paintGL`` early-returns
+        when ``_image_size == (0, 0)``, leaving the GL clear color
+        as the only thing on screen. Used by File → New so the
+        viewport doesn't keep showing the last frame of the old
+        sequence (and doesn't fake a "missing frame" placeholder
+        that would suggest something went wrong).
+        """
+        self._pending_frame = None
+        self._image_size = (0, 0)
+        self.update()
+
     def set_color_params(
         self,
         bundle: ShaderBundle | None = None,
