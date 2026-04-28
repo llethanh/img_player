@@ -113,3 +113,35 @@ class TestValidation:
         # Inject garbage directly into QSettings.
         prefs._s.setValue("ephemeral/duration_preset", "banana")
         assert prefs.ephemeral_duration_preset == 1
+
+
+# ============================================================================
+# Ghost-mode on/off persistence (added when the user asked for the
+# 👻 toggle to survive an app restart)
+# ============================================================================
+
+
+class TestEphemeralModeFlag:
+    def test_default_is_off(self) -> None:
+        """Fresh user → mode starts off, persistent annotations are
+        the default-and-discoverable behaviour."""
+        prefs = Preferences()
+        assert prefs.ephemeral_mode_enabled is False
+
+    def test_round_trip_true(self) -> None:
+        prefs = Preferences()
+        prefs.ephemeral_mode_enabled = True
+        assert Preferences().ephemeral_mode_enabled is True
+
+    def test_round_trip_false(self) -> None:
+        prefs = Preferences()
+        prefs.ephemeral_mode_enabled = True
+        prefs.ephemeral_mode_enabled = False
+        assert Preferences().ephemeral_mode_enabled is False
+
+    def test_string_true_value_in_ini_is_recognised(self) -> None:
+        """QSettings INI backend writes booleans as the strings
+        'true' / 'false'. The getter must handle that round-trip."""
+        prefs = Preferences()
+        prefs._s.setValue("ephemeral/mode_enabled", "true")
+        assert prefs.ephemeral_mode_enabled is True

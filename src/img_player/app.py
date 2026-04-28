@@ -535,6 +535,11 @@ class ImgPlayerApp:
         self._annotation_toolbar.ephemeral_duration_changed.connect(
             self._on_ephemeral_duration_changed
         )
+        # Restore the saved ghost state. Fire through the toolbar's
+        # public setter so the overlay routing, glyph swap, eraser
+        # disabling and border tint all resync via the wired signal.
+        if self._prefs.ephemeral_mode_enabled:
+            self._annotation_toolbar.set_ephemeral_mode(True)
 
         # Annotation save prompt — runs from MainWindow.closeEvent
         # before the window actually closes. Returning False from
@@ -938,8 +943,10 @@ class ImgPlayerApp:
     # ------------------------------------------------------------------ Ephemeral wiring (v0.4.1)
 
     def _on_ephemeral_mode_changed(self, on: bool) -> None:
-        """Toolbar's 👻 toggled. Mirror to overlay + status hint."""
+        """Toolbar's 👻 toggled. Mirror to overlay + status hint and
+        persist so the next launch lands in the same mode."""
         self._annotation_overlay.set_ephemeral_mode(on)
+        self._prefs.ephemeral_mode_enabled = on
         if on:
             self._window.set_status(
                 "Mode éphémère activé — les traits s'effacent tout seuls "

@@ -270,3 +270,19 @@ class Preferences:
         if v not in (0, 1, 2):
             return
         self._s.setValue("ephemeral/duration_preset", v)
+
+    @property
+    def ephemeral_mode_enabled(self) -> bool:
+        """Whether ghost mode is on. Persisted so the user finds the
+        toolbar in the same state as when they closed the app — handy
+        for someone who works mostly in ephemeral mode and would
+        otherwise have to press G after every restart. Default off:
+        a fresh user lands on the persistent (saving) mode."""
+        raw = self._s.value("ephemeral/mode_enabled", False)
+        if isinstance(raw, str):
+            return raw.lower() in ("true", "1", "yes")
+        return bool(raw)
+
+    @ephemeral_mode_enabled.setter
+    def ephemeral_mode_enabled(self, value: bool) -> None:
+        self._s.setValue("ephemeral/mode_enabled", bool(value))
