@@ -11,6 +11,7 @@ from pathlib import Path
 import numpy as np
 
 from img_player.bench import recorder
+from img_player.cache.missing_placeholder import get_missing_placeholder
 from img_player.cache.worker_pool import WorkerPool
 from img_player.io.reader import FrameReadError, read_frame
 from img_player.sequence.models import SequenceInfo
@@ -60,6 +61,17 @@ class FrameCache:
         self._bytes_used = 0
         self._sequence: SequenceInfo | None = None
         self._paths_by_frame: dict[int, Path] = {}
+        # Per-frame mtime captured at attach time. Lets a smart
+        # ``reload()`` invalidate only the frames whose source file
+        # was modified or removed since the last attach. ``0.0``
+        # means "unknown" — we treat unknown == always different on
+        # comparison.
+        self._mtimes_by_frame: dict[int, float] = {}
+        # Frames whose source file failed to decode. Their slot in
+        # ``_frames`` holds a checkerboard placeholder so playback
+        # never stalls on a missing file. The timeline reads this
+        # set to paint the slots red.
+        self._missing_frames: set[int] = set()
         self._current_frame = 0
         # +1 = forward play, -1 = reverse. Used to skew eviction so frames
         # ahead of the playhead are preserved over frames already behind.
@@ -94,13 +106,92 @@ class FrameCache:
         self._pool.clear()
         with self._lock:
             self._frames.clear()
+            self._missing_frames.clear()
             self._bytes_used = 0
             self._sequence = sequence
             self._paths_by_frame = {f.frame_number: f.path for f in sequence.frames}
+            self._mtimes_by_frame = {
+                f.frame_number: f.mtime for f in sequence.frames
+            }
             self._current_frame = sequence.first_frame
             # Any decode that was in flight against the previous
             # sequence is now meaningless — fence them out.
             self._epoch += 1
+
+    def detach(self) -> None:
+        """Unhook the cache from any sequence. Called by File → New
+        so playback can't keep ticking a dead sequence."""
+        self._pool.clear()
+        with self._lock:
+            self._frames.clear()
+            self._missing_frames.clear()
+            self._bytes_used = 0
+            self._sequence = None
+            self._paths_by_frame = {}
+            self._mtimes_by_frame = {}
+            self._current_frame = 0
+            self._epoch += 1
+
+    def reload(self, new_sequence: SequenceInfo) -> tuple[int, int, int]:
+        """Smart re-attach: keep frames whose mtime is unchanged,
+        drop the rest, prepare for re-decode of the gone-or-changed
+        ones. Returns ``(kept, dropped, missing)`` for the status bar.
+
+        ``new_sequence`` is the result of
+        :func:`img_player.sequence.scanner.rescan` — its ``frames``
+        tuple includes the latest mtime per file (``0.0`` for files
+        that disappeared between scans).
+
+        The cache layer is the right place for this logic: only it
+        knows which frames are currently in RAM and at which mtime
+        they were captured. The controller doesn't have to think
+        about it; it just sees a normally-attached sequence with
+        some slots cached and some missing.
+        """
+        self._pool.clear()
+        kept = dropped = missing = 0
+        with self._lock:
+            old_mtimes = self._mtimes_by_frame
+            new_mtimes = {f.frame_number: f.mtime for f in new_sequence.frames}
+            new_paths = {f.frame_number: f.path for f in new_sequence.frames}
+            # Decide which currently-cached frames survive.
+            for fnum in list(self._frames.keys()):
+                old_mt = old_mtimes.get(fnum, 0.0)
+                new_mt = new_mtimes.get(fnum, None)
+                if new_mt is None:
+                    # Frame disappeared from disk → drop the cached
+                    # data; the placeholder will take over at next
+                    # decode attempt.
+                    arr = self._frames.pop(fnum)
+                    self._bytes_used -= arr.nbytes
+                    dropped += 1
+                elif new_mt == 0.0 or old_mt == 0.0 or new_mt != old_mt:
+                    # mtime changed (or is unknown): the cached pixels
+                    # don't match disk anymore. Drop and re-decode.
+                    arr = self._frames.pop(fnum)
+                    self._bytes_used -= arr.nbytes
+                    dropped += 1
+                else:
+                    kept += 1
+            # Missing-frames set: previously-marked missing entries
+            # whose mtime is now non-zero get cleared so the next
+            # decode attempt has a chance.
+            for fnum in list(self._missing_frames):
+                new_mt = new_mtimes.get(fnum, 0.0)
+                if new_mt > 0.0:
+                    # File is back / new on disk → reset state and
+                    # try again.
+                    self._missing_frames.discard(fnum)
+                    self._frames.pop(fnum, None)
+            missing = len(self._missing_frames)
+            # Re-attach paths + mtimes to the new sequence.
+            self._sequence = new_sequence
+            self._paths_by_frame = new_paths
+            self._mtimes_by_frame = new_mtimes
+            # Bump epoch so any in-flight decode against the
+            # previous attach drops its result.
+            self._epoch += 1
+        return (kept, dropped, missing)
 
     def clear(self) -> None:
         """Remove cached frames and drop pending decodes. Sequence stays attached."""
@@ -186,9 +277,21 @@ class FrameCache:
             return frame in self._frames
 
     def cached_frames(self) -> frozenset[int]:
-        """Snapshot of the currently cached frame numbers (thread-safe)."""
+        """Snapshot of the currently cached frame numbers (thread-safe).
+
+        Includes missing-frame slots (which hold the checkerboard
+        placeholder) — the playback path treats them as cached so
+        the playhead doesn't stall on a hole. To get the real-data
+        subset, use ``cached_frames() - missing_frames()``.
+        """
         with self._lock:
             return frozenset(self._frames.keys())
+
+    def missing_frames(self) -> frozenset[int]:
+        """Frames whose source file was missing or unreadable at decode
+        time. Empty until at least one decode has been attempted."""
+        with self._lock:
+            return frozenset(self._missing_frames)
 
     def request(self, frame: int, priority: int = 0) -> bool:
         """Enqueue async decode. Returns True if submitted, False if already
@@ -251,8 +354,27 @@ class FrameCache:
             arr = read_frame(path, channels=channels)
         except FrameReadError as err:
             log.warning("decode failed frame=%d path=%s: %s", frame, path, err)
+            # Substitute a checkerboard placeholder so playback can
+            # continue across the hole. Sized to the sequence's known
+            # resolution when available, otherwise a 512×512 default —
+            # the GL viewport rescales it to fit the current zoom.
+            placeholder = self._build_missing_placeholder()
             with self._lock:
                 self._decode_errors += 1
+                # Same epoch + race guards as the success path: drop
+                # if the world moved.
+                if epoch != self._epoch:
+                    return
+                if frame in self._frames:
+                    return
+                self._frames[frame] = placeholder
+                self._missing_frames.add(frame)
+                self._bytes_used += placeholder.nbytes
+                # Eviction is intentionally NOT triggered for missing
+                # placeholders — they cost almost nothing (one shared
+                # buffer per resolution, view aliased across slots)
+                # and evicting them would re-trigger the failed decode
+                # next tick, log-spamming on every loop.
             return
         if bench_enabled:
             recorder.record_decode(
@@ -275,6 +397,14 @@ class FrameCache:
             self._frames[frame] = arr
             self._bytes_used += arr.nbytes
             self._evict_if_over_budget()
+
+    def _build_missing_placeholder(self) -> np.ndarray:
+        """Return the checkerboard "missing" placeholder, sized to
+        the sequence resolution when known."""
+        seq = self._sequence
+        w = (seq.width if seq is not None and seq.width else 512)
+        h = (seq.height if seq is not None and seq.height else 512)
+        return get_missing_placeholder(w, h)
 
     def shrink_budget(self, new_bytes: int) -> None:
         """Reduce the budget at runtime and force an immediate eviction.

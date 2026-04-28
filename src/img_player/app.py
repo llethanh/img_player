@@ -487,6 +487,10 @@ class ImgPlayerApp:
         # Export (v0.5.0) — both menu and transport button route here.
         self._window.export_requested.connect(self._open_export_dialog)
         self._window.transport.export_clicked.connect(self._open_export_dialog)
+        # New / Reload (v0.5.1) — same shape, two routes each.
+        self._window.new_sequence_requested.connect(self._on_new_sequence)
+        self._window.reload_sequence_requested.connect(self._on_reload_sequence)
+        self._window.transport.reload_clicked.connect(self._on_reload_sequence)
         self._window.exposure_step.connect(self._window.color_panel.bump_exposure)
         self._window.fps_changed.connect(self._on_fps_changed)
         self._window.direction_play_requested.connect(self._on_direction_play)
@@ -1222,6 +1226,98 @@ class ImgPlayerApp:
         self._prefs.display = display
         self._prefs.view = view
 
+    # ------------------------------------------------------------------ New / Reload (v0.5.1)
+
+    def _on_new_sequence(self) -> None:
+        """File → New (Ctrl+N): clear the loaded sequence without
+        resetting the rest of the UI.
+
+        Tools (toolbar, color panel, FPS, view, ephemeral mode,
+        annotations toolbar visibility) keep their state — only the
+        viewport, the cache, the in-memory annotation/comment data
+        and the timeline get wiped. The user can then File → Open a
+        different sequence with all their preferences still in place.
+        """
+        # Stop any ongoing playback first; ticking a detached cache
+        # would just spin no-ops.
+        self._controller.pause()
+        self._controller._sequence = None  # noqa: SLF001 — there's no public detach
+        self._cache.detach()
+        # Clear in-memory annotation + comment data (their sidecar
+        # path tracking goes too).
+        self._annotation_store.load_from_dict({})
+        self._comment_store.load_from_dict({})
+        self._annotations_path = None
+        self._annotations_basename = None
+        # Drop live ephemeral strokes (they were image-anchored to
+        # the previous sequence).
+        self._ephemeral_manager.clear_all()
+        # Reset the viewport — paint the empty checkerboard so the
+        # user sees "nothing loaded".
+        try:
+            from img_player.cache.missing_placeholder import (
+                get_missing_placeholder,
+            )
+            placeholder = get_missing_placeholder(512, 512)
+            self._window.viewer.gl.set_frame(placeholder)
+        except Exception:
+            log.exception("[new] failed to reset viewport")
+        # Clear timeline UI.
+        self._window.timeline.set_range(0, 0)
+        self._window.timeline.set_cached_frames(frozenset())
+        self._window.timeline.set_missing_frames(frozenset())
+        self._window.timeline.set_annotated_frames(frozenset())
+        self._window.timeline.set_commented_frames(frozenset())
+        # Re-disable the actions that need a loaded sequence.
+        if hasattr(self._window, "_export_act"):
+            self._window._export_act.setEnabled(False)  # noqa: SLF001
+        if hasattr(self._window, "_reload_act"):
+            self._window._reload_act.setEnabled(False)  # noqa: SLF001
+        self._window.transport.set_export_enabled(False)
+        self._window.transport.set_reload_enabled(False)
+        self._window.setWindowTitle("img_player")
+        self._window.set_status("No sequence loaded — File → Open to load one.")
+
+    def _on_reload_sequence(self) -> None:
+        """Reload (Ctrl+R / 🔄): smart re-scan.
+
+        Re-globs the source folder for the current sequence's pattern,
+        diffs file mtimes vs the cached snapshot, drops only the
+        frames that changed (or vanished), keeps the rest. Frames
+        that newly appeared on disk become eligible for prefetch;
+        frames that disappeared get the missing-checkerboard
+        placeholder on next access.
+        """
+        from img_player.sequence.scanner import rescan as _rescan
+        seq = self._controller.sequence
+        if seq is None:
+            self._window.set_status("Reload: no sequence loaded.")
+            return
+        try:
+            new_seq = _rescan(seq)
+        except Exception as err:
+            log.exception("[reload] rescan failed")
+            self._window.set_status(f"Reload failed: {err}")
+            return
+        kept, dropped, missing = self._cache.reload(new_seq)
+        # Hand the new sequence info to the controller so its
+        # frame-range views (in/out, last_frame) reflect any
+        # newly-arrived frames.
+        self._controller._sequence = new_seq  # noqa: SLF001
+        self._window.update_sequence_info(new_seq)
+        self._window.timeline.set_range(new_seq.first_frame, new_seq.last_frame)
+        # Re-prime the prefetch ring around the current playhead.
+        self._cache.set_current_frame(self._controller.state.current_frame)
+        self._cache.request_range(
+            new_seq.first_frame, new_seq.last_frame, direction=1,
+        )
+        added = len(new_seq.frames) - (len(seq.frames) - dropped - missing)
+        added = max(0, added)
+        self._window.set_status(
+            f"Reload: {kept} kept, {dropped} re-decoded, {missing} missing"
+            + (f", {added} new" if added else "")
+        )
+
     # ------------------------------------------------------------------ Export (v0.5.0)
 
     def _open_export_dialog(self) -> None:
@@ -1551,6 +1647,7 @@ class ImgPlayerApp:
         if self._controller.sequence is None:
             return
         self._window.timeline.set_cached_frames(self._cache.cached_frames())
+        self._window.timeline.set_missing_frames(self._cache.missing_frames())
 
     def _refresh_status(self) -> None:
         """Update the right-hand perf indicators every 500 ms.

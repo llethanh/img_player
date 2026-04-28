@@ -82,6 +82,9 @@ class TransportBar(QWidget):  # type: ignore[misc]
     # until the app calls ``set_export_enabled(True)`` (which the
     # app does after a sequence loads).
     export_clicked = Signal()
+    # Reload button (v0.5.1) — smart re-scan of the source folder,
+    # keeping cached frames whose mtime hasn't changed.
+    reload_clicked = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -190,6 +193,17 @@ class TransportBar(QWidget):  # type: ignore[misc]
         )
         self._export_btn.clicked.connect(self.export_clicked.emit)
         self._export_btn.setEnabled(False)
+
+        # --- Reload button (v0.5.1) -----------------------------------
+        # 🔄 = smart re-scan. Keeps cached frames whose mtime is
+        # unchanged, drops the rest, picks up files that were added
+        # to the source folder while the app was running. Disabled
+        # until a sequence is loaded.
+        self._reload_btn = _text_button(
+            "🔄", "Reload cache — re-scan source folder (Ctrl+R)"
+        )
+        self._reload_btn.clicked.connect(self.reload_clicked.emit)
+        self._reload_btn.setEnabled(False)
 
         # --- FPS ------------------------------------------------------------
         self._fps_combo = QComboBox()
@@ -305,6 +319,7 @@ class TransportBar(QWidget):  # type: ignore[misc]
         layout.addWidget(self._annotation_next_btn)
 
         layout.addWidget(_separator())
+        layout.addWidget(self._reload_btn)
         layout.addWidget(self._export_btn)
 
         layout.addWidget(_separator())
@@ -395,6 +410,11 @@ class TransportBar(QWidget):  # type: ignore[misc]
         button would just produce a confusing no-op.
         """
         self._export_btn.setEnabled(bool(enabled))
+
+    def set_reload_enabled(self, enabled: bool) -> None:
+        """Enable / disable the 🔄 reload button (same gating as
+        Export — needs a loaded sequence to mean anything)."""
+        self._reload_btn.setEnabled(bool(enabled))
 
     def set_annotation_toggle_active(self, active: bool) -> None:
         """Reflect the toolbar's visibility on the ✏ button.

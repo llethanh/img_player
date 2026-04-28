@@ -10,6 +10,13 @@ from pathlib import Path
 class FrameInfo:
     path: Path
     frame_number: int
+    # File mtime in seconds-since-epoch (Path.stat().st_mtime). Used by
+    # the FrameCache to detect when a file on disk has changed since the
+    # frame was cached, so a "Reload" only re-decodes what's actually
+    # different. ``0.0`` means "unknown" — callers that don't care
+    # (legacy code, tests) leave the default; the scanner populates it
+    # at sequence-detection time.
+    mtime: float = 0.0
 
 
 @dataclass(frozen=True)

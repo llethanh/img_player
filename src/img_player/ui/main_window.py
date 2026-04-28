@@ -56,6 +56,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
 
     open_requested = Signal(Path)
     export_requested = Signal()  # File → Export… (v0.5.0)
+    new_sequence_requested = Signal()      # File → New (Ctrl+N) — clear the loaded sequence
+    reload_sequence_requested = Signal()   # Reload cache (Ctrl+R / button)
     play_toggled = Signal()
     channels_requested = Signal(object)   # list[str] | None
     channel_mask_changed = Signal(tuple)  # (R, G, B, A) bools
@@ -265,15 +267,19 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.setWindowTitle(f"img_player — {sequence.display_pattern()}")
         self._timeline.set_range(sequence.first_frame, sequence.last_frame)
         # A sequence is loaded → enable the File → Export… action +
-        # the 💾 transport bar button.
+        # the 💾 transport bar button + Reload.
         if hasattr(self, "_export_act"):
             self._export_act.setEnabled(True)
+        if hasattr(self, "_reload_act"):
+            self._reload_act.setEnabled(True)
         self._transport.set_export_enabled(True)
+        self._transport.set_reload_enabled(True)
         # Clear the cache bar so we don't briefly show the old run
         # rectangles re-mapped onto the new range. The next
         # _refresh_cache_bar tick (~200 ms) re-populates with the
         # actually-cached frames of the new sequence.
         self._timeline.set_cached_frames(frozenset())
+        self._timeline.set_missing_frames(frozenset())
         # Populate the channel-selector combo so the user can pick
         # individual channels (Z, normals, AOVs, …).
         self._transport.set_available_channels(sequence.channel_names)
@@ -298,10 +304,30 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         menu_bar = self.menuBar()
         file_menu = menu_bar.addMenu("&File")
 
+        # File → New (Ctrl+N): clear the currently loaded sequence
+        # without resetting the rest of the UI (color panel, toolbar
+        # mode, FPS, etc.). Useful before opening a different
+        # sequence — keeps the user's tooling state intact.
+        new_act = QAction("&New", self)
+        new_act.setShortcut(QKeySequence("Ctrl+N"))
+        new_act.triggered.connect(self.new_sequence_requested.emit)
+        file_menu.addAction(new_act)
+
         open_act = QAction("&Open…", self)
         open_act.setShortcut(QKeySequence.StandardKey.Open)
         open_act.triggered.connect(self._on_open_action)
         file_menu.addAction(open_act)
+
+        # File → Reload (Ctrl+R): smart re-scan of the source folder.
+        # Keeps cached frames whose mtime is unchanged, drops the
+        # rest, and surfaces any newly-arrived / removed files.
+        # Disabled until a sequence is loaded — same gating as
+        # Export.
+        self._reload_act = QAction("&Reload", self)
+        self._reload_act.setShortcut(QKeySequence("Ctrl+R"))
+        self._reload_act.setEnabled(False)
+        self._reload_act.triggered.connect(self.reload_sequence_requested.emit)
+        file_menu.addAction(self._reload_act)
 
         self._recent_menu = file_menu.addMenu("Open &Recent")
         self._recent_menu.aboutToShow.connect(self._refresh_recent_menu)

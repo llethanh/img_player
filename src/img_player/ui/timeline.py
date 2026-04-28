@@ -68,6 +68,12 @@ class Timeline(QWidget):  # type: ignore[misc]
         self._fps = 24.0
         self._display_mode: DisplayMode = "frames"
         self._cached_frames: frozenset[int] = frozenset()
+        # Missing source frames — drawn red on the cache bar so the
+        # user spots holes in the sequence at a glance. The cache
+        # still marks them as "playable" (it serves a checkerboard
+        # placeholder) so playback continues; only the colour
+        # changes here.
+        self._missing_frames: frozenset[int] = frozenset()
         self._annotated_frames: frozenset[int] = frozenset()
         self._commented_frames: frozenset[int] = frozenset()
         self._scrubbing = False
@@ -109,6 +115,15 @@ class Timeline(QWidget):  # type: ignore[misc]
         if frames == self._cached_frames:
             return
         self._cached_frames = frames
+        self.update()
+
+    def set_missing_frames(self, frames: frozenset[int]) -> None:
+        """Frames whose source file was missing / unreadable. Painted
+        red on the cache bar (overrides the orange "cached" run for
+        the same slots so the user sees holes immediately)."""
+        if frames == self._missing_frames:
+            return
+        self._missing_frames = frames
         self.update()
 
     def set_annotated_frames(self, frames: frozenset[int]) -> None:
@@ -277,15 +292,32 @@ class Timeline(QWidget):  # type: ignore[misc]
         bar_rect = QRectF(self.MARGIN_X, self.CACHE_TOP, self._usable_width(), self.CACHE_H)
         painter.fillRect(bar_rect, C.CACHE_BAR_BG)
 
-        if not self._cached_frames:
-            return
+        # Pass 1 — orange runs of *real* cached frames (cached minus
+        # missing). Drawn first so the red "missing" run lands on top
+        # if both states ever overlap.
+        ok_cached = self._cached_frames - self._missing_frames
+        if ok_cached:
+            painter.setBrush(C.CACHE_BAR)
+            painter.setPen(QPen(C.CACHE_BAR_BORDER, 1))
+            self._draw_runs(painter, ok_cached)
 
-        # Each cached run = translucent orange fill + opaque orange
-        # border. Looks like a window over the black slot.
-        painter.setBrush(C.CACHE_BAR)
-        painter.setPen(QPen(C.CACHE_BAR_BORDER, 1))
+        # Pass 2 — red runs for missing frames. Same shape as the
+        # cached runs (translucent fill + opaque border) so the
+        # visual language stays consistent — only the colour
+        # changes. Cohérent with the v0.4.1 review-tool palette
+        # (red = "problem").
+        if self._missing_frames:
+            painter.setBrush(QColor(232, 74, 74, 128))   # #E84A4A @ 50%
+            painter.setPen(QPen(QColor("#E84A4A"), 1))
+            self._draw_runs(painter, self._missing_frames)
 
-        in_range = sorted(f for f in self._cached_frames if self._first <= f <= self._last)
+    def _draw_runs(self, painter: QPainter, frames: frozenset[int] | set[int]) -> None:
+        """Coalesce ``frames`` into contiguous runs and paint them.
+
+        Extracted so the same run-detection code is shared by the
+        cached and missing passes — only the brush + pen differ.
+        """
+        in_range = sorted(f for f in frames if self._first <= f <= self._last)
         if not in_range:
             return
         run_start = in_range[0]

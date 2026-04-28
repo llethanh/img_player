@@ -18,6 +18,20 @@ class SequenceNotFoundError(FileNotFoundError):
     """Raised when no sequence can be derived from the given path."""
 
 
+def _safe_mtime(path: Path) -> float:
+    """Return ``path.stat().st_mtime``, or ``0.0`` if the file is gone.
+
+    The cache uses mtime to detect "this file changed since I cached
+    it" — a missing file is just a special case of "changed", so a
+    fallback of 0.0 is fine: the next stat() will return a non-zero
+    value and the cache will see the change.
+    """
+    try:
+        return path.stat().st_mtime
+    except (OSError, FileNotFoundError):
+        return 0.0
+
+
 @dataclass(frozen=True)
 class _ParsedName:
     base: str
@@ -94,7 +108,11 @@ def scan_all(directory: Path | str, *, probe: bool = True) -> list[SequenceInfo]
         if parsed is None:
             continue
         key = (parsed.base, parsed.padding, parsed.extension)
-        groups[key].append(FrameInfo(path=entry, frame_number=parsed.frame))
+        groups[key].append(
+            FrameInfo(
+                path=entry, frame_number=parsed.frame, mtime=_safe_mtime(entry),
+            )
+        )
 
     sequences: list[SequenceInfo] = []
     for (base, padding, ext), frames in groups.items():
@@ -135,7 +153,13 @@ def _scan_from_file(file: Path, *, probe: bool = True) -> SequenceInfo:
             and candidate.padding == parsed.padding
             and candidate.extension == parsed.extension
         ):
-            matching_frames.append(FrameInfo(path=entry, frame_number=candidate.frame))
+            matching_frames.append(
+                FrameInfo(
+                    path=entry,
+                    frame_number=candidate.frame,
+                    mtime=_safe_mtime(entry),
+                )
+            )
 
     if not matching_frames:
         raise SequenceNotFoundError(f"No frames matching {file.name} in {directory}")
@@ -161,3 +185,79 @@ def _scan_from_dir(directory: Path, *, probe: bool = True) -> SequenceInfo:
     if not sequences:
         raise SequenceNotFoundError(f"No sequence found in {directory}")
     return sequences[0]
+
+
+def rescan(sequence: SequenceInfo) -> SequenceInfo:
+    """Cheap re-detection of an already-loaded sequence.
+
+    Re-globs the source directory for the same ``base_name`` /
+    ``padding`` / ``extension`` triplet, refreshes ``mtime`` on every
+    surviving frame, picks up any new frames added to disk, and drops
+    any frames that vanished. Width / height / channels are preserved
+    (no header probe — would cost an extra OIIO open per frame).
+
+    Used by the "Reload cache" action: the caller diffs the new
+    SequenceInfo against the old one (per-frame mtime) and tells the
+    cache which frames to drop / re-decode. Cheap enough to call
+    interactively (one ``iterdir`` + one ``stat`` per file).
+    """
+    directory = sequence.directory
+    matching: list[FrameInfo] = []
+    if not directory.is_dir():
+        # Directory itself disappeared — return an empty rescan;
+        # the caller marks every frame as missing.
+        return SequenceInfo(
+            base_name=sequence.base_name,
+            extension=sequence.extension,
+            directory=directory,
+            padding=sequence.padding,
+            frames=sequence.frames,  # keep the old frame list (all missing)
+            fps_default=sequence.fps_default,
+            width=sequence.width,
+            height=sequence.height,
+            channel_names=sequence.channel_names,
+        )
+    target_ext = sequence.extension.lstrip(".").lower()
+    for entry in directory.iterdir():
+        if not entry.is_file() or entry.name.startswith("."):
+            continue
+        parsed = _parse(entry.name)
+        if parsed is None:
+            continue
+        if (
+            parsed.base != sequence.base_name
+            or parsed.padding != sequence.padding
+            or parsed.extension != target_ext
+        ):
+            continue
+        matching.append(
+            FrameInfo(
+                path=entry, frame_number=parsed.frame, mtime=_safe_mtime(entry),
+            )
+        )
+    matching.sort(key=lambda f: f.frame_number)
+    if not matching:
+        # Files all gone — keep the old frame list so the caller
+        # can paint every slot as missing.
+        return SequenceInfo(
+            base_name=sequence.base_name,
+            extension=sequence.extension,
+            directory=directory,
+            padding=sequence.padding,
+            frames=sequence.frames,
+            fps_default=sequence.fps_default,
+            width=sequence.width,
+            height=sequence.height,
+            channel_names=sequence.channel_names,
+        )
+    return SequenceInfo(
+        base_name=sequence.base_name,
+        extension=sequence.extension,
+        directory=directory,
+        padding=sequence.padding,
+        frames=tuple(matching),
+        fps_default=sequence.fps_default,
+        width=sequence.width,
+        height=sequence.height,
+        channel_names=sequence.channel_names,
+    )
