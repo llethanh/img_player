@@ -81,14 +81,13 @@ MIN_SIZE = 1.0
 MAX_SIZE = 30.0
 
 # Ephemeral fade duration presets — 3 fixed values mapped to a
-# spec-driven label (moyen/court/long). User-requested order
-# (v0.4.1.1): the leftmost dot is the default-and-most-common
-# duration ("moyen"), so users land on a sane value without having
-# to read the tooltip. Court and long flank it on either side.
+# spec-driven label (court/moyen/long). Natural ascending order:
+# left = court (2 s), middle = moyen (5 s, default), right = long (10 s).
+# Growing dot sizes reinforce the ordering visually.
 # The toolbar holds the integer index; the seconds-mapping lives
 # here so a renaming or tuning round only touches one place.
-EPHEMERAL_PRESETS_S: tuple[float, ...] = (5.0, 2.0, 10.0)
-DEFAULT_EPHEMERAL_PRESET_INDEX = 0
+EPHEMERAL_PRESETS_S: tuple[float, ...] = (2.0, 5.0, 10.0)
+DEFAULT_EPHEMERAL_PRESET_INDEX = 1
 # Cyan accent used for the toolbar's outer border when ephemeral
 # mode is active — same value as the "blue note" swatch in PALETTE
 # so the visual language stays internally consistent.
@@ -708,8 +707,8 @@ class AnnotationToolbar(QWidget):
         # needing the tooltip. Visual position MATCHES value order
         # in EPHEMERAL_PRESETS_S — index 0 first, etc.
         labels = (
-            ("●", 12, "Moyen · ~5 s — usage courant (défaut)"),
             ("●", 9, "Court · ~2 s — fade rapide pour gestes brefs"),
+            ("●", 12, "Moyen · ~5 s — usage courant (défaut)"),
             ("●", 16, "Long · ~10 s — pour expliquer en plusieurs phrases"),
         )
 

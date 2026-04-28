@@ -68,14 +68,13 @@ class TestInitialState:
         """Boot default — persistent mode wins."""
         assert toolbar.is_ephemeral_mode() is False
 
-    def test_default_preset_is_moyen_at_index_0(
+    def test_default_preset_is_moyen_at_index_1(
         self, toolbar: AnnotationToolbar
     ) -> None:
-        """Default = index 0 → moyen (5 s). User-requested layout
-        v0.4.1.1: moyen sits at the leftmost position so the default
-        selection is the first dot."""
+        """Default = index 1 → moyen (5 s). Natural order: court(0) /
+        moyen(1) / long(2). Middle dot is the default selection."""
         assert toolbar.ephemeral_preset_index() == DEFAULT_EPHEMERAL_PRESET_INDEX
-        assert DEFAULT_EPHEMERAL_PRESET_INDEX == 0
+        assert DEFAULT_EPHEMERAL_PRESET_INDEX == 1
         assert toolbar.ephemeral_duration_seconds() == pytest.approx(5.0)
 
     def test_preset_row_hidden_when_mode_off(
@@ -263,23 +262,21 @@ class TestDurationPresets:
     def test_set_preset_emits_seconds(
         self, toolbar: AnnotationToolbar, qtbot,  # type: ignore[no-untyped-def]
     ) -> None:
-        # Switch to a different preset (index 1 = court / 2 s in the
-        # v0.4.1.1 order) — default is index 0 so picking index 0
-        # would be a no-op and emit nothing.
+        # Default is index 1 (moyen). Pick index 0 (court / 2 s) to
+        # get a different value and confirm the signal fires.
         with qtbot.waitSignal(
             toolbar.ephemeral_duration_changed, timeout=200
         ) as block:
-            toolbar.set_ephemeral_preset_index(1)
+            toolbar.set_ephemeral_preset_index(0)
         assert block.args == [pytest.approx(2.0)]
 
     def test_each_preset_maps_correctly(
         self, toolbar: AnnotationToolbar
     ) -> None:
-        """v0.4.1.1 order: 0=moyen (5s), 1=court (2s), 2=long (10s)."""
-        # Set 1 (court) first since default is already 0 (moyen).
-        toolbar.set_ephemeral_preset_index(1)
-        assert toolbar.ephemeral_duration_seconds() == pytest.approx(2.0)
+        """Natural order: 0=court (2s), 1=moyen (5s), 2=long (10s)."""
         toolbar.set_ephemeral_preset_index(0)
+        assert toolbar.ephemeral_duration_seconds() == pytest.approx(2.0)
+        toolbar.set_ephemeral_preset_index(1)
         assert toolbar.ephemeral_duration_seconds() == pytest.approx(5.0)
         toolbar.set_ephemeral_preset_index(2)
         assert toolbar.ephemeral_duration_seconds() == pytest.approx(10.0)
@@ -287,8 +284,8 @@ class TestDurationPresets:
     def test_invalid_index_falls_back_to_default(
         self, toolbar: AnnotationToolbar
     ) -> None:
-        # Switch away from default first so we can detect the fallback.
-        toolbar.set_ephemeral_preset_index(2)
+        # Switch away from default (1) first so we can detect the fallback.
+        toolbar.set_ephemeral_preset_index(0)
         toolbar.set_ephemeral_preset_index(99)
         assert toolbar.ephemeral_preset_index() == DEFAULT_EPHEMERAL_PRESET_INDEX
 
@@ -306,12 +303,11 @@ class TestDurationPresets:
         assert len(toolbar._ephemeral_preset_btns) == 3
         assert len(EPHEMERAL_PRESETS_S) == 3
 
-    def test_preset_order_moyen_court_long(self) -> None:
-        """v0.4.1.1: layout is moyen / court / long. Default is the
-        first dot so the user lands on the most-common duration
-        without reading the tooltip."""
-        assert EPHEMERAL_PRESETS_S == (5.0, 2.0, 10.0)
-        assert DEFAULT_EPHEMERAL_PRESET_INDEX == 0
+    def test_preset_order_court_moyen_long(self) -> None:
+        """Natural ascending order: court / moyen / long. Default is
+        the middle dot (index 1 = moyen) — shortest left, longest right."""
+        assert EPHEMERAL_PRESETS_S == (2.0, 5.0, 10.0)
+        assert DEFAULT_EPHEMERAL_PRESET_INDEX == 1
 
     def test_selected_preset_has_color_highlight(
         self, toolbar: AnnotationToolbar
