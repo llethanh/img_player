@@ -148,7 +148,12 @@ class ExportDialog(QDialog):  # type: ignore[misc]
         out_box = QGroupBox("Output")
         out_form = QFormLayout(out_box)
         self._out_dir_edit = QLineEdit()
-        self._out_dir_edit.setReadOnly(True)
+        self._out_dir_edit.setPlaceholderText("/path/to/export/folder")
+        # Editable on purpose — typing a path is faster than the
+        # browse dialog when the user already knows where they want
+        # the export to land. The Export button validates that the
+        # path resolves to a writable directory before launching.
+        self._out_dir_edit.textChanged.connect(self._refresh_estimate)
         out_btn = QPushButton("Browse…")
         out_btn.clicked.connect(self._browse_output_dir)
         out_row = QHBoxLayout()
