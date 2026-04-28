@@ -80,6 +80,18 @@ DEFAULT_SIZE = 5.0
 MIN_SIZE = 1.0
 MAX_SIZE = 30.0
 
+# Ephemeral fade duration presets — 3 fixed values mapped to a
+# spec-driven label (court/moyen/long). The toolbar holds the
+# integer index; the seconds-mapping lives here so a renaming or
+# tuning round only touches one place. Default index 1 (5 s) at
+# boot when no preference is stored. See spec §6.3.
+EPHEMERAL_PRESETS_S: tuple[float, ...] = (2.0, 5.0, 10.0)
+DEFAULT_EPHEMERAL_PRESET_INDEX = 1
+# Cyan accent used for the toolbar's outer border when ephemeral
+# mode is active — same value as the "blue note" swatch in PALETTE
+# so the visual language stays internally consistent.
+_EPHEMERAL_ACCENT = "#4A8DE8"
+
 
 class _ColorSwatch(QToolButton):
     """A small square button filled with a single solid color.
@@ -217,6 +229,18 @@ class AnnotationToolbar(QWidget):
     """Emits ``(x, y)`` when the user finishes dragging the toolbar in
     float mode. App.py persists the position to preferences."""
 
+    # ------------------------------------------------------------------ Ephemeral signals (v0.4.1)
+
+    ephemeral_mode_changed = Signal(bool)
+    """Emits ``True`` when the user activates ephemeral mode (the 👻
+    toggle), ``False`` when they deactivate. App.py routes to
+    ``overlay.set_ephemeral_mode``."""
+
+    ephemeral_duration_changed = Signal(float)
+    """Emits the new fade duration in seconds (one of the three values
+    in :data:`EPHEMERAL_PRESETS_S`) when the user clicks one of the
+    three preset dots. App.py routes to ``manager.set_duration``."""
+
     # ------------------------------------------------------------------ Lifecycle
 
     def __init__(
@@ -226,6 +250,7 @@ class AnnotationToolbar(QWidget):
         *,
         initial_mode: ToolbarMode = ToolbarMode.FLOAT,
         initial_floating_pos: tuple[int, int] = (12, 12),
+        initial_ephemeral_preset: int = DEFAULT_EPHEMERAL_PRESET_INDEX,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -239,6 +264,13 @@ class AnnotationToolbar(QWidget):
         self._current_tool: ToolKind = ToolKind.NONE
         self._current_color: str = DEFAULT_COLOR
         self._current_size: float = DEFAULT_SIZE
+
+        # Ephemeral mode (v0.4.1) — initially off. The preset index
+        # comes from preferences (or its default).
+        self._ephemeral_mode: bool = False
+        if initial_ephemeral_preset not in (0, 1, 2):
+            initial_ephemeral_preset = DEFAULT_EPHEMERAL_PRESET_INDEX
+        self._ephemeral_preset_index: int = initial_ephemeral_preset
 
         # Drag state for moving the toolbar in float mode (we own the
         # title-bar drag because no QWidget gives this for free outside
@@ -264,6 +296,96 @@ class AnnotationToolbar(QWidget):
 
     def current_size(self) -> float:
         return self._current_size
+
+    # ------------------------------------------------------------------ Ephemeral public API (v0.4.1)
+
+    def is_ephemeral_mode(self) -> bool:
+        return self._ephemeral_mode
+
+    def ephemeral_preset_index(self) -> int:
+        return self._ephemeral_preset_index
+
+    def ephemeral_duration_seconds(self) -> float:
+        return EPHEMERAL_PRESETS_S[self._ephemeral_preset_index]
+
+    def set_ephemeral_mode(self, on: bool, *, emit: bool = True) -> None:
+        """Toggle ephemeral mode (the ``👻`` button checked state).
+
+        Side-effects on the toolbar UI:
+
+        * the 👻 button's ``checked`` state mirrors ``on``,
+        * the 3-preset bar appears (on) / collapses (off),
+        * the toolbar's outer border re-styles (cyan accent on),
+        * the pen glyph swaps ``✏️`` ⇄ ``👻``,
+        * the eraser is disabled (on) / re-enabled (off).
+        * if eraser was the active tool when activating, the active
+          tool is auto-switched to ``NONE`` to avoid the inconsistent
+          "greyed but checked" state.
+
+        ``emit=False`` is for external callers that want to reflect
+        a state change initiated elsewhere (e.g. the ``G`` keyboard
+        shortcut going through the app, then back to the toolbar)
+        without re-broadcasting.
+        """
+        on = bool(on)
+        if on == self._ephemeral_mode:
+            return
+        self._ephemeral_mode = on
+
+        # 1. Mirror the button's check state without retriggering its slot.
+        self._ephemeral_btn.blockSignals(True)
+        try:
+            self._ephemeral_btn.setChecked(on)
+        finally:
+            self._ephemeral_btn.blockSignals(False)
+
+        # 2. Show / hide the 3-preset duration bar.
+        self._ephemeral_preset_row.setVisible(on)
+
+        # 3. Re-style the outer border (cyan when on).
+        self._apply_mode_styles()
+
+        # 4. Swap the pen glyph + tooltip.
+        if on:
+            self._pen_btn.setText("👻")
+            self._pen_btn.setToolTip(
+                "Pen éphémère (P) — clic-glisser, le trait s'effacera tout seul"
+            )
+        else:
+            self._pen_btn.setText("✏️")
+            self._pen_btn.setToolTip("Pen (P) — clic-glisser pour dessiner")
+
+        # 5. Eraser availability.
+        self._eraser_btn.setEnabled(not on)
+        # Inconsistent state guard: eraser checked while greyed.
+        if on and self._current_tool == ToolKind.ERASER:
+            self.set_current_tool(ToolKind.NONE)
+
+        if emit:
+            self.ephemeral_mode_changed.emit(on)
+
+    def set_ephemeral_preset_index(self, index: int, *, emit: bool = True) -> None:
+        """Pick one of the 3 fade-duration presets.
+
+        ``index`` ∈ ``{0, 1, 2}`` mapping to ``EPHEMERAL_PRESETS_S``.
+        Out-of-range values are silently clamped to the default
+        (1 = moyen / 5 s) — same defensive pattern as
+        ``set_current_size`` etc.
+        """
+        if index not in (0, 1, 2):
+            index = DEFAULT_EPHEMERAL_PRESET_INDEX
+        if index == self._ephemeral_preset_index:
+            return
+        self._ephemeral_preset_index = index
+        # Mirror the radio's check state without firing its slot.
+        for i, btn in enumerate(self._ephemeral_preset_btns):
+            btn.blockSignals(True)
+            try:
+                btn.setChecked(i == index)
+            finally:
+                btn.blockSignals(False)
+        if emit:
+            self.ephemeral_duration_changed.emit(EPHEMERAL_PRESETS_S[index])
 
     def set_mode(self, mode: ToolbarMode) -> None:
         """Switch between FLOAT and DOCK. Re-parents the widget."""
@@ -362,6 +484,33 @@ class AnnotationToolbar(QWidget):
         self._pin_btn.setFixedSize(26, 22)
         self._pin_btn.clicked.connect(self._on_pin_clicked)
         layout.addWidget(self._pin_btn, alignment=Qt.AlignmentFlag.AlignHCenter)
+        layout.addWidget(self._separator())
+
+        # --- Ephemeral mode toggle (v0.4.1). Sits right under the pin
+        # so the "global mode" controls (📌 dock side, 👻 stroke
+        # persistence) cluster at the top — the most-significant
+        # behavioural switches share visual real estate.
+        self._ephemeral_btn = QToolButton(self)
+        self._ephemeral_btn.setText("👻")
+        self._ephemeral_btn.setCheckable(True)
+        self._ephemeral_btn.setChecked(False)
+        self._ephemeral_btn.setFixedSize(26, 22)
+        self._ephemeral_btn.setToolTip(
+            "Mode éphémère (G) — les traits s'effacent progressivement, "
+            "non sauvegardés"
+        )
+        self._ephemeral_btn.clicked.connect(self._on_ephemeral_btn_clicked)
+        layout.addWidget(
+            self._ephemeral_btn, alignment=Qt.AlignmentFlag.AlignHCenter
+        )
+
+        # --- Duration presets [● ● ●]: 3 dots of increasing size.
+        # Wrapped in a single row widget so we can show()/hide() it
+        # as a unit when the ephemeral mode flips.
+        self._ephemeral_preset_row = self._build_ephemeral_preset_row()
+        # Default visibility: hidden (mode starts off).
+        self._ephemeral_preset_row.setVisible(False)
+        layout.addWidget(self._ephemeral_preset_row)
         layout.addWidget(self._separator())
 
         # --- Stroke preview (sample wavy stroke in current color/size)
@@ -535,6 +684,59 @@ class AnnotationToolbar(QWidget):
             grid_layout.addLayout(row)
         return wrapper
 
+    def _build_ephemeral_preset_row(self) -> QWidget:
+        """Build the ``[● ● ●]`` 3-preset duration row.
+
+        Three checkable QToolButtons — one bullet glyph each, growing
+        in size — wrapped in an exclusive QButtonGroup. The active
+        index is initialised from ``self._ephemeral_preset_index``.
+
+        Width-wise the row sits inside the 78 px toolbar — the dots
+        + a tiny inter-button gap fits comfortably without changing
+        the toolbar's overall width.
+        """
+        wrapper = QWidget(self)
+        row = QHBoxLayout(wrapper)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(4)
+
+        # Three buttons : "court", "moyen", "long". Bullet glyphs
+        # are rendered at three different point sizes so the
+        # gradient is visible at a glance.
+        labels = (
+            ("●", 9, "Court · ~2 s — fade rapide pour gestes brefs"),
+            ("●", 12, "Moyen · ~5 s — usage courant"),
+            ("●", 16, "Long · ~10 s — pour expliquer en plusieurs phrases"),
+        )
+
+        self._ephemeral_preset_btns: list[QToolButton] = []
+        self._ephemeral_preset_group = QButtonGroup(self)
+        self._ephemeral_preset_group.setExclusive(True)
+
+        row.addStretch(1)
+        for i, (glyph, point_size, tooltip) in enumerate(labels):
+            btn = QToolButton(wrapper)
+            btn.setText(glyph)
+            btn.setCheckable(True)
+            btn.setChecked(i == self._ephemeral_preset_index)
+            btn.setToolTip(tooltip)
+            btn.setFixedSize(20, 18)
+            btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            # Inline font-size override so the bullets actually look
+            # different from each other — a single Qt point change
+            # reads at this UI scale.
+            btn.setStyleSheet(f"QToolButton {{ font-size: {point_size}px; padding: 0; }}")
+            # Closure capture: bind ``i`` at definition time, not at
+            # call time, otherwise every lambda would emit index 2.
+            btn.clicked.connect(
+                lambda _checked=False, idx=i: self._on_ephemeral_preset_clicked(idx)
+            )
+            self._ephemeral_preset_btns.append(btn)
+            self._ephemeral_preset_group.addButton(btn)
+            row.addWidget(btn)
+        row.addStretch(1)
+        return wrapper
+
     def _separator(self) -> QFrame:
         line = QFrame(self)
         line.setFrameShape(QFrame.Shape.HLine)
@@ -559,8 +761,22 @@ class AnnotationToolbar(QWidget):
 
     def _apply_mode_styles(self) -> None:
         """Apply the visual style for the current mode (translucent
-        background in float, opaque in dock)."""
+        background in float, opaque in dock).
+
+        v0.4.1 also tints the outer border cyan when ephemeral mode
+        is active — the strongest possible signal that "everything
+        you draw now disappears", visible regardless of where on the
+        toolbar the user's eye lands.
+        """
+        # Border colour: cyan accent in ephemeral mode, default greys
+        # otherwise. Same accent in both float and dock mode so the
+        # mode is recognisable regardless of toolbar parenting.
         if self._mode == ToolbarMode.FLOAT:
+            border = (
+                f"2px solid {_EPHEMERAL_ACCENT}"
+                if self._ephemeral_mode
+                else "1px solid rgba(56, 56, 60, 220)"
+            )
             # Semi-transparent dark panel — 70 % opaque so the image
             # behind shows through enough to keep spatial context
             # without making the toolbar's silhouette dissolve into
@@ -568,7 +784,7 @@ class AnnotationToolbar(QWidget):
             self.setStyleSheet(
                 "AnnotationToolbar {"
                 "  background: rgba(36, 36, 40, 178);"  # 178/255 ≈ 70%
-                "  border: 1px solid rgba(56, 56, 60, 220);"
+                f"  border: {border};"
                 "  border-radius: 8px;"
                 "}"
             )
@@ -581,10 +797,18 @@ class AnnotationToolbar(QWidget):
             # Cursor indicates draggable in float mode.
             self.setCursor(Qt.CursorShape.SizeAllCursor)
         else:
-            # Opaque, matches BG_RAISED — looks like the rest of the dock pattern.
+            # Opaque, matches BG_RAISED — looks like the rest of the
+            # dock pattern. In ephemeral mode we still apply the cyan
+            # border so the visual signal is consistent across modes.
+            border_rule = (
+                f"  border: 2px solid {_EPHEMERAL_ACCENT};"
+                if self._ephemeral_mode
+                else ""
+            )
             self.setStyleSheet(
                 "AnnotationToolbar {"
                 "  background: #242428;"  # BG_RAISED
+                f"{border_rule}"
                 "}"
             )
             # Same reason as in float mode: ensures the QSS background
@@ -630,6 +854,31 @@ class AnnotationToolbar(QWidget):
 
     def _on_size_slider(self, value: int) -> None:
         self.set_current_size(float(value))
+
+    # ------------------------------------------------------------------ Ephemeral slots (v0.4.1)
+
+    def _on_ephemeral_btn_clicked(self) -> None:
+        """User clicked the 👻 toggle. Mirror UI + emit the change.
+
+        Note: ``QToolButton.clicked`` fires with the *new* checked
+        state already applied by Qt's checkable machinery. We pull
+        it from the button rather than from a parameter to keep
+        ``set_ephemeral_mode`` as the one place state actually
+        flips.
+        """
+        new_state = self._ephemeral_btn.isChecked()
+        # The setter handles the case where the state is already in
+        # sync (no-op) — important because we just synthesised a
+        # click; Qt has already toggled the button's checked state.
+        # Force a delta via the internal flag check.
+        if new_state == self._ephemeral_mode:
+            # Qt and our flag are out-of-sync — force-apply.
+            self._ephemeral_mode = not new_state
+        self.set_ephemeral_mode(new_state, emit=True)
+
+    def _on_ephemeral_preset_clicked(self, index: int) -> None:
+        """User clicked one of the 3 preset dots. Mirror + emit."""
+        self.set_ephemeral_preset_index(index, emit=True)
 
     # ------------------------------------------------------------------ Drag in float mode
 
