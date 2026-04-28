@@ -94,6 +94,57 @@ DEFAULT_EPHEMERAL_PRESET_INDEX = 1
 _EPHEMERAL_ACCENT = "#4A8DE8"
 
 
+# Visual feedback for the action / mode buttons (pen, eraser, ephemeral
+# toggle, undo, redo). Without this the default Qt rendering on a
+# semi-transparent panel is almost invisible — the user couldn't tell
+# what was selected. Cyan accent matches the rest of v0.4.1.
+# - :hover  → soft white wash, hint that the button is clickable.
+# - :checked → cyan fill + cyan border, the active tool / mode is
+#   unambiguous.
+# - :pressed → momentary cyan flash for the non-checkable buttons
+#   (undo / redo) so the click registers visually.
+# - :disabled → low-contrast grey, drives home that the button
+#   doesn't do anything (e.g. eraser greyed in ephemeral mode).
+_ACTION_BTN_NAMES = (
+    "annotPenBtn",
+    "annotEraserBtn",
+    "annotEphemeralBtn",
+    "annotUndoBtn",
+    "annotRedoBtn",
+)
+_ACTION_BTN_QSS = (
+    " ".join(f"QToolButton#{n}" for n in _ACTION_BTN_NAMES).replace(
+        " ", ", "
+    )
+    + " {"
+    "  background: transparent;"
+    "  border: 1px solid transparent;"
+    "  border-radius: 4px;"
+    "  padding: 1px;"
+    "}"
+    + ", ".join(f"QToolButton#{n}:hover" for n in _ACTION_BTN_NAMES)
+    + " {"
+    "  background: rgba(255, 255, 255, 22);"
+    "  border: 1px solid rgba(255, 255, 255, 36);"
+    "}"
+    + ", ".join(f"QToolButton#{n}:checked" for n in _ACTION_BTN_NAMES)
+    + " {"
+    f"  background: rgba(74, 141, 232, 70);"
+    f"  border: 1px solid {_EPHEMERAL_ACCENT};"
+    "}"
+    "QToolButton#annotUndoBtn:pressed, QToolButton#annotRedoBtn:pressed {"
+    f"  background: rgba(74, 141, 232, 110);"
+    f"  border: 1px solid {_EPHEMERAL_ACCENT};"
+    "}"
+    + ", ".join(f"QToolButton#{n}:disabled" for n in _ACTION_BTN_NAMES)
+    + " {"
+    "  background: transparent;"
+    "  border: 1px solid transparent;"
+    "  color: #5A5A5E;"
+    "}"
+)
+
+
 class _ColorSwatch(QToolButton):
     """A small square button filled with a single solid color.
 
@@ -492,6 +543,7 @@ class AnnotationToolbar(QWidget):
         # persistence) cluster at the top — the most-significant
         # behavioural switches share visual real estate.
         self._ephemeral_btn = QToolButton(self)
+        self._ephemeral_btn.setObjectName("annotEphemeralBtn")
         self._ephemeral_btn.setText("👻")
         self._ephemeral_btn.setCheckable(True)
         self._ephemeral_btn.setChecked(False)
@@ -532,6 +584,7 @@ class AnnotationToolbar(QWidget):
         # the pencil forces emoji presentation; sponge is emoji-by
         # -default.
         self._pen_btn = QToolButton(self)
+        self._pen_btn.setObjectName("annotPenBtn")
         self._pen_btn.setText("✏️")
         self._pen_btn.setToolTip("Pen (P) — clic-glisser pour dessiner")
         self._pen_btn.setCheckable(True)
@@ -539,6 +592,7 @@ class AnnotationToolbar(QWidget):
         self._pen_btn.clicked.connect(self._on_pen_clicked)
 
         self._eraser_btn = QToolButton(self)
+        self._eraser_btn.setObjectName("annotEraserBtn")
         self._eraser_btn.setText("🧽")
         self._eraser_btn.setToolTip(
             "Eraser (E) — clic sur un trait pour le supprimer"
@@ -603,6 +657,7 @@ class AnnotationToolbar(QWidget):
         action_row.setContentsMargins(0, 0, 0, 0)
 
         self._undo_btn = QToolButton(self)
+        self._undo_btn.setObjectName("annotUndoBtn")
         self._undo_btn.setIcon(make_icon("undo"))
         self._undo_btn.setIconSize(QSize(16, 16))
         self._undo_btn.setToolTip("Undo (Ctrl+Z)")
@@ -610,6 +665,7 @@ class AnnotationToolbar(QWidget):
         self._undo_btn.clicked.connect(self.undo_requested.emit)
 
         self._redo_btn = QToolButton(self)
+        self._redo_btn.setObjectName("annotRedoBtn")
         self._redo_btn.setIcon(make_icon("redo"))
         self._redo_btn.setIconSize(QSize(16, 16))
         self._redo_btn.setToolTip("Redo (Ctrl+Y)")
@@ -811,6 +867,7 @@ class AnnotationToolbar(QWidget):
                 f"  border: {border};"
                 "  border-radius: 8px;"
                 "}"
+                + _ACTION_BTN_QSS
             )
             # WA_StyledBackground is REQUIRED for a custom QWidget
             # subclass to honor a QSS background rule on the widget
@@ -834,6 +891,7 @@ class AnnotationToolbar(QWidget):
                 "  background: #242428;"  # BG_RAISED
                 f"{border_rule}"
                 "}"
+                + _ACTION_BTN_QSS
             )
             # Same reason as in float mode: ensures the QSS background
             # actually paints on the toolbar itself (not just the

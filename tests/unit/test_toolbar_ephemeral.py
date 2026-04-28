@@ -224,15 +224,21 @@ class TestBorderTint:
         self, toolbar: AnnotationToolbar
     ) -> None:
         ss = toolbar.styleSheet()
-        # Default border is the rgba grey, NOT the cyan accent.
-        assert "#4A8DE8" not in ss
+        # Default outer border is the rgba grey. The cyan accent
+        # appears in the action-button :checked rules even in normal
+        # mode (so the active tool stays visible) — what we assert
+        # here is that the *outer* AnnotationToolbar border is grey.
+        assert "rgba(56, 56, 60, 220)" in ss
 
     def test_ephemeral_mode_has_cyan_border(
         self, toolbar: AnnotationToolbar
     ) -> None:
         toolbar.set_ephemeral_mode(True)
         ss = toolbar.styleSheet()
-        assert "#4A8DE8" in ss
+        # In ephemeral mode the outer toolbar border picks up the
+        # cyan accent — easy to spot since it's the "2px solid"
+        # border rule on AnnotationToolbar itself.
+        assert f"2px solid {'#4A8DE8'}" in ss
 
     def test_dock_mode_also_tints_border_in_ephemeral(
         self, qtbot,  # type: ignore[no-untyped-def]
@@ -250,7 +256,8 @@ class TestBorderTint:
             parent=main_window,
         )
         tb.set_ephemeral_mode(True)
-        assert "#4A8DE8" in tb.styleSheet()
+        # Outer dock border picks up the cyan 2px accent.
+        assert "2px solid #4A8DE8" in tb.styleSheet()
 
 
 # ============================================================================
