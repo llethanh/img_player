@@ -212,6 +212,33 @@ class TestCacheMissingFrames:
         assert 2 not in cache.cached_frames()
         cache.shutdown()
 
+    def test_reload_marks_disappeared_file_as_missing(
+        self, tmp_path: Path, qtbot,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """File deleted while loaded → reload must mark the slot
+        missing (red on the timeline) rather than leaving a hole."""
+        del qtbot
+        for n in (1, 2, 3):
+            _write_tiny_png(tmp_path / f"shot.{n:04d}.png")
+        seq = scan(tmp_path / "shot.0001.png", probe=False)
+        cache = FrameCache(budget_bytes=10 * 1024 * 1024, num_workers=1)
+        cache.attach(seq)
+        for n in (1, 2, 3):
+            cache.request(n)
+        assert cache.wait_idle(timeout=5.0)
+        assert 2 not in cache.missing_frames()
+
+        # Delete frame 2 then reload.
+        (tmp_path / "shot.0002.png").unlink()
+        new_seq = rescan(seq)
+        cache.reload(new_seq)
+        # Slot 2 is now flagged missing AND holds the placeholder.
+        assert 2 in cache.missing_frames()
+        arr = cache.get(2)
+        assert arr is not None
+        assert arr.dtype == np.float32
+        cache.shutdown()
+
     def test_reload_re_offers_previously_missing_frame(
         self, tmp_path: Path, qtbot,  # type: ignore[no-untyped-def]
     ) -> None:

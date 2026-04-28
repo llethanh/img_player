@@ -158,63 +158,106 @@ class FrameCache:
 
     def reload(self, new_sequence: SequenceInfo) -> tuple[int, int, int]:
         """Smart re-attach: keep frames whose mtime is unchanged,
-        drop the rest, prepare for re-decode of the gone-or-changed
-        ones. Returns ``(kept, dropped, missing)`` for the status bar.
+        drop the rest, install placeholders + missing flags for any
+        slot whose source file is now gone. Returns
+        ``(kept, dropped, missing)`` for the status bar.
 
         ``new_sequence`` is the result of
         :func:`img_player.sequence.scanner.rescan` — its ``frames``
         tuple includes the latest mtime per file (``0.0`` for files
         that disappeared between scans).
 
-        The cache layer is the right place for this logic: only it
-        knows which frames are currently in RAM and at which mtime
-        they were captured. The controller doesn't have to think
-        about it; it just sees a normally-attached sequence with
-        some slots cached and some missing.
+        Per-slot decisions:
+
+        * **No path on disk** (file deleted, or scanner-found hole)
+          → install the placeholder + add to ``_missing_frames`` so
+          the timeline paints the slot red. If the slot was real
+          data before, drop it.
+        * **Path exists, was previously placeholder** → drop the
+          placeholder; ``request()`` will re-issue a decode at next
+          access.
+        * **Path exists, mtime changed since last attach** → drop
+          and let it re-decode.
+        * **Path exists, mtime unchanged** → keep as is.
         """
         self._pool.clear()
-        kept = dropped = missing = 0
+        # Build the placeholder up front so we don't hold the lock
+        # around QPainter (only triggered if the cache wasn't
+        # already primed for this resolution).
+        placeholder = get_missing_placeholder(
+            new_sequence.width or 512, new_sequence.height or 512,
+        )
+        kept = dropped = 0
         with self._lock:
             old_mtimes = self._mtimes_by_frame
             new_mtimes = {f.frame_number: f.mtime for f in new_sequence.frames}
             new_paths = {f.frame_number: f.path for f in new_sequence.frames}
-            # Decide which currently-cached frames survive.
-            for fnum in list(self._frames.keys()):
+            old_missing = set(self._missing_frames)
+            self._missing_frames.clear()
+
+            # Walk every slot in the NEW range so we end up in a
+            # state consistent with attach()-on-this-sequence.
+            for fnum in range(
+                new_sequence.first_frame, new_sequence.last_frame + 1,
+            ):
+                has_path = fnum in new_paths
+                cur = self._frames.get(fnum)
+                was_placeholder = fnum in old_missing
+                if not has_path:
+                    # File missing on disk → install / keep
+                    # placeholder + flag.
+                    if cur is None:
+                        self._frames[fnum] = placeholder
+                        # Shared buffer; don't bump bytes_used.
+                    elif not was_placeholder:
+                        # Was real data → drop and replace with
+                        # placeholder. Bytes accounting follows the
+                        # original alloc (placeholders are shared
+                        # so they don't count).
+                        self._bytes_used -= cur.nbytes
+                        self._frames[fnum] = placeholder
+                        dropped += 1
+                    # else: was already a placeholder; keep aliased.
+                    self._missing_frames.add(fnum)
+                    continue
+
+                # Has path on disk.
+                if was_placeholder:
+                    # Slot used to be missing; file just came
+                    # back → drop the placeholder so a fresh
+                    # decode picks up the real pixels.
+                    self._frames.pop(fnum, None)
+                    continue
+                if cur is None:
+                    # Not cached, not previously missing → nothing
+                    # to do; controller's prefetch will pull it.
+                    continue
                 old_mt = old_mtimes.get(fnum, 0.0)
-                new_mt = new_mtimes.get(fnum, None)
-                if new_mt is None:
-                    # Frame disappeared from disk → drop the cached
-                    # data; the placeholder will take over at next
-                    # decode attempt.
-                    arr = self._frames.pop(fnum)
-                    self._bytes_used -= arr.nbytes
-                    dropped += 1
-                elif new_mt == 0.0 or old_mt == 0.0 or new_mt != old_mt:
-                    # mtime changed (or is unknown): the cached pixels
-                    # don't match disk anymore. Drop and re-decode.
-                    arr = self._frames.pop(fnum)
-                    self._bytes_used -= arr.nbytes
+                new_mt = new_mtimes[fnum]
+                if old_mt == 0.0 or new_mt == 0.0 or new_mt != old_mt:
+                    # mtime changed → drop the stale buffer.
+                    self._bytes_used -= cur.nbytes
+                    self._frames.pop(fnum)
                     dropped += 1
                 else:
                     kept += 1
-            # Missing-frames set: previously-marked missing entries
-            # whose mtime is now non-zero get cleared so the next
-            # decode attempt has a chance.
-            for fnum in list(self._missing_frames):
-                new_mt = new_mtimes.get(fnum, 0.0)
-                if new_mt > 0.0:
-                    # File is back / new on disk → reset state and
-                    # try again.
-                    self._missing_frames.discard(fnum)
-                    self._frames.pop(fnum, None)
-            missing = len(self._missing_frames)
-            # Re-attach paths + mtimes to the new sequence.
+
+            # Slots that fell out of the new range entirely (the
+            # sequence shrank) — drop them.
+            for fnum in list(self._frames.keys()):
+                if not (
+                    new_sequence.first_frame <= fnum <= new_sequence.last_frame
+                ):
+                    arr = self._frames.pop(fnum)
+                    if fnum not in old_missing:
+                        self._bytes_used -= arr.nbytes
+                    dropped += 1
+
             self._sequence = new_sequence
             self._paths_by_frame = new_paths
             self._mtimes_by_frame = new_mtimes
-            # Bump epoch so any in-flight decode against the
-            # previous attach drops its result.
             self._epoch += 1
+            missing = len(self._missing_frames)
         return (kept, dropped, missing)
 
     def clear(self) -> None:

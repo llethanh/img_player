@@ -1305,11 +1305,24 @@ class ImgPlayerApp:
         self._controller._sequence = new_seq  # noqa: SLF001
         self._window.update_sequence_info(new_seq)
         self._window.timeline.set_range(new_seq.first_frame, new_seq.last_frame)
+        # Push the freshly-rebuilt missing set straight to the
+        # timeline so the user sees the red slots without waiting
+        # for the next 200 ms _refresh_cache_bar tick.
+        self._window.timeline.set_cached_frames(self._cache.cached_frames())
+        self._window.timeline.set_missing_frames(self._cache.missing_frames())
         # Re-prime the prefetch ring around the current playhead.
-        self._cache.set_current_frame(self._controller.state.current_frame)
+        cur = self._controller.state.current_frame
+        self._cache.set_current_frame(cur)
         self._cache.request_range(
             new_seq.first_frame, new_seq.last_frame, direction=1,
         )
+        # Refresh the on-screen image: the user expects the viewport
+        # to update right after reload — either the old missing
+        # placeholder is replaced with freshly decoded data, or a
+        # cached frame whose source file vanished now shows the
+        # red checkerboard. Routing through ``_on_frame_changed``
+        # reuses the existing cache-hit / wait-timer fallback path.
+        self._on_frame_changed(cur)
         added = len(new_seq.frames) - (len(seq.frames) - dropped - missing)
         added = max(0, added)
         self._window.set_status(
