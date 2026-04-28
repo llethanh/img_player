@@ -82,6 +82,31 @@ class ExportDialog(QDialog):  # type: ignore[misc]
         self.setWindowTitle("Export sequence")
         self.setModal(True)
         self.setMinimumWidth(520)
+        # The global QSS doesn't style QRadioButton — Qt's default
+        # indicator is a faint hollow circle that disappears against
+        # the dark dialog background. Inject visible radio styling
+        # scoped to this dialog so the user can tell which option
+        # is selected. Cyan (#4A8DE8) matches the accent used by the
+        # ephemeral mode toolbar — cohérent across the app.
+        self.setStyleSheet(
+            "QRadioButton { spacing: 8px; padding: 2px 0; }"
+            "QRadioButton::indicator {"
+            "  width: 14px; height: 14px;"
+            "  border-radius: 8px;"
+            "  border: 2px solid #5A5A5E;"
+            "  background: #1B1B1F;"
+            "}"
+            "QRadioButton::indicator:hover {"
+            "  border-color: #8A8A8E;"
+            "}"
+            "QRadioButton::indicator:checked {"
+            "  background: qradialgradient("
+            "    cx:0.5, cy:0.5, radius:0.5, fx:0.5, fy:0.5,"
+            "    stop:0 #4A8DE8, stop:0.55 #4A8DE8,"
+            "    stop:0.6 #1B1B1F, stop:1 #1B1B1F);"
+            "  border-color: #4A8DE8;"
+            "}"
+        )
 
         self._source_w = max(1, int(source_width))
         self._source_h = max(1, int(source_height))
