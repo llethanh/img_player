@@ -147,6 +147,14 @@ header nav a:hover { color: var(--text-primary); }
     0 30px 80px rgba(0,0,0,0.6),
     0 0 120px var(--hero-glow);
 }
+.hero-shot {
+  display: block;
+  width: 100%;
+  height: auto;
+  /* No border-radius on the image itself — the parent .app-frame
+     already clips with overflow: hidden. Keeps the rounded look
+     while letting the screenshot fill the frame edge-to-edge. */
+}
 .app-titlebar {
   display: flex; align-items: center; gap: var(--s-md);
   padding: 6px var(--s-md);
@@ -798,8 +806,15 @@ footer a:hover { color: var(--accent); }
     <a class="btn btn-ghost" href="#features">See features →</a>
   </div>
 
-  <!-- Faithful HTML/CSS reproduction of the live UI -->
+  <!-- Real screenshot of the live app — sits inside the .app-frame
+       wrapper so it inherits the rounded corners + shadow + glow. -->
   <div class="app-frame">
+    <img src="screenshots/hero.png" alt="Flick — main interface with annotation toolbar, missing-frame placeholder, comments panel, timeline and transport bar" class="hero-shot">
+  </div>
+
+  <!-- Old CSS mockup retained but hidden — kept for reference / quick
+       restore in case the screenshot needs a re-shoot. -->
+  <div class="app-frame" hidden>
     <div class="app-titlebar">
       <div class="dots"><span></span><span></span><span></span></div>
       <div class="title">Flick — render.####.exr</div>
