@@ -141,7 +141,13 @@ class LayerBar(QWidget):  # type: ignore[misc]
     # Carrying the layer id lets the LayerPanel route to LayerStack
     # without scanning rows.
     offset_changed = Signal(str, int)         # (layer_id, new_offset)
-    layer_in_changed = Signal(str, int)       # (layer_id, new_layer_in)
+    # IN handle drag: standard NLE convention — the LEFT edge of the
+    # visible bar moves while the RIGHT edge stays put. That requires
+    # changing both ``layer_in`` and ``offset`` by the same delta in
+    # one shot, so we carry them together and route to a single
+    # ``LayerStack.update`` (= one ``layer_modified`` signal, one
+    # cache invalidation).
+    trim_in_changed = Signal(str, int, int)   # (layer_id, new_layer_in, new_offset)
     layer_out_changed = Signal(str, int)      # (layer_id, new_layer_out)
     # Anywhere on the bar, single-click without drag → focus the layer
     # (= same as clicking the row). Lets the row delegate without
@@ -170,6 +176,10 @@ class LayerBar(QWidget):  # type: ignore[misc]
         # isn't pressing; the *_preview fields hold the in-progress
         # value while the user moves the mouse. On release we emit
         # the corresponding signal and reset.
+        #
+        # IN-handle drag updates BOTH ``_drag_preview_layer_in`` and
+        # ``_drag_preview_offset`` so the bar's right edge stays put
+        # while the left edge moves (standard NLE convention).
         self._drag_kind: DragKind | None = None
         self._drag_preview_offset: int | None = None
         self._drag_preview_layer_in: int | None = None
@@ -346,21 +356,34 @@ class LayerBar(QWidget):  # type: ignore[misc]
             )
             self._drag_preview_offset = new_offset
         elif self._drag_kind == "in":
+            # Standard NLE in-trim: the LEFT edge of the bar moves,
+            # the right edge stays where it is. That means BOTH
+            # ``layer_in`` and ``offset`` shift by the same delta
+            # (``master_start = offset`` moves; ``master_end =
+            # offset + layer_out - layer_in`` stays put).
             new_in = self._drag_start_layer_in + delta_frames
-            # Clamp: must stay within source range AND below layer_out.
+            # Clamp to source range and keep at least one frame
+            # between in/out.
             new_in = max(layer.sequence.first_frame, new_in)
             new_in = min(self._drag_start_layer_out - 1, new_in)
-            # Snap on the master coordinate (layer_in maps to master_start
-            # which lives at layer.offset for in-edge purposes).
-            master_in = layer.offset + (new_in - self._drag_start_layer_in)
+            actual_delta = new_in - self._drag_start_layer_in
+            new_offset = self._drag_start_layer_offset + actual_delta
+            # Snap the *visible* left edge (= master_start = new_offset).
             snapped_master = snap_master_frame(
-                master_in, geom, self._snap_targets(exclude_self=True),
+                new_offset, geom, self._snap_targets(exclude_self=True),
                 snap_dist,
             )
-            new_in = self._drag_start_layer_in + (snapped_master - master_in)
+            snap_delta = snapped_master - new_offset
+            new_in += snap_delta
+            new_offset += snap_delta
+            # Re-clamp after snap.
             new_in = max(layer.sequence.first_frame, new_in)
             new_in = min(self._drag_start_layer_out - 1, new_in)
+            new_offset = self._drag_start_layer_offset + (
+                new_in - self._drag_start_layer_in
+            )
             self._drag_preview_layer_in = new_in
+            self._drag_preview_offset = new_offset
         elif self._drag_kind == "out":
             new_out = self._drag_start_layer_out + delta_frames
             new_out = min(layer.sequence.last_frame, new_out)
@@ -389,9 +412,18 @@ class LayerBar(QWidget):  # type: ignore[misc]
                 self.offset_changed.emit(
                     self._layer.id, int(self._drag_preview_offset),
                 )
-            elif kind == "in" and self._drag_preview_layer_in is not None:
-                self.layer_in_changed.emit(
-                    self._layer.id, int(self._drag_preview_layer_in),
+            elif (
+                kind == "in"
+                and self._drag_preview_layer_in is not None
+                and self._drag_preview_offset is not None
+            ):
+                # Atomic IN trim: layer_in and offset are committed
+                # together so a single LayerStack.update fires one
+                # ``layer_modified`` signal (one cache invalidation).
+                self.trim_in_changed.emit(
+                    self._layer.id,
+                    int(self._drag_preview_layer_in),
+                    int(self._drag_preview_offset),
                 )
             elif kind == "out" and self._drag_preview_layer_out is not None:
                 self.layer_out_changed.emit(

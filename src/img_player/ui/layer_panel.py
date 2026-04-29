@@ -64,7 +64,7 @@ class LayerRow(QFrame):  # type: ignore[misc]
     # LayerBar drag commits — forwarded as-is to the panel which
     # routes to LayerStack.update.
     offset_changed = Signal(str, int)
-    layer_in_changed = Signal(str, int)
+    trim_in_changed = Signal(str, int, int)  # (id, new_layer_in, new_offset)
     layer_out_changed = Signal(str, int)
 
     def __init__(self, layer: Layer, index: int, parent: QWidget | None = None) -> None:
@@ -107,7 +107,7 @@ class LayerRow(QFrame):  # type: ignore[misc]
         # the row to the panel and finally LayerStack.update.
         self._bar = LayerBar(layer, parent=self)
         self._bar.offset_changed.connect(self.offset_changed.emit)
-        self._bar.layer_in_changed.connect(self.layer_in_changed.emit)
+        self._bar.trim_in_changed.connect(self.trim_in_changed.emit)
         self._bar.layer_out_changed.connect(self.layer_out_changed.emit)
         self._bar.focus_requested.connect(self.focus_requested.emit)
         layout.addWidget(self._bar, 1)
@@ -356,7 +356,7 @@ class LayerPanel(QFrame):  # type: ignore[misc]
             row.move_up_requested.connect(self._on_row_move_up)
             row.move_down_requested.connect(self._on_row_move_down)
             row.offset_changed.connect(self._on_row_offset_changed)
-            row.layer_in_changed.connect(self._on_row_layer_in_changed)
+            row.trim_in_changed.connect(self._on_row_trim_in_changed)
             row.layer_out_changed.connect(self._on_row_layer_out_changed)
             self._rows_layout.addWidget(row)
             self._rows[layer.id] = row
@@ -416,8 +416,12 @@ class LayerPanel(QFrame):  # type: ignore[misc]
     def _on_row_offset_changed(self, layer_id: str, new_offset: int) -> None:
         self._stack.update(layer_id, offset=new_offset)
 
-    def _on_row_layer_in_changed(self, layer_id: str, new_in: int) -> None:
-        self._stack.update(layer_id, layer_in=new_in)
+    def _on_row_trim_in_changed(
+        self, layer_id: str, new_in: int, new_offset: int,
+    ) -> None:
+        # Atomic update so a single ``layer_modified`` fires (one
+        # cache invalidation) rather than two.
+        self._stack.update(layer_id, layer_in=new_in, offset=new_offset)
 
     def _on_row_layer_out_changed(self, layer_id: str, new_out: int) -> None:
         self._stack.update(layer_id, layer_out=new_out)
@@ -439,16 +443,22 @@ class LayerPanel(QFrame):  # type: ignore[misc]
     def _sync_bar_geometry(self) -> None:
         """Refresh master_range + per-row snap edges across all bars.
 
-        Called whenever the stack composition changes (= a layer was
-        added, removed, reordered, or modified). The master-range
-        widens when a layer is added at an extreme offset; snap
-        edges include every other layer's master_start / master_end
-        so the user can drag-snap one layer to align with another.
+        Master-range used for the bars is the **broadest** range
+        across all layers' *source potential* (= the master coords
+        each layer's untrimmed source would cover) — not the live
+        ``stack.master_range`` which collapses around the trimmed
+        content. With the live range, single-layer trim was
+        invisible: the bar would shrink during drag preview but
+        bounce back to full-width on release because the master
+        range followed the trim.
+
+        Snap edges include every other layer's ``master_start /
+        master_end`` so drags can stick to neighbours.
         """
         layers = self._stack.layers()
         if not layers:
             return
-        first, last = self._stack.master_range()
+        first, last = self._broad_master_range()
         for layer in layers:
             row = self._rows.get(layer.id)
             if row is None:
@@ -461,3 +471,33 @@ class LayerPanel(QFrame):  # type: ignore[misc]
                 edges.append(other.master_start)
                 edges.append(other.master_end)
             row.set_snap_edges(edges)
+
+    def _broad_master_range(self) -> tuple[int, int]:
+        """Master range that covers each layer's full source extent.
+
+        For a layer with offset ``o``, ``layer_in == sequence.first_frame
+        + a``, and ``layer_out == sequence.last_frame - b``, the
+        untrimmed source maps to master ``[o - a, o + (last - first - a)]``.
+        Taking the union of every layer's untrimmed extent gives a
+        range broad enough that trims and shifts produce visible
+        bar changes — without it, dragging in single-layer mode
+        looks like a no-op.
+        """
+        firsts: list[int] = []
+        lasts: list[int] = []
+        for layer in self._stack.layers():
+            source_first = layer.sequence.first_frame
+            source_last = layer.sequence.last_frame
+            # Master-frame where source.first_frame would land if
+            # ``layer_in`` were source_first (no trim from the head).
+            source_first_master = (
+                layer.offset - (layer.layer_in - source_first)
+            )
+            source_last_master = (
+                source_first_master + (source_last - source_first)
+            )
+            firsts.append(source_first_master)
+            lasts.append(source_last_master)
+        if not firsts:
+            return (0, 0)
+        return (min(firsts), max(lasts))
