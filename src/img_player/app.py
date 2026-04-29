@@ -2003,6 +2003,18 @@ class ImgPlayerApp:
             return
         self._controller._sequence = focused.sequence  # noqa: SLF001
         self._window.update_sequence_info(focused.sequence)
+        # ``update_sequence_info`` set the timeline range to the
+        # focused layer's own first/last — but the LayerPanel uses
+        # ``broad_master_range`` (the union of every layer's source
+        # potential), so the two scrubbers end up on different scales
+        # and the playhead lands at different x positions on each.
+        # Re-run the post-stack-change sync so the timeline picks up
+        # the broad range and the controller / GL navigable bounds
+        # match. Same call the layer-stack signals fire normally —
+        # we re-trigger it explicitly here because session load
+        # already emitted ``layers_changed`` BEFORE
+        # ``update_sequence_info`` overwrote the timeline range.
+        self._refresh_after_stack_change()
         first = self._layer_stack.master_range()[0]
         self._controller.seek(first)
 
