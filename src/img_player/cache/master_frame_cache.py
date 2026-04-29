@@ -88,6 +88,14 @@ class MasterFrameCache:
         # over a full prefetch range.
         self._path_index: dict[str, dict[int, object]] = {}
         self._mtime_index: dict[str, dict[int, float]] = {}
+        # Last-known master range per layer. Compared against the
+        # post-mutation range when ``layer_modified`` fires so the
+        # cache knows to invalidate frames the layer USED to cover
+        # but no longer does — e.g. trimming a top-layer's
+        # ``layer_out`` shrinks its master_end, and the master
+        # frames in the now-uncovered tail must be re-decoded
+        # (revealing the layer underneath, or going to black).
+        self._last_known_range: dict[str, tuple[int, int]] = {}
         # Bumped on every invalidation so workers in flight drop
         # their results when the world has moved on (channel change,
         # visibility flip, layer reorder, …).
@@ -416,6 +424,14 @@ class MasterFrameCache:
             if stale_id not in live_ids:
                 self._path_index.pop(stale_id, None)
                 self._mtime_index.pop(stale_id, None)
+                self._last_known_range.pop(stale_id, None)
+        # Snapshot the current master ranges so the next
+        # ``layer_modified`` can compute a delta against this
+        # baseline.
+        for layer in self._stack.layers():
+            self._last_known_range[layer.id] = (
+                layer.master_start, layer.master_end,
+            )
         # Eager pre-mark missing frames for every layer so the
         # timeline cache-bar shows holes immediately. Iterating each
         # layer's master range here is O(N) over total master frames,
@@ -461,16 +477,30 @@ class MasterFrameCache:
     def _on_layer_modified(self, layer_id: str) -> None:
         """Trim / offset / channel change on a layer.
 
-        We can't tell which field moved without diffing — invalidate
-        the layer's current master-frame range. If the user just
-        bumped exposure (no decode change), this is wasteful but
-        correct; can be tightened later by emitting field-specific
-        signals.
+        Invalidates the **union** of the layer's previous and new
+        master ranges. The previous range matters when the layer
+        shrunk (trim out, head-trim that moved the offset right):
+        the now-uncovered tail / head holds stale pixels of this
+        layer that need to come from whatever's underneath in the
+        stack. Without the union, those master frames stay glued to
+        the cached image and the user sees the trim handle move but
+        no actual reveal of the layer below.
         """
         layer = self._stack.find(layer_id)
         if layer is None:
             return
-        self._invalidate_master_range(layer.master_start, layer.master_end)
+        prev_start, prev_end = self._last_known_range.get(
+            layer_id, (layer.master_start, layer.master_end),
+        )
+        new_start = layer.master_start
+        new_end = layer.master_end
+        # Cover the union so any frame the layer USED to or NOW does
+        # cover gets re-decoded.
+        invalidate_first = min(prev_start, new_start)
+        invalidate_last = max(prev_end, new_end)
+        self._invalidate_master_range(invalidate_first, invalidate_last)
+        # Snapshot the new range for the next mutation's diff.
+        self._last_known_range[layer_id] = (new_start, new_end)
 
     # ------------------------------------------------------------------ Internals
 
