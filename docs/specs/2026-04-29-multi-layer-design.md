@@ -117,7 +117,75 @@ donc tout marche pareil numériquement.
 - Compile-check OK sur tout le src/.
 - Tests qtbot (controller, cache) : à exécuter localement avec un Qt env propre.
 
-## Next session — Phase 4 (drag UI)
+## Phase 4 — Drag offsets / trim / snap ✅ (commit `0ff0c5e` + `6eaeb8e`)
+
+LayerBar custom-painted widget per row :
+- Drag corps → ``layer.offset``
+- Drag poignée gauche (IN) → ``layer.layer_in`` + ``layer.offset`` (édition NLE-style : bord gauche bouge, droit reste)
+- Drag poignée droite (OUT) → ``layer.layer_out``
+- Snap à 6 px contre playhead, master in/out, et bords des autres layers
+- Atomic stack.update au release (= 1 seul ``layer_modified`` signal, 1 invalidation cache)
+
+## Phase 5a — Channel selection per-layer ✅ (commit `c89cb46`)
+
+- Chaque layer porte sa ``channel_selection`` / ``layout_mode`` / ``labels_visible``
+- ``set_channel_selection`` mute le layer focusé via ``stack.update``
+- ``_display_array`` lit le state de la layer **affichée** (= topmost-visible)
+- ``_on_layer_focus_changed`` repopule le menu CH depuis la layer focusée (signaux bloqués pour pas overwrite)
+
+**Differé en 5b/5c** :
+- Annotations + comments per-layer (chaque layer son sidecar) — demande refactoring AnnotationStore / CommentStore
+- Exposure / gamma / source_colorspace per-layer dans le ColorPanel — UI tracking du focused
+
+## Phase 6 a+b — Drop modal + .session ✅ (commit en cours)
+
+- Modal "Add as layer / Replace / Cancel" au drop quand la stack n'est pas vide. Checkbox "remember for this session" lock le choix sur l'app.
+- ``layers/session.py`` : save / load JSON ``.session`` avec re-scan disque (path/dir/base/ext/padding round-trip).
+- File → Open Session… / Save Session…
+
+## Phase 6c — Export multi-layer composite (DEFERRED v1.1)
+
+L'export actuel sort la séquence de la layer **focusée** (= ``controller.sequence``).
+Pour l'instant le user focus la layer qu'il veut exporter, configure ses channels, et lance Export.
+
+L'export multi-layer composite (= walker le master timeline, résoudre topmost-visible
+à chaque master frame, décoder + composer + écrire) demande un refacto significatif :
+
+- ``RenderContext`` doit prendre un ``LayerStack`` (pas un ``SequenceInfo``)
+- ``FrameRenderer.render(master_frame, …)`` résout topmost-visible elle-même
+- Annotation bake reste skipped en multi-layer (cohérent avec live)
+
+**Différé en v1.1** parce que :
+- L'export single-layer répond déjà au cas le plus courant
+- Le refacto touche le code testé du writer + du progress
+- Pas de blocker pour la v1.0 ship
+
+## Bilan v1.0
+
+```
+Phases livrées :
+  1   Modèle (Layer + LayerStack)        ✅
+  2a  MasterFrameCache                   ✅
+  2b  Shadow integration                 ✅
+  2c  Cache+controller intégrés          ✅
+  3   LayerPanel UI                      ✅
+  4   Drag offset / trim / snap          ✅
+  5a  Channel selection per-layer        ✅
+  6a  Drop modal Add/Replace/Cancel      ✅
+  6b  .session save/load                 ✅
+
+Defer v1.1 :
+  5b  Annotations / comments per-layer
+  5c  Exposure / gamma / colorspace per-layer
+  6c  Export multi-layer composite
+```
+
+La v1.0 est shippable en l'état pour les workflows :
+- Single-sequence (= identique au pré-v1.0)
+- Multi-layer comparison (toggle œil entre 2-N layers à la même position)
+- Multi-layer end-to-end (offsets différents, "playlist de shots")
+- Trim avant lecture (head + tail)
+- Save / load des configurations multi-layer
 
 **C'est LE gros morceau qui reste avant que le multi-layer fonctionne pour
 de vrai.** À faire en présence du user pour test interactif à chaque étape.
