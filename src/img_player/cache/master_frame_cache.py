@@ -78,6 +78,16 @@ class MasterFrameCache:
         self._bytes_used = 0
         self._current_frame = 0
         self._direction = 1
+        # Per-layer path / mtime index. Built lazily on first
+        # request() for a given layer + cleared / refreshed via
+        # ``_on_layers_changed``. The dict layouts:
+        #   _path_index[layer_id][source_frame] -> Path
+        #   _mtime_index[layer_id][source_frame] -> mtime float
+        # Indexing on a dict is O(1) — vs scanning ``layer.sequence.frames``
+        # at every request, which is O(n) per frame and quadratic
+        # over a full prefetch range.
+        self._path_index: dict[str, dict[int, object]] = {}
+        self._mtime_index: dict[str, dict[int, float]] = {}
         # Bumped on every invalidation so workers in flight drop
         # their results when the world has moved on (channel change,
         # visibility flip, layer reorder, …).
@@ -110,6 +120,136 @@ class MasterFrameCache:
             self._missing.clear()
             self._bytes_used = 0
             self._epoch += 1
+
+    # ------------------------------------------------------------------ Compat shims
+
+    def attach(self, sequence) -> None:  # type: ignore[no-untyped-def]
+        """Drop-in replacement for :meth:`FrameCache.attach`.
+
+        Replaces the LayerStack's contents with a single Layer
+        wrapping ``sequence`` at ``offset = sequence.first_frame`` so
+        master-frame indices line up with the source frame numbers
+        one-to-one. Existing layers are removed.
+
+        The mutation goes through the stack so listeners (LayerPanel,
+        cache itself) get the standard ``layers_changed`` signal —
+        no special-case wiring needed.
+        """
+        from img_player.layers import Layer
+        for existing in self._stack.layers():
+            self._stack.remove(existing.id)
+        layer = Layer.from_sequence(sequence, offset=sequence.first_frame)
+        self._stack.add(layer)
+
+    def detach(self) -> None:
+        """Drop-in replacement for :meth:`FrameCache.detach`. Empties
+        the LayerStack so subsequent decodes see no layers."""
+        for existing in self._stack.layers():
+            self._stack.remove(existing.id)
+
+    def set_channels(self, channels) -> None:  # type: ignore[no-untyped-def]
+        """Drop-in replacement for :meth:`FrameCache.set_channels`.
+
+        Updates the focused layer's ``channel_selection`` (or the
+        first layer if none is focused). Triggers
+        ``layer_modified`` → cache invalidation for that layer's
+        master range. ``channels`` is either ``None`` (default
+        RGB(A) reader) or a list of names.
+        """
+        from img_player.sequence.channels import (
+            ChannelGroup, ChannelSelection,
+        )
+        focused = self._stack.focused() or (
+            self._stack.layers()[0] if self._stack else None
+        )
+        if focused is None:
+            return
+        if channels is None:
+            sel = None
+        else:
+            cs = tuple(channels)
+            label = (
+                "RGB" if cs == ("R", "G", "B")
+                else "RGBA" if cs == ("R", "G", "B", "A")
+                else cs[0] if len(cs) == 1
+                else " / ".join(cs)
+            )
+            sel = ChannelSelection(active=ChannelGroup(label, cs))
+        self._stack.update(focused.id, channel_selection=sel)
+
+    def clear_pending(self) -> int:
+        """Drop the worker pool's pending decode queue. Mirrors
+        :meth:`FrameCache.clear_pending` for controller compat."""
+        return self._pool.clear()
+
+    def reload(self, new_sequence) -> tuple[int, int, int]:  # type: ignore[no-untyped-def]
+        """Drop-in replacement for :meth:`FrameCache.reload`.
+
+        For a single-layer stack (the typical post-attach state),
+        this re-mints the focused layer with the fresh
+        ``new_sequence`` and refreshes path / mtime indexes,
+        invalidating only the slots whose mtime changed since the
+        last index. Returns ``(kept, dropped, missing)`` for the
+        status bar.
+
+        Multi-layer reload is **not** supported via this entry point
+        — the caller would need to know which layer to refresh. For
+        v1.0 this is fine: reload is bound to a single sequence.
+        """
+        # Find the layer whose sequence directory matches the reload
+        # target. Falls back to the focused layer.
+        target = None
+        for layer in self._stack.layers():
+            if layer.sequence.directory == new_sequence.directory \
+                    and layer.sequence.base_name == new_sequence.base_name:
+                target = layer
+                break
+        if target is None:
+            target = self._stack.focused() or (
+                self._stack.layers()[0] if self._stack else None
+            )
+        if target is None:
+            return (0, 0, 0)
+
+        kept = dropped = 0
+        old_mtimes = self._mtime_index.get(target.id, {})
+        new_mtimes = {fi.frame_number: fi.mtime for fi in new_sequence.frames}
+        new_paths = {fi.frame_number: fi.path for fi in new_sequence.frames}
+        # Diff per source frame: same mtime → keep; different / now-missing → drop.
+        with self._lock:
+            for source_frame in set(old_mtimes) | set(new_mtimes):
+                master_frame = target.offset + (source_frame - target.layer_in)
+                old_mt = old_mtimes.get(source_frame, 0.0)
+                new_mt = new_mtimes.get(source_frame, 0.0)
+                if old_mt == new_mt and source_frame in new_paths:
+                    if master_frame in self._frames \
+                            and master_frame not in self._missing:
+                        kept += 1
+                    continue
+                # Drop the cached buffer (if any) so the next
+                # request decodes fresh.
+                arr = self._frames.pop(master_frame, None)
+                if arr is not None:
+                    if master_frame not in self._missing:
+                        self._bytes_used -= arr.nbytes
+                        dropped += 1
+                self._missing.discard(master_frame)
+            self._epoch += 1
+        # Rebuild the index against the refreshed sequence. Mutate
+        # the layer dataclass directly (no stack.update call) so the
+        # ``layer_modified`` signal doesn't fire — that signal would
+        # invalidate the entire layer range, defeating the
+        # mtime-based "kept" frames we just preserved.
+        target.sequence = new_sequence
+        target.layer_in = new_sequence.first_frame
+        target.layer_out = new_sequence.last_frame
+        self._path_index[target.id] = new_paths
+        self._mtime_index[target.id] = new_mtimes
+        missing = sum(
+            1 for f in self._missing
+            if target.master_start <= f <= target.master_end
+        )
+        return (kept, dropped, missing)
 
     # ------------------------------------------------------------------ Public read API
 
@@ -170,7 +310,8 @@ class MasterFrameCache:
             # black for these master frames.
             return False
         source_frame = layer.source_frame_at(master_frame)
-        path = self._path_for(layer, source_frame)
+        self._ensure_index(layer)
+        path = self._path_index[layer.id].get(source_frame)
         if path is None:
             # Layer covers this master frame but the source has a
             # hole there (sparse sequence). Pre-mark missing.
@@ -252,9 +393,54 @@ class MasterFrameCache:
     # ------------------------------------------------------------------ Stack signals → invalidation
 
     def _on_layers_changed(self) -> None:
-        """Composition mutated → drop everything. Add / remove /
-        reorder are rare enough that nuclear is acceptable."""
+        """Composition mutated → drop everything + rebuild indexes.
+
+        Add / remove / reorder are rare enough that nuclear is
+        acceptable. We also pre-mark missing frames here so the
+        timeline cache bar lights up red on holes immediately
+        rather than after the first prefetch wave reaches them.
+        """
         self.clear()
+        # Drop indexes for layers that no longer exist; rebuild for
+        # layers that do. Cheap relative to the cache clear above.
+        live_ids = {layer.id for layer in self._stack.layers()}
+        for stale_id in list(self._path_index.keys()):
+            if stale_id not in live_ids:
+                self._path_index.pop(stale_id, None)
+                self._mtime_index.pop(stale_id, None)
+        # Eager pre-mark missing frames for every layer so the
+        # timeline cache-bar shows holes immediately. Iterating each
+        # layer's master range here is O(N) over total master frames,
+        # acceptable for usual sequence sizes (thousands of frames).
+        self._pre_mark_missing()
+
+    def _pre_mark_missing(self) -> None:
+        """Mark every master frame whose source has no file on disk
+        as a missing-placeholder slot. Iterates through every layer
+        in the stack so deeper layers (= covered by a hidden top one)
+        still get their holes flagged should the user toggle
+        visibility later.
+        """
+        for layer in self._stack.layers():
+            self._ensure_index(layer)
+            paths = self._path_index[layer.id]
+            ph_w = layer.sequence.width or 512
+            ph_h = layer.sequence.height or 512
+            placeholder = get_missing_placeholder(ph_w, ph_h)
+            for master_frame in range(layer.master_start, layer.master_end + 1):
+                if master_frame in self._frames:
+                    continue  # already populated (shouldn't happen post-clear)
+                source_frame = layer.source_frame_at(master_frame)
+                if paths.get(source_frame) is None:
+                    # Sparse hole on this layer. Only mark missing if
+                    # NO higher layer covers this master frame with a
+                    # real path — otherwise the displayed pixel comes
+                    # from the layer above and isn't actually missing.
+                    topmost = self._stack.topmost_visible_at(master_frame)
+                    if topmost is None or topmost.id == layer.id:
+                        with self._lock:
+                            self._frames[master_frame] = placeholder
+                            self._missing.add(master_frame)
 
     def _on_visibility_changed(self, layer_id: str) -> None:
         """The toggled layer's master-frame region needs re-decode
@@ -294,15 +480,22 @@ class MasterFrameCache:
                     self._missing.discard(f)
             self._epoch += 1
 
-    @staticmethod
-    def _path_for(layer: Layer, source_frame: int):
-        """Lookup the source-frame's file path on disk. ``None`` for
-        sparse holes (the scanner reports missing frames on the
-        SequenceInfo)."""
-        for fi in layer.sequence.frames:
-            if fi.frame_number == source_frame:
-                return fi.path
-        return None
+    def _ensure_index(self, layer: Layer) -> None:
+        """Lazy-build the path + mtime indexes for ``layer``.
+
+        Called from ``request()`` so brand-new layers don't pay any
+        indexing cost until they're actually accessed (matters when
+        the user loads N layers at once but only plays through one
+        of them — the others stay un-indexed).
+        """
+        if layer.id in self._path_index:
+            return
+        self._path_index[layer.id] = {
+            fi.frame_number: fi.path for fi in layer.sequence.frames
+        }
+        self._mtime_index[layer.id] = {
+            fi.frame_number: fi.mtime for fi in layer.sequence.frames
+        }
 
     @staticmethod
     def _channels_for(layer: Layer) -> list[str] | None:

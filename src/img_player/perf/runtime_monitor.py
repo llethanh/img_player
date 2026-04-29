@@ -44,6 +44,7 @@ from PySide6.QtCore import QObject, QTimer, Signal
 
 if TYPE_CHECKING:
     from img_player.cache.frame_cache import FrameCache
+    from img_player.cache.master_frame_cache import MasterFrameCache
     from img_player.player.controller import PlayerController
     from img_player.player.state import PlaybackState
 
@@ -124,7 +125,7 @@ class RuntimeMonitor(QObject):  # type: ignore[misc]
     def __init__(
         self,
         controller: PlayerController,
-        cache: FrameCache,
+        cache: "FrameCache | MasterFrameCache",
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)

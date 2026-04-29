@@ -20,7 +20,6 @@ from img_player.annotate import (
     save_annotations,
 )
 from img_player.comment import CommentStore, save_comments
-from img_player.cache.frame_cache import FrameCache
 from img_player.color.gpu_processor import build_shader_bundle
 from img_player.color.ocio_manager import OCIOManager
 from img_player.io.reader import configure_oiio
@@ -186,20 +185,20 @@ class ImgPlayerApp:
         """Non-UI domain objects: prefs, cache, controller, stores."""
         self._prefs = Preferences()
         self._ocio = OCIOManager()
-        self._cache = FrameCache(
+        # Multi-layer foundation (v1.0 phase 2c). The LayerStack is
+        # the source of truth for "what's loaded"; the cache reads
+        # from it for path / channel resolution at decode time. Order
+        # matters: stack first, then cache (which subscribes to stack
+        # signals), then controller (which uses the cache).
+        from img_player.cache.master_frame_cache import MasterFrameCache
+        from img_player.layers import LayerStack
+        self._layer_stack = LayerStack()
+        self._cache = MasterFrameCache(
+            self._layer_stack,
             budget_bytes=cache_budget_bytes,
             num_workers=num_workers,
         )
         self._controller = PlayerController(self._cache)
-        # Multi-layer foundation (v1.0 phase 2b — shadow mode). The
-        # stack tracks every loaded sequence as a Layer, but the
-        # cache + controller still operate on a single SequenceInfo
-        # for now. The :class:`LayerPanel` UI reads this stack to
-        # draw the rows; phase 2c will switch the cache to
-        # MasterFrameCache and make the stack the source of truth
-        # for playback.
-        from img_player.layers import LayerStack
-        self._layer_stack = LayerStack()
         # Comment store — owned by the app, passed to MainWindow so
         # the Comments tab can read / write directly. Cohérent with
         # how the AnnotationStore is owned: app-level for lifecycle,
@@ -1345,10 +1344,11 @@ class ImgPlayerApp:
         # would just spin no-ops.
         self._controller.pause()
         self._controller._sequence = None  # noqa: SLF001 — there's no public detach
+        # ``cache.detach()`` empties the LayerStack which cascades
+        # via signals to the cache's clear() and the LayerPanel
+        # rebuild. With FrameCache the call simply clears its
+        # internal state (no stack involvement).
         self._cache.detach()
-        # Clear the LayerStack (v1.0 phase 2b shadow mirror).
-        for layer in self._layer_stack.layers():
-            self._layer_stack.remove(layer.id)
         # Clear in-memory annotation + comment data (their sidecar
         # path tracking goes too).
         self._annotation_store.load_from_dict({})

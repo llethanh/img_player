@@ -32,7 +32,6 @@ from PySide6.QtWidgets import QMessageBox
 from img_player.comment import load_comments
 from img_player.annotate import load_annotations
 from img_player.annotate.persistence import sidecar_path
-from img_player.layers import Layer
 from img_player.sequence.models import SequenceInfo
 from img_player.sequence.scanner import SequenceNotFoundError, scan, scan_all
 
@@ -155,20 +154,13 @@ def apply_scan_result(app: ImgPlayerApp, path: Path, result: object) -> None:
         app._prefs.channel_labels_visible,
     )
     app._guess_source_colorspace(seq)
+    # ``controller.load_sequence(seq)`` calls ``cache.attach(seq)``,
+    # which on the MasterFrameCache path replaces the LayerStack's
+    # contents with a single Layer at offset = first_frame. The
+    # FrameCache path is a no-op for the stack (the cache holds its
+    # own _paths_by_frame map). Either way, no manual stack mutation
+    # is required here.
     app._controller.load_sequence(seq)
-    # Mirror the loaded sequence into the LayerStack (v1.0 phase 2b
-    # shadow mode). For now, "loading a sequence" replaces the entire
-    # stack with a single layer; the multi-layer "Add / Replace /
-    # Cancel" dialog is phase 6. Offset = sequence.first_frame so the
-    # master timeline coordinates match the source frame numbers
-    # one-to-one — that keeps single-layer playback numerically
-    # identical to the pre-v1.0 behaviour while the cache + controller
-    # haven't been swapped yet.
-    stack = app._layer_stack
-    for existing in stack.layers():
-        stack.remove(existing.id)
-    layer = Layer.from_sequence(seq, offset=seq.first_frame)
-    stack.add(layer)
     app._window.set_status(
         f"Loaded {seq.display_pattern()} ({seq.frame_count} frames) — decoding first frame…"
     )

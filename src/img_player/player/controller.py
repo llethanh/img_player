@@ -18,8 +18,15 @@ from PySide6.QtCore import QObject, Qt, QTimer, Signal
 
 from img_player.bench import recorder
 from img_player.cache.frame_cache import FrameCache
+from img_player.cache.master_frame_cache import MasterFrameCache
 from img_player.player.state import LoopMode, PlaybackState
 from img_player.sequence.models import SequenceInfo
+
+# Both cache classes present the same public surface (attach,
+# detach, request, get, contains, set_current_frame, …) — the
+# controller accepts either, so v1.0 can swap to MasterFrameCache
+# without disturbing the existing FrameCache-based tests.
+CacheLike = FrameCache | MasterFrameCache
 
 log = logging.getLogger(__name__)
 
@@ -54,7 +61,7 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
     effective_fps_changed = Signal(float)
     cache_hit_rate_changed = Signal(float)
 
-    def __init__(self, cache: FrameCache, parent: QObject | None = None) -> None:
+    def __init__(self, cache: CacheLike, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._cache = cache
         self._sequence: SequenceInfo | None = None
