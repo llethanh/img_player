@@ -59,6 +59,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
     new_sequence_requested = Signal()      # File → New (Ctrl+N) — clear the loaded sequence
     add_layer_requested = Signal(Path)     # File → Add layer… (v1.0)
                                            #   carries the picked path
+    save_session_requested = Signal(Path)  # File → Save session… (v1.0)
+    open_session_requested = Signal(Path)  # File → Open session… (v1.0)
     reload_sequence_requested = Signal()   # Reload cache (Ctrl+R / button)
     play_toggled = Signal()
     # Full channel selection (single + optional contact-sheet tiles).
@@ -311,6 +313,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             self._reload_act.setEnabled(True)
         if hasattr(self, "_add_layer_act"):
             self._add_layer_act.setEnabled(True)
+        if hasattr(self, "_save_session_act"):
+            self._save_session_act.setEnabled(True)
         self._transport.set_export_enabled(True)
         self._transport.set_reload_enabled(True)
         # Clear the cache bar so we don't briefly show the old run
@@ -367,6 +371,19 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self._add_layer_act.setEnabled(False)
         self._add_layer_act.triggered.connect(self._on_add_layer_action)
         file_menu.addAction(self._add_layer_act)
+
+        # File → Open session… / Save session… (v1.0 phase 6b).
+        # Persist the full multi-layer state to a ``.session`` JSON
+        # file so the user can come back to the same review setup
+        # without redoing every drop / trim / channel choice.
+        file_menu.addSeparator()
+        open_session_act = QAction("Open Sess&ion…", self)
+        open_session_act.triggered.connect(self._on_open_session_action)
+        file_menu.addAction(open_session_act)
+        self._save_session_act = QAction("Save Sess&ion…", self)
+        self._save_session_act.setEnabled(False)
+        self._save_session_act.triggered.connect(self._on_save_session_action)
+        file_menu.addAction(self._save_session_act)
 
         # File → Reload (Ctrl+R): smart re-scan of the source folder.
         # Keeps cached frames whose mtime is unchanged, drops the
@@ -665,6 +682,24 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         )
         if path_str:
             self.add_layer_requested.emit(Path(path_str))
+
+    def _on_open_session_action(self) -> None:
+        """File → Open session…"""
+        path_str, _ = QFileDialog.getOpenFileName(
+            self, "Open a saved session", "",
+            "Session files (*.session);;All files (*.*)",
+        )
+        if path_str:
+            self.open_session_requested.emit(Path(path_str))
+
+    def _on_save_session_action(self) -> None:
+        """File → Save session…"""
+        path_str, _ = QFileDialog.getSaveFileName(
+            self, "Save the current session", "",
+            "Session files (*.session)",
+        )
+        if path_str:
+            self.save_session_requested.emit(Path(path_str))
 
     def _show_about(self) -> None:
         QMessageBox.about(

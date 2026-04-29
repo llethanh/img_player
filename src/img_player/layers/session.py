@@ -1,0 +1,235 @@
+"""Save / load a :class:`LayerStack` to/from a ``.session`` JSON file.
+
+A session file is a portable snapshot of the multi-layer state:
+
+* every loaded layer (by sequence path on disk)
+* its trim (``layer_in`` / ``layer_out``) + offset
+* its visibility + name
+* its per-layer channel selection / layout / labels-visible
+* the focused layer id (so the panel comes back highlighting the
+  same row)
+
+The format is plain JSON with a ``"version"`` field so future
+schema bumps stay back-compat. Sequences are stored by their
+*directory + base_name + extension + padding* so the loader can
+re-scan from disk and pick up files that may have moved or grown
+(new frames added after the session was saved).
+
+Loading:
+1. Parse the JSON.
+2. For each layer entry, scan the sequence on disk via the
+   existing :func:`scan` helper so the SequenceInfo reflects the
+   current file system (mtimes, frame range).
+3. Build a :class:`Layer` with the persisted trim / offset /
+   visibility / name / channel state, fall back to defaults for
+   anything missing.
+4. Replace the live LayerStack with the rebuilt layers.
+5. Re-establish focus.
+
+Errors during a per-layer scan don't abort the load — the layer
+is simply skipped with a status message so the user gets back
+*something*.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from typing import Any
+
+from img_player.layers.models import Layer
+from img_player.layers.stack import LayerStack
+from img_player.sequence.channels import ChannelGroup, ChannelSelection
+from img_player.sequence.scanner import scan
+
+log = logging.getLogger(__name__)
+
+SESSION_VERSION = 1
+SESSION_EXTENSION = ".session"
+
+
+# ----------------------------------------------------------------- Schema
+
+
+@dataclass
+class _SessionLayer:
+    """Serialisable view of a Layer — what we round-trip through JSON."""
+
+    id: str
+    name: str
+    sequence_directory: str
+    sequence_base_name: str
+    sequence_extension: str
+    sequence_padding: int
+    layer_in: int
+    layer_out: int
+    offset: int
+    visible: bool
+    # Channel state — stored flat so JSON readers don't have to
+    # mirror our ChannelSelection class shape.
+    channel_active_label: str = ""
+    channel_active_channels: list[str] = field(default_factory=list)
+    channel_tile_labels: list[str] = field(default_factory=list)
+    channel_tile_channels: list[list[str]] = field(default_factory=list)
+    channel_layout_mode: str = "Auto"
+    channel_labels_visible: bool = True
+    source_colorspace: str | None = None
+    exposure: float = 0.0
+    gamma: float = 1.0
+
+
+# ----------------------------------------------------------------- Save
+
+
+def save_session(stack: LayerStack, path: Path) -> None:
+    """Serialise ``stack`` to ``path`` as JSON.
+
+    Overwrites any existing file at the path. The ``.session``
+    extension is added if missing.
+    """
+    if path.suffix != SESSION_EXTENSION:
+        path = path.with_suffix(SESSION_EXTENSION)
+    layers_payload: list[dict[str, Any]] = []
+    for layer in stack.layers():
+        sl = _SessionLayer(
+            id=layer.id,
+            name=layer.name,
+            sequence_directory=str(layer.sequence.directory),
+            sequence_base_name=layer.sequence.base_name,
+            sequence_extension=layer.sequence.extension,
+            sequence_padding=layer.sequence.padding,
+            layer_in=layer.layer_in,
+            layer_out=layer.layer_out,
+            offset=layer.offset,
+            visible=layer.visible,
+            channel_layout_mode=layer.channel_layout_mode,
+            channel_labels_visible=layer.channel_labels_visible,
+            source_colorspace=layer.source_colorspace,
+            exposure=layer.exposure,
+            gamma=layer.gamma,
+        )
+        sel = layer.channel_selection
+        if sel is not None:
+            sl.channel_active_label = sel.active.label
+            sl.channel_active_channels = list(sel.active.channels)
+            sl.channel_tile_labels = [g.label for g in sel.tiles]
+            sl.channel_tile_channels = [list(g.channels) for g in sel.tiles]
+        layers_payload.append(asdict(sl))
+    payload = {
+        "version": SESSION_VERSION,
+        "focused_id": stack.focused_id,
+        "layers": layers_payload,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
+    log.info("[session] saved %d layers to %s", len(layers_payload), path)
+
+
+# ----------------------------------------------------------------- Load
+
+
+@dataclass
+class LoadResult:
+    """Tally of what happened during :func:`load_session`."""
+
+    loaded: int = 0
+    skipped: int = 0
+    errors: list[str] = field(default_factory=list)
+
+
+def load_session(stack: LayerStack, path: Path) -> LoadResult:
+    """Replace ``stack`` with the layers described in ``path``.
+
+    Each layer's sequence is rescanned from disk via the existing
+    :func:`scan` helper. Sequences whose file doesn't exist
+    anymore or whose pattern can't be matched are silently skipped
+    (an entry is added to :class:`LoadResult.errors` so the caller
+    can surface it). All other layers load with their saved trim
+    / offset / channel state.
+    """
+    result = LoadResult()
+    with path.open("r", encoding="utf-8") as f:
+        payload = json.load(f)
+    if payload.get("version") != SESSION_VERSION:
+        result.errors.append(
+            f"Unknown session version {payload.get('version')!r}; "
+            f"expected {SESSION_VERSION}"
+        )
+        return result
+    layer_entries = payload.get("layers", [])
+    # Empty the live stack first. We do it before scanning so the
+    # cache invalidates only once and the panel rebuilds cleanly.
+    for existing in stack.layers():
+        stack.remove(existing.id)
+    rebuilt_focused: str | None = None
+    saved_focused = payload.get("focused_id", "")
+
+    for entry in layer_entries:
+        try:
+            layer = _rebuild_layer(entry)
+        except Exception as err:
+            result.skipped += 1
+            result.errors.append(str(err))
+            log.warning("[session] skipped layer entry: %s", err)
+            continue
+        # Add at bottom (position = len) so the list order matches
+        # the saved order (top-most first in JSON → top of stack).
+        stack.add(layer, position=len(stack))
+        result.loaded += 1
+        if layer.id == saved_focused:
+            rebuilt_focused = layer.id
+    if rebuilt_focused is not None:
+        stack.set_focus(rebuilt_focused)
+    return result
+
+
+def _rebuild_layer(entry: dict[str, Any]) -> Layer:
+    """Reconstruct a :class:`Layer` from one JSON entry.
+
+    Re-scans the sequence directory so the SequenceInfo carries
+    fresh mtimes + the current frame range (sequences may have
+    grown since the session was saved). Raises if the path can't
+    be resolved.
+    """
+    directory = Path(entry["sequence_directory"])
+    if not directory.exists():
+        raise FileNotFoundError(
+            f"Sequence directory missing: {directory}"
+        )
+    seq = scan(directory, probe=False)
+    layer = Layer.from_sequence(
+        seq,
+        offset=int(entry.get("offset", seq.first_frame)),
+        name=entry.get("name") or seq.display_pattern(),
+    )
+    # Override defaults with the saved trim / visibility / state.
+    layer.id = entry.get("id", layer.id)
+    layer.layer_in = int(entry.get("layer_in", seq.first_frame))
+    layer.layer_out = int(entry.get("layer_out", seq.last_frame))
+    layer.visible = bool(entry.get("visible", True))
+    layer.channel_layout_mode = entry.get("channel_layout_mode", "Auto")
+    layer.channel_labels_visible = bool(
+        entry.get("channel_labels_visible", True),
+    )
+    layer.source_colorspace = entry.get("source_colorspace")
+    layer.exposure = float(entry.get("exposure", 0.0))
+    layer.gamma = float(entry.get("gamma", 1.0))
+    # Channel selection — only rebuild if both active label + at
+    # least one channel survived.
+    active_label = entry.get("channel_active_label", "")
+    active_channels = entry.get("channel_active_channels", [])
+    if active_label and active_channels:
+        active = ChannelGroup(
+            label=active_label, channels=tuple(active_channels),
+        )
+        tile_labels = entry.get("channel_tile_labels", [])
+        tile_channels = entry.get("channel_tile_channels", [])
+        tiles = tuple(
+            ChannelGroup(label=lbl, channels=tuple(chs))
+            for lbl, chs in zip(tile_labels, tile_channels)
+        )
+        layer.channel_selection = ChannelSelection(active=active, tiles=tiles)
+    return layer

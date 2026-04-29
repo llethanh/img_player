@@ -339,6 +339,12 @@ class ImgPlayerApp:
         # between single and the "previous" contact sheet rather
         # than starting from scratch each time.
         self._last_contact_sheet_tiles: tuple[str, ...] = ()
+        # Drop action lock (Phase 6a). When the user ticks "Remember
+        # this choice for the rest of the session" on the Add / Replace
+        # modal, we stash the chosen action here so subsequent drops
+        # / opens go straight to it without re-prompting. Reset to
+        # ``None`` when the stack empties (= File → New, etc.).
+        self._drop_action_remember: str | None = None
 
     # ------------------------------------------------------------------ Lifecycle
 
@@ -608,6 +614,8 @@ class ImgPlayerApp:
         w.frame_requested.connect(self._on_scrub_requested)
         w.open_requested.connect(self._open_path)
         w.add_layer_requested.connect(self._on_add_layer_requested)
+        w.save_session_requested.connect(self._on_save_session_requested)
+        w.open_session_requested.connect(self._on_open_session_requested)
         # Export (v0.5.0) — both menu and transport button route here.
         w.export_requested.connect(self._open_export_dialog)
         w.transport.export_clicked.connect(self._open_export_dialog)
@@ -1497,6 +1505,9 @@ class ImgPlayerApp:
         # rebuild. With FrameCache the call simply clears its
         # internal state (no stack involvement).
         self._cache.detach()
+        # Drop the session-wide "Remember add/replace choice" lock —
+        # a fresh New makes the next drop ask again.
+        self._drop_action_remember = None
         # Clear in-memory annotation + comment data (their sidecar
         # path tracking goes too).
         self._annotation_store.load_from_dict({})
@@ -1636,15 +1647,80 @@ class ImgPlayerApp:
         self._controller.set_in_out(in_f, frame)
 
     def _open_path(self, path: Path) -> None:
-        """Scan `path` off the main thread so the UI stays responsive."""
-        from img_player.scan_handler import open_path
-        open_path(self, path)
+        """Scan ``path`` off the main thread so the UI stays responsive.
+
+        When layers are already loaded, prompt the user via
+        :class:`DropActionDialog` for "Add / Replace / Cancel". The
+        choice can be locked for the session via the modal's
+        Remember checkbox.
+        """
+        from img_player.scan_handler import open_path, add_layer
+        if not self._layer_stack:
+            # Empty stack → no ambiguity, load as a fresh sequence.
+            open_path(self, path)
+            return
+        # Honour a remembered choice from earlier in the session.
+        action = self._drop_action_remember
+        if action is None:
+            from img_player.ui.drop_action_dialog import DropActionDialog
+            action, remember = DropActionDialog.ask(
+                str(path), parent=self._window,
+            )
+            if action == "cancel":
+                self._window.set_status("Open canceled.")
+                return
+            if remember:
+                self._drop_action_remember = action
+        if action == "add":
+            add_layer(self, path)
+        else:  # "replace"
+            open_path(self, path)
 
     def _on_add_layer_requested(self, path: Path) -> None:
         """File → Add layer… handler — appends a new layer to the
         stack without replacing the existing sequence."""
         from img_player.scan_handler import add_layer
         add_layer(self, path)
+
+    def _on_save_session_requested(self, path: Path) -> None:
+        """File → Save session… — write the full LayerStack to a
+        ``.session`` JSON file."""
+        from img_player.layers.session import save_session
+        try:
+            save_session(self._layer_stack, path)
+        except Exception as err:
+            log.exception("[session] save failed for %s", path)
+            self._window.set_status(f"Save session failed: {err}")
+            return
+        self._window.set_status(f"Session saved to {path}")
+
+    def _on_open_session_requested(self, path: Path) -> None:
+        """File → Open session… — replace the LayerStack from a
+        previously saved ``.session`` file."""
+        from img_player.layers.session import load_session
+        try:
+            result = load_session(self._layer_stack, path)
+        except Exception as err:
+            log.exception("[session] load failed for %s", path)
+            self._window.set_status(f"Open session failed: {err}")
+            return
+        msg = f"Session loaded: {result.loaded} layers"
+        if result.skipped:
+            msg += f" ({result.skipped} skipped)"
+        self._window.set_status(msg)
+        # Point the controller at the focused layer's sequence so
+        # the timeline range + scrubbing have a target. We bypass
+        # ``controller.load_sequence`` here on purpose: that call
+        # would call ``cache.attach(seq)`` which replaces the
+        # LayerStack with a single layer — wiping the session we
+        # just loaded.
+        focused = self._layer_stack.focused()
+        if focused is None:
+            return
+        self._controller._sequence = focused.sequence  # noqa: SLF001
+        self._window.update_sequence_info(focused.sequence)
+        first = self._layer_stack.master_range()[0]
+        self._controller.seek(first)
 
     def _apply_scan_result(self, path: Path, result: object) -> None:
         from img_player.scan_handler import apply_scan_result
