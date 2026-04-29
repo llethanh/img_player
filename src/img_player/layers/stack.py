@@ -417,17 +417,31 @@ class LayerStack(QObject):  # type: ignore[misc]
         last = max(layer.master_end for layer in self._layers)
         return (first, last)
 
-    def gap_frames(self) -> frozenset[int]:
-        """Master frames in ``[first, last]`` that no *visible* layer
-        covers. Used by the timeline to paint gaps distinctly from
-        cached / missing frames so the user can tell at a glance
-        why playback would stall there (= nothing to decode rather
-        than slow decode). Hidden layers count as not-covering, so
-        toggling visibility live updates the gap visualisation.
+    def gap_frames(
+        self, bounds: tuple[int, int] | None = None,
+    ) -> frozenset[int]:
+        """Master frames in ``bounds`` that no *visible* layer covers.
+
+        Used by the timeline to paint gaps distinctly from cached /
+        missing frames so the user can tell at a glance why playback
+        would stall there (= nothing to decode rather than slow
+        decode). Hidden layers count as not-covering, so toggling
+        visibility live updates the gap visualisation.
+
+        ``bounds`` defaults to :meth:`master_range` (= the trim-bounded
+        range), but callers should usually pass the panel's
+        ``broad_master_range`` — that's the range the timeline draws,
+        and it includes the post-OUT-trim void where no layer reaches.
+        Without that override, frames past the last layer's
+        ``master_end`` aren't flagged as gaps and end up painted as
+        empty cache slots instead of the distinct grey.
         """
         if not self._layers:
             return frozenset()
-        first, last = self.master_range()
+        if bounds is None:
+            first, last = self.master_range()
+        else:
+            first, last = bounds
         gaps: list[int] = []
         for f in range(first, last + 1):
             if self.topmost_visible_at(f) is None:

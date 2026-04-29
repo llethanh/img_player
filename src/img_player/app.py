@@ -949,8 +949,13 @@ class ImgPlayerApp:
             # tells the user "no layer covers these frames" at a
             # glance instead of leaving them as the same black as
             # not-yet-cached slots.
+            # Use the broad master range (= the timeline's range) so
+            # gaps past the last layer's trimmed OUT also paint grey.
+            # Without this override, those frames fall outside
+            # ``stack.master_range`` and the timeline draws them as
+            # empty cache slots — same colour as not-yet-decoded.
             self._window.timeline.set_gap_frames(
-                self._layer_stack.gap_frames(),
+                self._layer_stack.gap_frames(bounds=(first, last)),
             )
         if self._controller.sequence is None:
             return
@@ -1063,73 +1068,22 @@ class ImgPlayerApp:
             # without a dedicated panel.
 
     def _show_gap_placeholder(self) -> None:
-        """Upload the MISSING FRAME placeholder to the viewport.
+        """Clear the viewport to black for any "no layer covers" frame.
 
-        Used as the visual for any "no coverage" frame: gaps between
-        layers AND playhead-before-first / after-last when the source
-        has missing files at the boundary.
+        Reserved cases: gaps between layers, playhead trimmed past a
+        layer's OUT, every covering layer toggled hidden, etc. — the
+        common factor is that no visible layer claims this master
+        frame. The user wants a plain black frame here (= "background"),
+        not the rich MISSING FRAME graphic.
 
-        Sizing priority (the user wants the placeholder to match
-        "the layer being read"):
-
-        1. Topmost VISIBLE layer at the current playhead — that's
-           literally what the viewer was about to display before we
-           hit the gap.
-        2. Any layer the playhead is INSIDE of (visible or not) —
-           covers the case where every covering layer is hidden.
-        3. The focused layer — the one the user is currently editing
-           in the side panels; sensible default when the playhead
-           sits in a true no-layer void.
-        4. Broadest layer — the largest dimensions across the stack,
-           same heuristic the cache uses internally.
-        5. Hard-coded 1920×1080 fallback for the truly-empty case
-           (which we early-return on instead of letting an empty
-           placeholder appear at first launch).
-
-        ``get_missing_placeholder`` is memoised by (w, h) so picking
-        the same size on repeated scrubs is essentially free.
+        The MISSING FRAME placeholder stays meaningful for its
+        original semantic: a covering layer's source file is missing
+        on disk (decode failed). That path goes through the cache's
+        ``_missing`` set + ``_pre_mark_missing`` / decode-failure
+        substitution and shows up via the normal ``cache.get`` →
+        ``_display_array`` route — independent from this function.
         """
-        from img_player.cache.missing_placeholder import get_missing_placeholder
-
-        if not self._layer_stack or not self._layer_stack.layers():
-            # Empty stack — keep the legacy clear-to-black behaviour
-            # for "nothing loaded yet" so the user doesn't see a
-            # placeholder before they've even opened a sequence.
-            self._window.viewer.gl.clear_image()
-            return
-
-        cur = self._controller.state.current_frame
-        candidates: list[object] = []
-        # 1. topmost visible at playhead
-        topmost = self._layer_stack.topmost_visible_at(cur)
-        if topmost is not None:
-            candidates.append(topmost)
-        # 2. any layer covering the playhead (visible or not)
-        for layer in self._layer_stack.covers(cur):
-            if layer not in candidates:
-                candidates.append(layer)
-        # 3. focused layer
-        focused = self._layer_stack.focused()
-        if focused is not None and focused not in candidates:
-            candidates.append(focused)
-        # 4. every other layer — broadest wins among the leftovers
-        leftovers = [
-            layer for layer in self._layer_stack.layers()
-            if layer not in candidates
-        ]
-        candidates.extend(leftovers)
-
-        w = h = 0
-        for layer in candidates:
-            lw = layer.sequence.width or 0  # type: ignore[attr-defined]
-            lh = layer.sequence.height or 0  # type: ignore[attr-defined]
-            if lw > 0 and lh > 0:
-                w, h = lw, lh
-                break
-        if w <= 0 or h <= 0:
-            w, h = 1920, 1080
-        arr = get_missing_placeholder(w, h)
-        self._display_array(arr)
+        self._window.viewer.gl.clear_image()
 
     def _display_array(self, arr) -> None:  # type: ignore[no-untyped-def]
         # The displayed pixels come from the *topmost-visible* layer
