@@ -537,6 +537,7 @@ class ImgPlayerApp:
         self._wire_runtime_monitor()
         self._wire_viewport()
         self._wire_controller()
+        self._wire_layer_stack()
         self._wire_main_window()
         self._wire_channel_menu()
         self._wire_color_and_zoom()
@@ -572,6 +573,28 @@ class ImgPlayerApp:
         """Controller → UI updates."""
         self._controller.frame_changed.connect(self._on_frame_changed)
         self._controller.state_changed.connect(self._on_state_changed)
+
+    def _wire_layer_stack(self) -> None:
+        """LayerStack signals → cache pre-fetch + viewport refresh.
+
+        The cache hooks the same signals to invalidate its own
+        contents, but invalidation alone leaves the viewport on
+        whatever frame was last uploaded. This wiring drives the
+        active redisplay: when the topmost-visible layer changes
+        (œil toggle, reorder, layer added / removed), we
+        re-prefetch around the playhead and re-pipe the display so
+        the user sees the new content immediately rather than
+        having to scrub the timeline.
+        """
+        self._layer_stack.layers_changed.connect(
+            self._refresh_after_stack_change,
+        )
+        self._layer_stack.visibility_changed.connect(
+            lambda _id: self._refresh_after_stack_change(),
+        )
+        self._layer_stack.layer_modified.connect(
+            lambda _id: self._refresh_after_stack_change(),
+        )
 
     def _wire_main_window(self) -> None:
         """MainWindow signals → controller / app handlers."""
@@ -766,6 +789,51 @@ class ImgPlayerApp:
             return max(candidates) if candidates else min(cached)
         candidates = [f for f in cached if f >= frame]
         return min(candidates) if candidates else max(cached)
+
+    def _refresh_after_stack_change(self) -> None:
+        """Re-prefetch + re-display after a LayerStack mutation.
+
+        Called from ``_wire_layer_stack`` on every layers_changed /
+        visibility_changed / layer_modified emission. Three cases
+        the viewport needs to handle:
+
+        1. The new topmost-visible at the playhead is a different
+           layer (e.g. user toggled œil, reordered, or added a
+           layer above) → cache was invalidated for that range, we
+           queue a fresh prefetch + re-emit ``frame_changed`` so the
+           wait-timer falls back / displays once decode lands.
+        2. No layer covers the playhead anymore (œil off on the
+           only / last covering layer) → the cache won't decode
+           anything; we explicitly clear the GL viewport so the
+           user sees black instead of the previous frame.
+        3. The displayed-layer didn't change (= a non-visual layer
+           tweak) → the redisplay is a cheap idempotent no-op.
+        """
+        if self._controller.sequence is None:
+            return
+        cur = self._controller.state.current_frame
+        # Re-issue prefetch around the playhead — the cache cleared
+        # the affected range, so without this nothing decodes.
+        self._cache.request_range(
+            cur - 5, cur + 30,
+            direction=self._controller.state.direction,
+        )
+        # If no layer covers the current master frame anymore (=
+        # user just hid the only visible coverage), wipe the viewport
+        # so the stale image doesn't linger. Phase 4 will replace
+        # the wipe with a "black frame uploaded" path so the timeline
+        # cache bar reflects the empty region too.
+        if self._layer_stack.topmost_visible_at(cur) is None:
+            try:
+                self._window.viewer.gl.clear_image()
+            except Exception:
+                log.exception("[stack] failed to clear viewport on empty frame")
+            self._last_displayed = None
+            return
+        # Force re-upload even if the master frame number didn't
+        # change (the underlying source did).
+        self._last_displayed = None
+        self._on_frame_changed(cur)
 
     def _redisplay_current(self) -> None:
         """Re-run ``_display_array`` on the cached current frame.
