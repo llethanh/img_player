@@ -1,7 +1,7 @@
 # v1.0 — Multi-Sequence Layer Stack
 
-**Status** : Phase 1 + Phase 2a + Phase 2b + Phase 3 livrés sur la branche
-`feature/v1.0-multi-layer`. Phases 2c / 4 / 5 / 6 restent à faire — voir
+**Status** : Phase 1 + 2a + 2b + 2c + 3 livrés sur la branche
+`feature/v1.0-multi-layer`. Phases 4 / 5 / 6 restent à faire — voir
 section "Next session" en bas.
 
 ## Décisions de design (toutes verrouillées avec le user)
@@ -66,15 +66,58 @@ tests/unit/
 
 ## État actuel — comportement utilisateur
 
-**Single-layer (= comportement actuel)** : intact. L'app charge une séquence,
-joue, scrubbe, exporte exactement comme avant. La cache + le controller
-opèrent toujours sur `SequenceInfo` ; `LayerStack` est un mirroir shadow.
+**Single-layer** : intact, identique au pré-v1.0. La cache est maintenant
+`MasterFrameCache` mais avec offset = first_frame, master_frame == source_frame
+donc tout marche pareil numériquement.
 
-**Visible nouveau** : panel "Layers" sous la timeline. 1 row pour la
-séquence chargée, montre le numéro / l'œil / le nom / les boutons ↑ ↓.
-Collapsable via le chevron en header. État sauvegardé dans QSettings.
+**Multi-layer fonctionnel basique** :
+- File → Add layer… (Ctrl+Shift+O) ajoute une 2e séquence par-dessus la première
+- LayerPanel affiche les rows (numéro / œil / nom / ↑↓)
+- Toggle œil sur la layer du top → révèle la layer du dessous (topmost-visible-wins)
+- Reorder via ↑↓ change la priorité de stack
+- Click sur la row focus la layer (highlight visuel)
+- Cache résout proprement le topmost-visible à chaque frame
 
-## Next session — Phase 2c (intégration cache + controller)
+**Limitations connues (= phases 4-6)** :
+- Master timeline range encore bound au controller._sequence (= 1ère seq chargée).
+  Les layers en dehors de cette range ne sont pas navigables.
+- Pas de drag offset / trim — les nouvelles layers vont par défaut à
+  offset = seq.first_frame (= alignées avec la 1ère).
+- Per-layer state (channel / exposure / colorspace) pas encore connecté à l'UI.
+- Le drag&drop replace encore (pas de modal Add/Replace/Cancel).
+- Pas de persistance .session.
+
+## Phase 2c — Cache + controller integration ✅
+
+**Livré** dans les commits `983e7e9` (cache as primary) et `f6b8183` (reload fix).
+
+### Ce qui a été fait
+
+1. **MasterFrameCache** enrichi pour drop-in compat :
+   - `attach(seq)`, `detach()`, `set_channels()`, `clear_pending()`, `reload(seq)`
+   - Path + mtime indexes per layer (O(1) lookup)
+   - `_pre_mark_missing` : eager flag des trous quand layers_changed
+   - `reload` mtime-aware avec preservation des frames non modifiées
+
+2. **PlayerController** : type `cache: CacheLike = FrameCache | MasterFrameCache`
+   — accepte les deux. Aucun autre changement (l'API surface est identique).
+
+3. **app.py** : construit `MasterFrameCache(self._layer_stack)` au lieu de
+   `FrameCache`. Order: stack → cache → controller.
+
+4. **scan_handler** : ne mute plus le stack (cache.attach le fait via
+   controller.load_sequence).
+
+5. **RuntimeMonitor** : type `cache: FrameCache | MasterFrameCache`.
+
+### Tests post-2c
+
+- `test_layer_basics.py` 14/14 ✅
+- `test_channel_selection.py` 16/16 ✅
+- Compile-check OK sur tout le src/.
+- Tests qtbot (controller, cache) : à exécuter localement avec un Qt env propre.
+
+## Next session — Phase 4 (drag UI)
 
 **C'est LE gros morceau qui reste avant que le multi-layer fonctionne pour
 de vrai.** À faire en présence du user pour test interactif à chaque étape.
