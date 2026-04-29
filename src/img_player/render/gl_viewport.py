@@ -270,6 +270,10 @@ class _ColorParams:
     # (Nuke behaviour) vs the original colour. True by default
     # because that's what artists expect when they click "R" alone.
     isolate_as_luminance: bool = True
+    # Checker-pattern cell size in pixels. Drawn unconditionally
+    # where the cached buffer's alpha is < 1 (per-layer alpha-
+    # composite controls whether the buffer has alpha at all).
+    checker_scale: float = 8.0
 
 
 class GLViewport(QOpenGLWidget):  # type: ignore[misc]
@@ -283,7 +287,7 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
     handler is shared.
     """
 
-    DEFAULT_BG = (0.05, 0.05, 0.05, 1.0)
+    DEFAULT_BG = (0.0, 0.0, 0.0, 1.0)
     # Click-and-drag sensitivity: how many pixels of horizontal motion
     # advance the playhead by one frame. The user found 1 px / frame
     # too nervous on the AMD APU + standard mouse — 6 px / frame keeps
@@ -373,6 +377,11 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
         self._current_frame = 0
         self._drag_base_frame: int | None = None
         self._drag_start_x: float = 0.0
+        # Navigable frame bounds — set by the app via
+        # :meth:`set_navigable_range`. ``None`` = no clamp (used at
+        # init and after :meth:`detach`-ing the sequence).
+        self._nav_first: int | None = None
+        self._nav_last: int | None = None
         # Hover cursor: the user gets a visual hint that the viewer is
         # scrubbable. Switching to OpenHandCursor / ClosedHandCursor on
         # press would also work — SizeHor is the more conventional
@@ -461,6 +470,26 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
         emitted target is ``base + dx / DRAG_PIXELS_PER_FRAME``.
         """
         self._current_frame = frame
+
+    def set_navigable_range(self, first: int, last: int) -> None:
+        """Set the inclusive frame bounds for drag-scrub clamping.
+
+        Without this the viewport happily emits frame numbers past
+        the timeline's end while the user keeps dragging — the
+        downstream cache miss falls back to the nearest cached
+        neighbour, which makes adjacent frames flash on/off as the
+        cursor pushes beyond the boundary. Clamping here at the
+        source keeps the playhead pinned cleanly at the last (or
+        first) frame regardless of how far the cursor wanders.
+
+        Pass any reversed pair (e.g. ``(0, 0)``) to disable clamping.
+        """
+        if last < first:
+            self._nav_first = None
+            self._nav_last = None
+        else:
+            self._nav_first = int(first)
+            self._nav_last = int(last)
 
     def set_pbo_enabled(self, enabled: bool) -> None:
         """Toggle the async PBO upload path on or off.
@@ -563,6 +592,17 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
             delta_px = event.position().x() - self._drag_start_x
             delta_frames = int(delta_px / self.DRAG_PIXELS_PER_FRAME)
             target = self._drag_base_frame + delta_frames
+            # Clamp to the navigable range so dragging past the
+            # timeline's edges doesn't emit out-of-range frames —
+            # those would round-trip through the cache as misses,
+            # the fallback path would flash adjacent cached frames,
+            # and the transport's frame readout would happily display
+            # numbers past the actual end.
+            if self._nav_first is not None and self._nav_last is not None:
+                if target < self._nav_first:
+                    target = self._nav_first
+                elif target > self._nav_last:
+                    target = self._nav_last
             if target != self._current_frame:
                 # We don't update _current_frame ourselves — the controller
                 # will push it back via set_current_frame when the seek
@@ -778,6 +818,9 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
         self._set_uniform_float(
             "uChannelIsolateLuminance",
             1.0 if self._color_params.isolate_as_luminance else 0.0,
+        )
+        self._set_uniform_float(
+            "uCheckerScale", float(self._color_params.checker_scale),
         )
         self._set_uniform_matrix4("uTransform", self._fit_matrix())
 

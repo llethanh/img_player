@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import gc
 import sys
 from pathlib import Path
 
@@ -177,6 +178,13 @@ class ImgPlayerApp:
         from img_player.ui.theme import build_stylesheet
         self._qapp.setStyleSheet(build_stylesheet())
 
+        # Register the bundled "Big Shoulders Display" TTF (if shipped
+        # in ``assets/fonts/``) so the missing-frame placeholder picks
+        # it up. No-op when the file isn't present — the module falls
+        # back to Arial silently.
+        from img_player.cache.missing_frame import ensure_font_loaded
+        ensure_font_loaded()
+
         # Configure OIIO's global thread pool *before* we spin up the cache —
         # any in-flight decode would otherwise see the default value.
         configure_oiio(oiio_threads)
@@ -339,12 +347,9 @@ class ImgPlayerApp:
         # between single and the "previous" contact sheet rather
         # than starting from scratch each time.
         self._last_contact_sheet_tiles: tuple[str, ...] = ()
-        # Drop action lock (Phase 6a). When the user ticks "Remember
-        # this choice for the rest of the session" on the Add / Replace
-        # modal, we stash the chosen action here so subsequent drops
-        # / opens go straight to it without re-prompting. Reset to
-        # ``None`` when the stack empties (= File → New, etc.).
-        self._drop_action_remember: str | None = None
+        # NB: ``_drop_action_remember`` (Phase 6a's "Remember this
+        # choice" lock for the Add/Replace modal) is gone — drops are
+        # now spatially disambiguated by zone, no modal needed.
 
     # ------------------------------------------------------------------ Lifecycle
 
@@ -398,6 +403,10 @@ class ImgPlayerApp:
         # checked QAction aren't covered by Qt's dock-state blob.
         self._prefs.side_tab_index = self._window.side_tab_index()
         self._prefs.display_timecode = self._window.display_timecode()
+        # Side panel (Color / Comments) visibility — saveState no
+        # longer covers it since the panel was lifted out of the
+        # dock system.
+        self._prefs.side_panel_visible = self._window._side_dock.isVisible()
         # LayerPanel collapsed state (v1.0).
         panel = getattr(self._window, "_layer_panel", None)
         if panel is not None:
@@ -424,6 +433,18 @@ class ImgPlayerApp:
         self._scrub_debounce.stop()
         self._controller.shutdown()
         self._cache.shutdown()
+        # Drop python-level refs to anything that could still pin big
+        # numpy arrays from the cache, then force a collection. Numpy
+        # buffers backed by malloc are released on dict.clear() above,
+        # but an explicit ``gc.collect()`` guarantees the cycle
+        # collector also walks the (small) graph of QObject parents
+        # and disposes any leftover arrays held by transient closures
+        # — keeps the visible "process exit" RAM curve clean.
+        try:
+            self._last_displayed = None
+            gc.collect()
+        except Exception:  # pragma: no cover — best effort
+            pass
 
     # ------------------------------------------------------------------ Late-bind perf tune
 
@@ -604,6 +625,26 @@ class ImgPlayerApp:
         self._layer_stack.focus_changed.connect(
             self._on_layer_focus_changed,
         )
+        # Direct timeline → layer-bar playhead path. Without this the
+        # layer bars only see playhead updates after the scrub frame
+        # has round-tripped through the controller (frame_requested →
+        # _on_scrub_requested → controller.seek → frame_changed →
+        # _on_frame_changed → panel.set_playhead). On fast drags the
+        # timeline cursor updates synchronously in its mouseMove (it
+        # mutates ``_current`` itself before emitting), so the layer
+        # bars visibly trail behind. Connecting the same signal
+        # directly to the panel skips the round-trip and the two
+        # cursors stay in lockstep — the controller path still fires
+        # but ``set_playhead`` is idempotent on equal frames.
+        panel = getattr(self._window, "_layer_panel", None)
+        if panel is not None:
+            self._window.timeline.frame_requested.connect(panel.set_playhead)
+            self._window.viewer.gl.frame_requested.connect(panel.set_playhead)
+            # NB: timeline ↔ layer-bar alignment used to be a runtime
+            # signal (``bar_inset_changed`` → ``set_content_insets``).
+            # That's been replaced by ``MasterTimelinePanel`` which
+            # holds both widgets under one layout that pins them to
+            # the same horizontal axis — no signal needed.
 
     def _wire_main_window(self) -> None:
         """MainWindow signals → controller / app handlers."""
@@ -623,6 +664,12 @@ class ImgPlayerApp:
         w.new_sequence_requested.connect(self._on_new_sequence)
         w.reload_sequence_requested.connect(self._on_reload_sequence)
         w.transport.reload_clicked.connect(self._on_reload_sequence)
+        # Edit menu — wire to the same chained handlers the keyboard
+        # shortcut (Ctrl+Z / Ctrl+Shift+Z) uses, so menu and shortcut
+        # produce identical behaviour (annotations first, layer
+        # stack fallback).
+        w.undo_requested.connect(self._undo_annotation)
+        w.redo_requested.connect(self._redo_annotation)
         w.fps_changed.connect(self._on_fps_changed)
         w.direction_play_requested.connect(self._on_direction_play)
         w.mark_in_requested.connect(self._on_mark_in)
@@ -633,10 +680,22 @@ class ImgPlayerApp:
             lambda: self._controller.set_in_out(None, None),
         )
         w.loop_mode_requested.connect(self._controller.set_loop_mode)
+        # NB: the global ``show_transparency_toggled`` /
+        # ``alpha_is_straight_toggled`` signals are gone — T and αS
+        # are per-row buttons in the layer panel that mutate the
+        # focused layer's state directly via ``LayerStack.update``.
+        # The cache hooks ``layer_modified`` and reads the per-layer
+        # flags during the next decode.
         # Recent-files menu uses callbacks into preferences.
         w.install_recent_provider(
             provider=self._prefs.recent_paths,
             clear_callback=self._prefs.clear_recent,
+        )
+        # Same hook for ``.session`` files — separate provider so the
+        # two recent lists stay independent.
+        w.install_recent_session_provider(
+            provider=self._prefs.recent_sessions,
+            clear_callback=self._prefs.clear_recent_sessions,
         )
         # Annotation save prompt — runs from MainWindow.closeEvent
         # before the window actually closes. Returning False from
@@ -716,6 +775,14 @@ class ImgPlayerApp:
         self._window.transport.annotation_next_clicked.connect(
             self._on_annotation_next,
         )
+        self._window.transport.annotation_show_during_play_toggled.connect(
+            self._on_annotation_show_during_play_toggled,
+        )
+        # Sync the button to the store's persisted flag at startup so
+        # the visual matches whatever was saved last session.
+        self._window.transport.set_annotation_show_during_play(
+            self._annotation_store.show_during_playback,
+        )
         # Initialise the overlay from the toolbar's defaults so a user
         # who jumps straight to drawing has the expected color/size.
         ov.set_color(tb.current_color())
@@ -737,8 +804,9 @@ class ImgPlayerApp:
             (QKeySequence("P"), self._toggle_pen_mode),
             (QKeySequence("E"), self._toggle_eraser_mode),
             (QKeySequence("A"), self._toggle_show_annotations_during_play),
-            (QKeySequence.StandardKey.Undo, self._undo_annotation),
-            (QKeySequence.StandardKey.Redo, self._redo_annotation),
+            # Ctrl+Z / Ctrl+Shift+Z handled by the Edit menu's
+            # QActions (which also carry the shortcut). Registering
+            # both here would route Ctrl+Z to two slots → double-undo.
             (QKeySequence("["), self._on_annotation_prev),
             (QKeySequence("]"), self._on_annotation_next),
             # G — toggle ephemeral mode (mnemonic "ghost"). Goes
@@ -774,6 +842,30 @@ class ImgPlayerApp:
         if arr is not None:
             self._display_array(arr)
             self._last_displayed = frame
+            self._wait_timer.stop()
+            return
+
+        # No-coverage gap: nothing in the stack covers this master
+        # frame (e.g. layer A ends at 1030, layer B starts at 1036 —
+        # frames 1031-1035 belong to nobody, OR the playhead landed
+        # before the first scanned frame because the source has
+        # missing files at the boundary). The cache will never
+        # decode something here, so without an explicit upload the
+        # viewport keeps displaying the previously-uploaded image
+        # which leaks visually as the user scrubs through the gap.
+        # Show the MISSING FRAME placeholder — same visual the cache
+        # uses for missing source files inside the layer's range, so
+        # the user gets one consistent "there's nothing to show"
+        # feedback regardless of why coverage is missing.
+        if (
+            self._layer_stack
+            and self._layer_stack.topmost_visible_at(frame) is None
+        ):
+            try:
+                self._show_gap_placeholder()
+            except Exception:
+                log.exception("[gap] failed to render placeholder at frame %d", frame)
+            self._last_displayed = None
             self._wait_timer.stop()
             return
 
@@ -826,6 +918,40 @@ class ImgPlayerApp:
         3. The displayed-layer didn't change (= a non-visual layer
            tweak) → the redisplay is a cheap idempotent no-op.
         """
+        # Sync the main timeline's range with the layer panel's broad
+        # master range (= union of every layer's source-potential). Without
+        # this the timeline keeps the loaded sequence's range, while the
+        # layer bars use the broad master range — the two scrubbers then
+        # paint at different scales, and dragging the timeline moves the
+        # layer-bar playhead at a visibly different speed.
+        panel = getattr(self._window, "_layer_panel", None)
+        if panel is not None and self._layer_stack:
+            first, last = panel.broad_master_range()
+            if last > first:
+                self._window.timeline.set_range(first, last)
+                # Tell the controller the same. Without this its
+                # ``_clamp_to_sequence`` (called by ``seek``) caps
+                # scrubbing at the controller's held sequence bounds —
+                # i.e. the FIRST loaded layer — so the user can't move
+                # the playhead onto a region that only later layers
+                # cover. The override also widens the prefetch range
+                # so background decode keeps up across the full master
+                # timeline.
+                self._controller.set_navigable_range(first, last)
+                # Same range to the GL viewport so its drag-scrub
+                # clamps at the boundaries — without it the user can
+                # drag the cursor past the last frame and watch the
+                # transport readout count up into never-never land
+                # while the cache flashes adjacent frames.
+                self._window.viewer.gl.set_navigable_range(first, last)
+            # Push the current gap set to the timeline so the cache
+            # bar can paint multi-layer gaps in a distinct grey —
+            # tells the user "no layer covers these frames" at a
+            # glance instead of leaving them as the same black as
+            # not-yet-cached slots.
+            self._window.timeline.set_gap_frames(
+                self._layer_stack.gap_frames(),
+            )
         if self._controller.sequence is None:
             return
         cur = self._controller.state.current_frame
@@ -842,9 +968,9 @@ class ImgPlayerApp:
         # cache bar reflects the empty region too.
         if self._layer_stack.topmost_visible_at(cur) is None:
             try:
-                self._window.viewer.gl.clear_image()
+                self._show_gap_placeholder()
             except Exception:
-                log.exception("[stack] failed to clear viewport on empty frame")
+                log.exception("[stack] failed to render placeholder on empty frame")
             self._last_displayed = None
             return
         # Force re-upload even if the master frame number didn't
@@ -899,6 +1025,9 @@ class ImgPlayerApp:
                 )
         finally:
             transport.blockSignals(False)
+        # NB: per-layer T / αS now live on the row itself and update
+        # via ``layer_modified`` → ``LayerRow.update_layer``. No
+        # focus-time sync needed for them.
         # Sync app-level fallback fields with the focused layer's
         # state so legacy export-snapshot code keeps working.
         self._channel_layout_mode = layer.channel_layout_mode
@@ -932,6 +1061,75 @@ class ImgPlayerApp:
             # still lives in the transport bar's combo + the four
             # R/G/B/A mute toggles, so the user has full visibility
             # without a dedicated panel.
+
+    def _show_gap_placeholder(self) -> None:
+        """Upload the MISSING FRAME placeholder to the viewport.
+
+        Used as the visual for any "no coverage" frame: gaps between
+        layers AND playhead-before-first / after-last when the source
+        has missing files at the boundary.
+
+        Sizing priority (the user wants the placeholder to match
+        "the layer being read"):
+
+        1. Topmost VISIBLE layer at the current playhead — that's
+           literally what the viewer was about to display before we
+           hit the gap.
+        2. Any layer the playhead is INSIDE of (visible or not) —
+           covers the case where every covering layer is hidden.
+        3. The focused layer — the one the user is currently editing
+           in the side panels; sensible default when the playhead
+           sits in a true no-layer void.
+        4. Broadest layer — the largest dimensions across the stack,
+           same heuristic the cache uses internally.
+        5. Hard-coded 1920×1080 fallback for the truly-empty case
+           (which we early-return on instead of letting an empty
+           placeholder appear at first launch).
+
+        ``get_missing_placeholder`` is memoised by (w, h) so picking
+        the same size on repeated scrubs is essentially free.
+        """
+        from img_player.cache.missing_placeholder import get_missing_placeholder
+
+        if not self._layer_stack or not self._layer_stack.layers():
+            # Empty stack — keep the legacy clear-to-black behaviour
+            # for "nothing loaded yet" so the user doesn't see a
+            # placeholder before they've even opened a sequence.
+            self._window.viewer.gl.clear_image()
+            return
+
+        cur = self._controller.state.current_frame
+        candidates: list[object] = []
+        # 1. topmost visible at playhead
+        topmost = self._layer_stack.topmost_visible_at(cur)
+        if topmost is not None:
+            candidates.append(topmost)
+        # 2. any layer covering the playhead (visible or not)
+        for layer in self._layer_stack.covers(cur):
+            if layer not in candidates:
+                candidates.append(layer)
+        # 3. focused layer
+        focused = self._layer_stack.focused()
+        if focused is not None and focused not in candidates:
+            candidates.append(focused)
+        # 4. every other layer — broadest wins among the leftovers
+        leftovers = [
+            layer for layer in self._layer_stack.layers()
+            if layer not in candidates
+        ]
+        candidates.extend(leftovers)
+
+        w = h = 0
+        for layer in candidates:
+            lw = layer.sequence.width or 0  # type: ignore[attr-defined]
+            lh = layer.sequence.height or 0  # type: ignore[attr-defined]
+            if lw > 0 and lh > 0:
+                w, h = lw, lh
+                break
+        if w <= 0 or h <= 0:
+            w, h = 1920, 1080
+        arr = get_missing_placeholder(w, h)
+        self._display_array(arr)
 
     def _display_array(self, arr) -> None:  # type: ignore[no-untyped-def]
         # The displayed pixels come from the *topmost-visible* layer
@@ -1157,21 +1355,49 @@ class ImgPlayerApp:
     def _toggle_show_annotations_during_play(self) -> None:
         """``A`` — flip the store's flag and ask the overlay to repaint."""
         new = not self._annotation_store.show_during_playback
-        self._annotation_store.show_during_playback = new
-        # The overlay's paintEvent reads the flag — trigger a repaint.
+        self._apply_annotation_show_during_play(new)
+
+    def _on_annotation_show_during_play_toggled(self, on: bool) -> None:
+        """Slot for the transport's 👁 button — same effect as the
+        ``A`` shortcut, but driven by the explicit checked state of
+        the button so click + uncheck land deterministically."""
+        self._apply_annotation_show_during_play(bool(on))
+
+    def _apply_annotation_show_during_play(self, on: bool) -> None:
+        """Single source of truth for the show-annotations-during-play
+        flag. Updates the store, repaints the overlay, syncs the
+        transport button, and surfaces a status message — so both
+        entry points (keyboard and toolbar) produce identical UX."""
+        if self._annotation_store.show_during_playback == on:
+            # Still re-sync the button in case the toolbar got out
+            # of step (e.g. user double-toggled rapidly).
+            self._window.transport.set_annotation_show_during_play(on)
+            return
+        self._annotation_store.show_during_playback = on
         self._annotation_overlay.update()
+        self._window.transport.set_annotation_show_during_play(on)
         self._window.set_status(
-            f"Annotations pendant lecture : {'visibles' if new else 'masquées'}"
+            f"Annotations pendant lecture : {'visibles' if on else 'masquées'}"
         )
 
     def _undo_annotation(self) -> None:
-        """``Ctrl+Z`` — undo on the current frame's stack, or kill
-        the last live ephemeral stroke when the mode is active.
+        """``Ctrl+Z`` — undo the most recent edit.
 
-        The mode-based routing (introduced in v0.4.1) is intentionally
-        based on the toolbar's *current* state — not on the per-stroke
-        press-time snapshot — because Ctrl+Z fires *outside* of any
-        drag, so there's no snapshot to consult.
+        Routing rules, in priority order:
+
+        1. Ephemeral mode active → pull back the last live stroke
+           (special case from v0.4.1: ephemerals don't share the
+           per-frame undo stack).
+        2. The current frame has an annotation undo entry → pop it.
+        3. The layer stack has a history entry (= the user just
+           added / removed / reordered / toggled / dragged a layer
+           — including drop-replace and add-layer drops) → revert it.
+        4. Nothing to undo anywhere → status message.
+
+        Falling through to the layer stack means the same Ctrl+Z
+        keystroke covers both feature areas. Annotations stay
+        prioritised so a stray Ctrl+Z while drawing doesn't
+        unexpectedly tear down a layer the user is actively reviewing.
         """
         if self._annotation_toolbar.is_ephemeral_mode():
             if not self._ephemeral_manager.kill_last():
@@ -1180,20 +1406,32 @@ class ImgPlayerApp:
                 )
             return
         frame = self._controller.state.current_frame
-        if not self._annotation_store.undo(frame):
-            self._window.set_status("Annotation : rien à annuler sur cette frame")
+        if self._annotation_store.undo(frame):
+            return
+        if self._layer_stack.can_undo():
+            self._layer_stack.undo()
+            self._window.set_status("Layer change undone")
+            return
+        self._window.set_status("Rien à annuler")
 
     def _redo_annotation(self) -> None:
-        """``Ctrl+Y`` — redo on the current frame's stack only.
+        """``Ctrl+Y`` / ``Ctrl+Shift+Z`` — redo the most recent undo.
 
-        No-op in ephemeral mode by design (spec §2 Q4c) — a faded
-        stroke is gone for good, we never resurrect.
+        Same priority chain as :meth:`_undo_annotation`: annotations
+        first (for symmetry — if you can undo, you can redo), layer
+        stack second. Ephemeral mode swallows redo by design — faded
+        strokes don't come back.
         """
         if self._annotation_toolbar.is_ephemeral_mode():
             return
         frame = self._controller.state.current_frame
-        if not self._annotation_store.redo(frame):
-            self._window.set_status("Annotation : rien à rétablir sur cette frame")
+        if self._annotation_store.redo(frame):
+            return
+        if self._layer_stack.can_redo():
+            self._layer_stack.redo()
+            self._window.set_status("Layer change redone")
+            return
+        self._window.set_status("Rien à rétablir")
 
     def _clear_annotations(self) -> None:
         """Toolbar's Clear button — context-sensitive (v0.4.1).
@@ -1447,16 +1685,44 @@ class ImgPlayerApp:
 
     def _show_best_available(self, frame: int) -> None:
         arr = self._cache.get(frame)
-        if arr is None:
-            fallback = self._nearest_cached_fallback(frame)
-            if fallback is None:
-                return
-            arr = self._cache.get(fallback)
-            if arr is None:
-                return
-            self._last_displayed = fallback
-        else:
+        if arr is not None:
             self._last_displayed = frame
+            self._display_array(arr)
+            return
+        # No-coverage gap. Two distinct sub-cases:
+        #
+        # * Stack is non-empty but no layer reaches THIS frame — could
+        #   be a true compositional gap (between two layers) or, more
+        #   commonly, the playhead landing before the first / after
+        #   the last scanned frame because the source has missing
+        #   files at the boundary. In both cases the user expects
+        #   feedback ("there's nothing to show here"), not a silent
+        #   black flash. We upload the same MISSING FRAME placeholder
+        #   the cache uses — visually unmistakable, and consistent
+        #   with how missing-source frames inside the layer's range
+        #   already render.
+        # * Stack is empty (no sequence loaded at all) — clear to
+        #   black, that's the correct "no content" state.
+        if (
+            self._layer_stack
+            and self._layer_stack.topmost_visible_at(frame) is None
+        ):
+            try:
+                self._show_gap_placeholder()
+            except Exception:
+                log.exception("[gap-scrub] failed to render placeholder at %d", frame)
+            self._last_displayed = None
+            return
+        # Cache miss but the frame is covered — fall back to the
+        # nearest decoded frame so the user gets *something* moving
+        # under their cursor while the prefetcher catches up.
+        fallback = self._nearest_cached_fallback(frame)
+        if fallback is None:
+            return
+        arr = self._cache.get(fallback)
+        if arr is None:
+            return
+        self._last_displayed = fallback
         self._display_array(arr)
 
     def _on_jump_to_ends(self, direction: int) -> None:
@@ -1505,9 +1771,6 @@ class ImgPlayerApp:
         # rebuild. With FrameCache the call simply clears its
         # internal state (no stack involvement).
         self._cache.detach()
-        # Drop the session-wide "Remember add/replace choice" lock —
-        # a fresh New makes the next drop ask again.
-        self._drop_action_remember = None
         # Clear in-memory annotation + comment data (their sidecar
         # path tracking goes too).
         self._annotation_store.load_from_dict({})
@@ -1539,7 +1802,7 @@ class ImgPlayerApp:
             self._window._reload_act.setEnabled(False)  # noqa: SLF001
         self._window.transport.set_export_enabled(False)
         self._window.transport.set_reload_enabled(False)
-        self._window.setWindowTitle("img_player")
+        self._window.setWindowTitle("Flick Player")
         self._window.set_status("No sequence loaded — File → Open to load one.")
 
     def _on_reload_sequence(self) -> None:
@@ -1569,18 +1832,48 @@ class ImgPlayerApp:
         # newly-arrived frames.
         self._controller._sequence = new_seq  # noqa: SLF001
         self._window.update_sequence_info(new_seq)
-        self._window.timeline.set_range(new_seq.first_frame, new_seq.last_frame)
+        # Use the layer panel's BROAD master range (= union of every
+        # layer's source potential) — same range the rest of the app
+        # uses (``_refresh_after_stack_change`` after layer_modified,
+        # the layer bars themselves, etc.). Mixing master_range()
+        # and broad_master_range() across surfaces caused the
+        # timeline cursor and the layer-bar playhead to land at
+        # different fractions when the user trimmed a layer's tail.
+        panel = getattr(self._window, "_layer_panel", None)
+        if panel is not None and self._layer_stack:
+            # The layer's ``sequence`` reference was just mutated by
+            # ``cache.reload`` (no signal fired, by design — keeps
+            # the mtime-kept frames). Re-sync the bars manually so
+            # they pick up any new ``broad`` range from the new
+            # sequence's first/last frame.
+            panel.sync_bar_geometry()
+            first, last = panel.broad_master_range()
+        else:
+            first, last = new_seq.first_frame, new_seq.last_frame
+        if last > first:
+            self._window.timeline.set_range(first, last)
+            self._controller.set_navigable_range(first, last)
+            self._window.viewer.gl.set_navigable_range(first, last)
+        else:
+            self._window.timeline.set_range(
+                new_seq.first_frame, new_seq.last_frame,
+            )
         # Push the freshly-rebuilt missing set straight to the
         # timeline so the user sees the red slots without waiting
         # for the next 200 ms _refresh_cache_bar tick.
         self._window.timeline.set_cached_frames(self._cache.cached_frames())
         self._window.timeline.set_missing_frames(self._cache.missing_frames())
-        # Re-prime the prefetch ring around the current playhead.
+        # Re-prime the prefetch ring around the current playhead —
+        # in master coords, so a moved layer prefetches its OWN
+        # range rather than the (now mismatched) source range.
         cur = self._controller.state.current_frame
         self._cache.set_current_frame(cur)
-        self._cache.request_range(
-            new_seq.first_frame, new_seq.last_frame, direction=1,
-        )
+        if last > first:
+            self._cache.request_range(first, last, direction=1)
+        else:
+            self._cache.request_range(
+                new_seq.first_frame, new_seq.last_frame, direction=1,
+            )
         # Refresh the on-screen image: the user expects the viewport
         # to update right after reload — either the old missing
         # placeholder is replaced with freshly decoded data, or a
@@ -1649,32 +1942,16 @@ class ImgPlayerApp:
     def _open_path(self, path: Path) -> None:
         """Scan ``path`` off the main thread so the UI stays responsive.
 
-        When layers are already loaded, prompt the user via
-        :class:`DropActionDialog` for "Add / Replace / Cancel". The
-        choice can be locked for the session via the modal's
-        Remember checkbox.
+        Always replaces the current sequence. The "add layer"
+        semantic is handled by a separate signal
+        (:meth:`_on_add_layer_requested`) — drops on the viewer area
+        fire this one, drops on the layer panel area fire the
+        add-layer one. No more modal Add / Replace / Cancel dialog;
+        the spatial disambiguation does the same job without an
+        interruption.
         """
-        from img_player.scan_handler import open_path, add_layer
-        if not self._layer_stack:
-            # Empty stack → no ambiguity, load as a fresh sequence.
-            open_path(self, path)
-            return
-        # Honour a remembered choice from earlier in the session.
-        action = self._drop_action_remember
-        if action is None:
-            from img_player.ui.drop_action_dialog import DropActionDialog
-            action, remember = DropActionDialog.ask(
-                str(path), parent=self._window,
-            )
-            if action == "cancel":
-                self._window.set_status("Open canceled.")
-                return
-            if remember:
-                self._drop_action_remember = action
-        if action == "add":
-            add_layer(self, path)
-        else:  # "replace"
-            open_path(self, path)
+        from img_player.scan_handler import open_path
+        open_path(self, path)
 
     def _on_add_layer_requested(self, path: Path) -> None:
         """File → Add layer… handler — appends a new layer to the
@@ -1693,6 +1970,9 @@ class ImgPlayerApp:
             self._window.set_status(f"Save session failed: {err}")
             return
         self._window.set_status(f"Session saved to {path}")
+        # Track this session in the Open Recent Session list — the
+        # user just declared interest in coming back to it.
+        self._prefs.push_recent_session(path)
 
     def _on_open_session_requested(self, path: Path) -> None:
         """File → Open session… — replace the LayerStack from a
@@ -1708,6 +1988,10 @@ class ImgPlayerApp:
         if result.skipped:
             msg += f" ({result.skipped} skipped)"
         self._window.set_status(msg)
+        # Track in Open Recent Session — same trigger as a save: the
+        # user just used the file, so it deserves a slot in the list.
+        if result.loaded > 0:
+            self._prefs.push_recent_session(path)
         # Point the controller at the focused layer's sequence so
         # the timeline range + scrubbing have a target. We bypass
         # ``controller.load_sequence`` here on purpose: that call
@@ -1896,6 +2180,15 @@ def _apply_preferences_to_window(app: ImgPlayerApp) -> None:
     # routes through the same slot the user click triggers, so the
     # timeline + transport's frame display update accordingly.
     app._window.set_display_timecode(prefs.display_timecode)
+
+    # Side panel (Color / Comments) visibility — explicit pref now
+    # that the panel was lifted out of the dock system.
+    app._window._side_dock.setVisible(prefs.side_panel_visible)
+    # NB: transparency and alpha convention used to live on global
+    # preferences; they're now per-layer fields auto-detected from
+    # the source extension at ``Layer.from_sequence``. No global
+    # restore step needed — the focus_changed handler syncs the
+    # transport buttons / view actions to whichever layer is focused.
 
     # LayerPanel collapsed state (v1.0). The widget itself owns the
     # toggle button; we just sync the boolean at boot.

@@ -180,6 +180,27 @@ _TEMPLATES: dict[str, str] = {
         '<path d="M7 7 L7 11 M9 7 L9 11"/>'
         "</svg>"
     ),
+    # Four corner brackets pointing outward — universal "expand to
+    # fullscreen" cue (matches YouTube / VLC / etc.).
+    "fullscreen_enter": (
+        '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="none" '
+        'stroke="{color}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">'
+        '<path d="M2 6 L2 2 L6 2"/>'
+        '<path d="M14 6 L14 2 L10 2"/>'
+        '<path d="M2 10 L2 14 L6 14"/>'
+        '<path d="M14 10 L14 14 L10 14"/>'
+        "</svg>"
+    ),
+    # Mirror — corners pointing INWARD = "exit fullscreen, contract".
+    "fullscreen_exit": (
+        '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="none" '
+        'stroke="{color}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">'
+        '<path d="M6 2 L6 6 L2 6"/>'
+        '<path d="M10 2 L10 6 L14 6"/>'
+        '<path d="M6 14 L6 10 L2 10"/>'
+        '<path d="M10 14 L10 10 L14 10"/>'
+        "</svg>"
+    ),
 }
 
 

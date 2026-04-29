@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QToolButton,
     QWidget,
@@ -97,6 +98,12 @@ class TransportBar(QWidget):  # type: ignore[misc]
     annotation_toggle_clicked = Signal()
     annotation_prev_clicked = Signal()
     annotation_next_clicked = Signal()
+    # Show / hide annotations during playback. Carries the new bool
+    # state. Checked = visible while playing; unchecked = hidden so
+    # the user gets a clean review pass without strokes flickering
+    # over moving content. Mirrored on the ``A`` keyboard shortcut.
+    annotation_show_during_play_toggled = Signal(bool)
+    fullscreen_clicked = Signal()
     # Export button (v0.5.0) — opens the export dialog. Disabled
     # until the app calls ``set_export_enabled(True)`` (which the
     # app does after a sequence loads).
@@ -193,11 +200,52 @@ class TransportBar(QWidget):  # type: ignore[misc]
         self._annotation_next_btn = _text_button(
             "⏭️", "Frame annotée suivante (])"
         )
+        # 👁 — show / hide annotations DURING playback. Checkable so
+        # the user can lock it in either state. Default = checked
+        # (annotations visible during play) to match the legacy
+        # behaviour. Same toggle the ``A`` keyboard shortcut drives.
+        # Inline stylesheet so checked vs unchecked is unambiguously
+        # visible — without it the colour-emoji rendered by the OS
+        # looks identical in both states (font-color CSS doesn't
+        # touch coloured emoji glyphs). We tint the BACKGROUND
+        # instead and add a ``◌`` strike-overlay via the glyph swap
+        # so the difference reads at a glance.
+        self._annotation_show_play_btn = _text_button(
+            "👁", "Afficher les annotations pendant la lecture (A)"
+        )
+        self._annotation_show_play_btn.setCheckable(True)
+        self._annotation_show_play_btn.setChecked(True)
+        self._annotation_show_play_btn.setStyleSheet(
+            "QPushButton {"
+            "  font-size: 11pt;"
+            "  padding: 0;"
+            "}"
+            "QPushButton:checked {"
+            f"  background: {H.ACCENT_DIM};"
+            f"  border: 1px solid {H.ACCENT};"
+            f"  border-radius: {G.RADIUS_SM}px;"
+            "}"
+            "QPushButton:!checked {"
+            f"  background: {H.BG_RAISED};"
+            f"  border: 1px solid {H.BORDER_DEFAULT};"
+            f"  border-radius: {G.RADIUS_SM}px;"
+            "}"
+        )
+        # Glyph swap on toggle: open eye when ON, crossed eye when
+        # OFF. Belt-and-braces with the background tint so even users
+        # whose theme washes out the accent colour still see the
+        # state change immediately.
+        self._annotation_show_play_btn.toggled.connect(
+            lambda on: self._annotation_show_play_btn.setText("👁" if on else "🚫")
+        )
         self._annotation_prev_btn.clicked.connect(self.annotation_prev_clicked.emit)
         self._annotation_toggle_btn.clicked.connect(
             self.annotation_toggle_clicked.emit
         )
         self._annotation_next_btn.clicked.connect(self.annotation_next_clicked.emit)
+        self._annotation_show_play_btn.toggled.connect(
+            self.annotation_show_during_play_toggled.emit
+        )
         # Disabled by default — App.py enables them once the store has
         # annotated frames on either side of the current playhead.
         self._annotation_prev_btn.setEnabled(False)
@@ -225,17 +273,25 @@ class TransportBar(QWidget):  # type: ignore[misc]
         self._reload_btn.setEnabled(False)
 
         # --- FPS ------------------------------------------------------------
-        self._fps_combo = QComboBox()
-        self._fps_combo.setEditable(True)
-        self._fps_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-        for rate in ("23.976", "24", "25", "29.97", "30", "48", "50", "59.94", "60"):
-            self._fps_combo.addItem(rate)
-        self._fps_combo.setCurrentText("24")
-        self._fps_combo.setFixedWidth(72)
+        # Plain editable line — no dropdown of presets. The user
+        # types whatever rate they want (24, 23.976, 60, …). A
+        # double validator keeps the field numeric; on Enter / focus
+        # loss the new value fires ``fps_changed``.
+        from PySide6.QtGui import QDoubleValidator
+        self._fps_combo = QLineEdit()
+        self._fps_combo.setText("24")
+        self._fps_combo.setFixedWidth(40)
         self._fps_combo.setFixedHeight(G.INPUT_H)
+        self._fps_combo.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._fps_combo.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
-        self._fps_combo.setToolTip("Playback rate (fps)")
-        self._fps_combo.currentTextChanged.connect(self._on_fps_text)
+        self._fps_combo.setToolTip("Playback rate (fps) — type a value, Enter to apply")
+        validator = QDoubleValidator(0.1, 1000.0, 3, self._fps_combo)
+        validator.setNotation(QDoubleValidator.Notation.StandardNotation)
+        self._fps_combo.setValidator(validator)
+        # Commit on Enter or when the user clicks elsewhere.
+        self._fps_combo.editingFinished.connect(
+            lambda: self._on_fps_text(self._fps_combo.text()),
+        )
 
         # --- Channel selector ----------------------------------------------
         # Multichannel EXR + contact-sheet support: a QToolButton that
@@ -289,6 +345,11 @@ class TransportBar(QWidget):  # type: ignore[misc]
             btn.toggled.connect(self._emit_channel_mask)
             self._channel_btns[letter] = btn
 
+        # NB: T + αS toggles moved to each :class:`LayerRow` since
+        # they reflect *per-layer* state. Keeping them here would
+        # silently target a "focused layer" that's invisible from
+        # the transport's perspective — confusing UX.
+
         # --- Zoom selector -------------------------------------------------
         # The combo is *editable* solely so we can call setText() with
         # arbitrary values like "127%" coming from the wheel — but the
@@ -314,7 +375,10 @@ class TransportBar(QWidget):  # type: ignore[misc]
         for label in ("Fit", "200%", "150%", "100%", "50%", "25%", "15%", "10%"):
             self._zoom_combo.addItem(label)
         self._zoom_combo.setCurrentText("Fit")
-        self._zoom_combo.setFixedWidth(78)
+        # Wide enough to fit "200%" (4 chars) plus the dropdown arrow
+        # without truncation. The previous 52 px was clipping values
+        # like "200%" and "Fit ▼".
+        self._zoom_combo.setFixedWidth(70)
         self._zoom_combo.setFixedHeight(G.INPUT_H)
         self._zoom_combo.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
         self._zoom_combo.setToolTip(
@@ -347,19 +411,21 @@ class TransportBar(QWidget):  # type: ignore[misc]
         layout.addWidget(self._first_btn)
         layout.addWidget(self._prev_btn)
         layout.addWidget(self._reverse_play_btn)
-        layout.addWidget(self._frame_display)
         layout.addWidget(self._play_btn)
         layout.addWidget(self._next_btn)
         layout.addWidget(self._last_btn)
+        # NB: ``self._frame_display`` is constructed in __init__ but
+        # NOT added to this layout — it's reparented into the master
+        # timeline panel's left gutter (next to the timeline scrubber)
+        # by ``MainWindow``. The transport bar keeps the wiring
+        # (``update_from_state``, ``set_frame_immediate``, …) so the
+        # signal contract is unchanged.
 
         layout.addWidget(_separator())
         layout.addWidget(self._annotation_prev_btn)
         layout.addWidget(self._annotation_toggle_btn)
         layout.addWidget(self._annotation_next_btn)
-
-        layout.addWidget(_separator())
-        layout.addWidget(self._reload_btn)
-        layout.addWidget(self._export_btn)
+        layout.addWidget(self._annotation_show_play_btn)
 
         layout.addWidget(_separator())
         fps_label = QLabel("FPS")
@@ -367,29 +433,73 @@ class TransportBar(QWidget):  # type: ignore[misc]
         layout.addWidget(fps_label)
         layout.addWidget(self._fps_combo)
 
-        layout.addWidget(_separator())
-        channel_label = QLabel("CH")
-        channel_label.setFixedWidth(20)
-        layout.addWidget(channel_label)
-        layout.addWidget(self._channel_button)
+        # NB: ``_reload_btn``, ``_export_btn``, ``_channel_button``,
+        # the RGBA mute toggles and ``_zoom_combo`` are constructed
+        # in __init__ but NOT added to this layout — they live in
+        # the menu bar's top-right corner widget (built in
+        # ``MainWindow._build_menu``). Same reparent pattern as
+        # ``_frame_display`` above. Keeps the global-state controls
+        # at the very top of the window and frees the transport bar
+        # for playback-only tools.
 
-        # The four RGBA mute toggles sit right after the channel combo,
-        # because they're conceptually about the *same* thing (what
-        # of the loaded data ends up on screen) — just at a finer
-        # grain.
-        for letter in ("R", "G", "B", "A"):
-            layout.addWidget(self._channel_btns[letter])
-
+        # Fullscreen toggle, sitting last on the right — that's the
+        # corner reviewers reach for instinctively (YouTube / VLC
+        # convention). Click cycles in / out of fullscreen, the
+        # icon swaps between "expand" and "contract" arrows in
+        # ``set_fullscreen_state``.
         layout.addWidget(_separator())
-        zoom_label = QLabel("Zoom")
-        zoom_label.setFixedWidth(34)
-        layout.addWidget(zoom_label)
-        layout.addWidget(self._zoom_combo)
+        self._fullscreen_btn = QPushButton()
+        self._fullscreen_btn.setFixedSize(G.BTN_TRANSPORT_W, G.BTN_TRANSPORT_H)
+        self._fullscreen_btn.setIcon(make_icon("fullscreen_enter"))
+        self._fullscreen_btn.setIconSize(QSize(16, 16))
+        self._fullscreen_btn.setToolTip("Fullscreen (F)")
+        self._fullscreen_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._fullscreen_btn.clicked.connect(self.fullscreen_clicked.emit)
+        layout.addWidget(self._fullscreen_btn)
+
         layout.addStretch(1)
 
         self._refresh_loop_button()
 
+    def set_fullscreen_state(self, on: bool) -> None:
+        """Swap the fullscreen button's icon to reflect the current
+        mode. Called from ``MainWindow`` when fullscreen toggles."""
+        self._fullscreen_btn.setIcon(
+            make_icon("fullscreen_exit" if on else "fullscreen_enter")
+        )
+        self._fullscreen_btn.setToolTip(
+            "Exit fullscreen (F / Esc)" if on else "Fullscreen (F)"
+        )
+
     # ------------------------------------------------------------------ Public
+
+    @property
+    def frame_display(self) -> "FrameDisplay":
+        """Public accessor for the frame readout widget. Used by
+        :class:`MainWindow` to reparent it into the master timeline
+        panel's left gutter (and back to a floating fullscreen bar
+        when the user toggles fullscreen mode)."""
+        return self._frame_display
+
+    @property
+    def reload_button(self) -> QPushButton:
+        return self._reload_btn
+
+    @property
+    def export_button(self) -> QPushButton:
+        return self._export_btn
+
+    @property
+    def channel_button(self) -> QToolButton:
+        return self._channel_button
+
+    @property
+    def channel_mute_buttons(self) -> dict[str, QPushButton]:
+        return self._channel_btns
+
+    @property
+    def zoom_combo(self) -> QComboBox:
+        return self._zoom_combo
 
     def update_from_state(self, state: PlaybackState) -> None:
         # Swap the play button's icon between the two states. We keep
@@ -418,10 +528,10 @@ class TransportBar(QWidget):  # type: ignore[misc]
             self._loop_mode = state.loop_mode
             self._refresh_loop_button()
 
-        current_fps = self._parse_fps(self._fps_combo.currentText())
+        current_fps = self._parse_fps(self._fps_combo.text())
         if current_fps is None or abs(current_fps - state.fps) > 1e-3:
             self._fps_combo.blockSignals(True)
-            self._fps_combo.setCurrentText(self._format_fps(state.fps))
+            self._fps_combo.setText(self._format_fps(state.fps))
             self._fps_combo.blockSignals(False)
 
     def set_display_mode(self, mode: DisplayMode) -> None:
@@ -469,6 +579,25 @@ class TransportBar(QWidget):  # type: ignore[misc]
             self._annotation_toggle_btn.setChecked(active)
         finally:
             self._annotation_toggle_btn.blockSignals(False)
+
+    def set_annotation_show_during_play(self, active: bool) -> None:
+        """Sync the 👁 "show during play" button without re-emitting.
+
+        Called from the app when the ``A`` shortcut flips the store's
+        ``show_during_playback`` flag — keeps the visual state in
+        lockstep without round-tripping the signal back through
+        ``_toggle_show_annotations_during_play``."""
+        if self._annotation_show_play_btn.isChecked() == active:
+            return
+        self._annotation_show_play_btn.blockSignals(True)
+        try:
+            self._annotation_show_play_btn.setChecked(active)
+            # The ``toggled`` signal would normally drive the text
+            # swap; with signals blocked we have to do it manually
+            # so the glyph still matches the new state.
+            self._annotation_show_play_btn.setText("👁" if active else "🚫")
+        finally:
+            self._annotation_show_play_btn.blockSignals(False)
 
     def set_frame_immediate(self, frame: int) -> None:
         """Update the frame readout *now*, ahead of the controller.
@@ -679,13 +808,26 @@ def _text_button(label: str, tooltip: str) -> QPushButton:
 
 
 def _separator() -> QWidget:
+    """Vertical separator with breathing room on each side.
+
+    Wraps the 1 px line in a container with horizontal padding so
+    button groups around the separator don't crowd it. The layout's
+    own ``spacing(S.SM)`` adds 4 px more on top of the padding here,
+    giving each group a clearly framed rest area.
+    """
+    container = QWidget()
+    container.setFixedHeight(22)
+    h = QHBoxLayout(container)
+    h.setContentsMargins(6, 0, 6, 0)
+    h.setSpacing(0)
     line = QFrame()
     line.setFrameShape(QFrame.Shape.VLine)
     line.setFrameShadow(QFrame.Shadow.Plain)
     line.setFixedWidth(1)
     line.setFixedHeight(18)
     line.setStyleSheet(f"background-color: {H.BORDER_DEFAULT};")
-    return line
+    h.addWidget(line)
+    return container
 
 
 # Per-letter colours used by the RGBA channel-mute toggles. Matches
@@ -698,6 +840,7 @@ _CHANNEL_BTN_COLORS = {
     "B": "#5E9DD8",  # mid blue
     "A": H.TEXT_SECONDARY,
 }
+
 
 
 def _channel_toggle_button(letter: str, tooltip: str) -> QPushButton:

@@ -88,6 +88,14 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
         # shrink mid-playback when the cache hit rate drops. Initialised
         # to the class default so existing call sites stay correct.
         self._prefetch_ahead: int = type(self).PREFETCH_AHEAD
+        # Navigable master-frame range override. ``None`` falls back to
+        # the loaded sequence's first/last frame (single-layer legacy
+        # behaviour). When the multi-layer stack is active, ``app.py``
+        # pushes the broad master range here so scrubbing isn't capped
+        # by the first-loaded layer's bounds — without this the user
+        # can't move the playhead past the first layer even if a later
+        # layer extends further.
+        self._navigable_range: tuple[int, int] | None = None
 
     # ------------------------------------------------------------------ Properties
 
@@ -342,13 +350,35 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
         # we always honour the stop, even if the final frame isn't
         # cached, otherwise we'd loop forever waiting for a frame at a
         # boundary the user explicitly asked us to stop on.
-        if not should_stop and not self._cache.contains(next_frame):
+        # Multi-layer gap: no visible layer covers ``next_frame``, so
+        # the cache will *never* decode anything for it. Advancing
+        # through is the right move — the viewport's frame-changed
+        # handler clears to black on uncovered frames, and the user
+        # sees the playhead glide across the gap at normal speed
+        # rather than freezing every time. Without this opt-out the
+        # cache-bound stall (added for "cursor doesn't run ahead of
+        # the cache fill") fires forever on a frame that's structurally
+        # uncacheable.
+        is_gap = (
+            hasattr(self._cache, "is_gap_frame")
+            and self._cache.is_gap_frame(next_frame)
+        )
+        if not should_stop and not is_gap and not self._cache.contains(next_frame):
             # Stay on the current frame. Re-issue the prefetch so the
             # worker pool keeps loading toward the would-be next
             # frame. Direction matters for the prefetch heuristic.
             self._cache.set_current_frame(self._state.current_frame)
             self._cache.set_direction(next_dir)
             self._prefetch_from(self._state.current_frame, next_dir)
+            # Loop-wrap stall: at end-of-range, ``_advance`` returns
+            # ``next_frame = lo`` (start of range), but ``_prefetch_from``
+            # above only queues ``current_frame ± window`` — i.e. around
+            # ``hi``, NOT ``lo``. Result: ``lo`` is never (re)requested
+            # and the stall is infinite — playback freezes at the end
+            # instead of looping. Explicitly queue ``next_frame`` at
+            # priority 0 so the worker pool decodes it ASAP. Cheap and
+            # idempotent (FrameCache.request dedups).
+            self._cache.request(next_frame, priority=0)
             # Record the stall in the rolling window — the runtime
             # monitor (slice 5) reads this to surface "Lecture
             # difficile" warnings if stalls dominate.
@@ -487,7 +517,16 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
             return
         seq = self._sequence
         d = 1 if direction >= 0 else -1
-        for f in range(seq.first_frame, seq.last_frame + 1):
+        # Prefetch covers the full navigable range — with multi-layer
+        # stacks the master range can extend past the controller's
+        # held sequence, and frames beyond it would otherwise never
+        # decode in the background.
+        bounds = self._nav_bounds()
+        if bounds is not None:
+            first_f, last_f = bounds
+        else:
+            first_f, last_f = seq.first_frame, seq.last_frame
+        for f in range(first_f, last_f + 1):
             delta = (f - frame) * d
             priority = delta if delta >= 0 else (-delta * self._BEHIND_PRIORITY_PENALTY)
             self._cache.request(f, priority=priority)
@@ -497,29 +536,56 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
 
     def _effective_in_frame(self) -> int:
         assert self._sequence is not None
-        return (
-            self._state.in_frame if self._state.in_frame is not None else self._sequence.first_frame
-        )
+        if self._state.in_frame is not None:
+            return self._state.in_frame
+        bounds = self._nav_bounds()
+        return bounds[0] if bounds is not None else self._sequence.first_frame
 
     def _effective_out_frame(self) -> int:
         assert self._sequence is not None
+        if self._state.out_frame is not None:
+            return self._state.out_frame
+        bounds = self._nav_bounds()
         return (
-            self._state.out_frame
-            if self._state.out_frame is not None
-            else self._sequence.last_frame
+            bounds[1] if bounds is not None else self._sequence.last_frame
         )
 
     def _clamp(self, frame: int) -> int:
         return max(self._effective_in_frame(), min(self._effective_out_frame(), frame))
 
+    def set_navigable_range(self, first: int, last: int) -> None:
+        """Override the navigable master-frame range.
+
+        Pass ``(-1, -1)`` (or any reversed pair) to reset to the
+        sequence's own bounds. Used by ``app.py`` after every
+        :class:`LayerStack` mutation so scrubbing covers the union of
+        all layers, not just the one the controller happens to hold a
+        reference to.
+        """
+        if last < first:
+            self._navigable_range = None
+            return
+        self._navigable_range = (int(first), int(last))
+
+    def _nav_bounds(self) -> tuple[int, int] | None:
+        """Effective (first, last) navigable bounds, or ``None`` when
+        neither override nor sequence is set."""
+        if self._navigable_range is not None:
+            return self._navigable_range
+        if self._sequence is not None:
+            return (self._sequence.first_frame, self._sequence.last_frame)
+        return None
+
     def _clamp_to_sequence(self, frame: int) -> int:
-        """Clamp ``frame`` to the sequence's absolute bounds (first /
-        last frame), ignoring any in/out range. Used by ``seek`` so
-        the user can scrub freely outside the playback range — the
-        in/out is a constraint on PLAYBACK, not navigation."""
-        if self._sequence is None:
+        """Clamp ``frame`` to the navigable bounds, ignoring any
+        in/out range. Used by ``seek`` so the user can scrub freely
+        outside the playback range — the in/out is a constraint on
+        PLAYBACK, not navigation."""
+        bounds = self._nav_bounds()
+        if bounds is None:
             return frame
-        return max(self._sequence.first_frame, min(self._sequence.last_frame, frame))
+        first, last = bounds
+        return max(first, min(last, frame))
 
     def _update(self, **kwargs: Any) -> None:
         new_state = replace(self._state, **kwargs)

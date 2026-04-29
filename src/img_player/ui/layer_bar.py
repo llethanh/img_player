@@ -34,7 +34,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from PySide6.QtCore import QRectF, Qt, Signal
+from PySide6.QtCore import QPoint, QRectF, Qt, Signal
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -44,7 +44,7 @@ from PySide6.QtGui import (
     QPaintEvent,
     QPen,
 )
-from PySide6.QtWidgets import QSizePolicy, QWidget
+from PySide6.QtWidgets import QApplication, QSizePolicy, QWidget
 
 from img_player.layers import Layer
 from img_player.ui.theme import F, H
@@ -59,7 +59,12 @@ HANDLE_GRAB = 12       # extra hit-test margin around handles —
                        # generous so the OUT handle pinned at the
                        # bar's right edge isn't fiddly to click.
 SNAP_PX = 6            # snap distance in screen pixels
-PADDING_X = 4          # left/right inner padding
+PADDING_X = 0          # left/right inner padding. Zero so a layer
+                       # that starts at ``master_first`` has its bar
+                       # fill flush with the row's left edge — any
+                       # positive value leaves a thin strip of panel
+                       # background showing, which reads as a black
+                       # gap before / after the layer.
 BAR_RADIUS = 2         # corner rounding for the bar fill
 
 # Fixed-height row budget.
@@ -87,10 +92,25 @@ class BarGeometry:
 
     @property
     def master_length(self) -> int:
-        return max(1, self.master_last - self.master_first + 1)
+        # "Frame as point" convention: length = number of *steps*
+        # between master_first and master_last, not the count of
+        # frames. This places frame N at fraction
+        # ``(N - master_first) / master_length`` of the usable width,
+        # so frame_to_x(master_first) == 0 and frame_to_x(master_last)
+        # == usable_w — i.e. the bar's IN/OUT handles sit pixel-flush
+        # with the timeline's first and last ticks. No more
+        # half-a-slot drift between widgets.
+        return max(1, self.master_last - self.master_first)
 
     def frame_to_x(self, master_frame: int) -> float:
         """Map a master-frame index to its widget pixel x-coordinate.
+
+        ``master_first`` lands at ``PADDING_X`` (the bar's drawable
+        left edge); ``master_last`` lands at ``PADDING_X +
+        usable_w``. Layers covering the full master range therefore
+        have their visible bar fill spanning the entire drawable
+        area, with their handles aligned exactly on the
+        corresponding timeline ticks.
 
         Out-of-range frames return clamped x; callers that care about
         the distinction should check ``master_first <= f <= master_last``.
@@ -99,7 +119,8 @@ class BarGeometry:
         return PADDING_X + normalized * self.usable_w
 
     def x_to_frame(self, x: float) -> int:
-        """Inverse of :meth:`frame_to_x` — rounded to the nearest master-frame."""
+        """Inverse of :meth:`frame_to_x` — rounded to the nearest
+        master-frame."""
         normalized = (x - PADDING_X) / self.usable_w
         return self.master_first + round(normalized * self.master_length)
 
@@ -155,6 +176,12 @@ class LayerBar(QWidget):  # type: ignore[misc]
     # (= same as clicking the row). Lets the row delegate without
     # having to forward QMouseEvent itself.
     focus_requested = Signal(str)
+    # Vertical-dominant drag started inside the bar — the user wants
+    # to reorder the row, not adjust ``offset``. Carries the global
+    # cursor position so the row can compute the drag pixmap hot
+    # spot (= where the user grabbed the row, regardless of which
+    # column they pressed on).
+    reorder_drag_requested = Signal(QPoint)
 
     def __init__(self, layer: Layer, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -188,7 +215,11 @@ class LayerBar(QWidget):  # type: ignore[misc]
         self._drag_preview_layer_out: int | None = None
         # Capture the press position so we can detect "click without
         # drag" (= focus, no offset change) by checking total motion.
+        # ``_drag_start_y`` is also used to detect vertical-dominant
+        # motion, which we hand off as a row-reorder drag instead of
+        # an offset edit.
         self._drag_start_x: float = 0.0
+        self._drag_start_y: float = 0.0
         self._drag_start_layer_offset: int = layer.offset
         self._drag_start_layer_in: int = layer.layer_in
         self._drag_start_layer_out: int = layer.layer_out
@@ -269,9 +300,36 @@ class LayerBar(QWidget):  # type: ignore[misc]
         )
         painter.fillRect(track_rect, QColor("#15171B"))
 
+        # Untrimmed-source ghost — when ``layer_in`` is past the
+        # sequence's first frame OR ``layer_out`` is before its last
+        # frame, the layer's source covers more master frames than
+        # the trimmed bar shows. Drawing a translucent fill across the
+        # *full* source extent lets the user see at a glance how much
+        # head/tail material is hidden behind the trim, and gives a
+        # visual handle for "drag IN/OUT back outwards to reveal it".
+        # Mirrors the convention NLEs use (Premiere greyed-out
+        # source extension, Resolve clip extension, etc.).
+        source = layer.sequence
+        # Master-frame the source.first_frame would land on if no
+        # head trim — i.e. ``layer_in`` were source.first_frame.
+        ghost_first = offset - (layer_in - source.first_frame)
+        ghost_last = ghost_first + (source.last_frame - source.first_frame)
+        if ghost_first < master_start or ghost_last > master_end:
+            gx1 = geom.frame_to_x(ghost_first)
+            gx2 = geom.frame_to_x(ghost_last)
+            ghost_rect = QRectF(gx1, 4, max(2.0, gx2 - gx1), BAR_HEIGHT - 8)
+            ghost_color = QColor(H.ACCENT)
+            ghost_color.setAlpha(60)  # subtle — must read as "behind"
+            painter.setBrush(ghost_color)
+            painter.setPen(QPen(QColor(H.ACCENT_BRIGHT), 1, Qt.PenStyle.DashLine))
+            painter.drawRoundedRect(ghost_rect, BAR_RADIUS, BAR_RADIUS)
+
         # Layer fill — accent-tinted so it matches the focused-row
         # highlight when the user clicks. Slightly translucent to
-        # let the snap-edge line peek through if it overlaps.
+        # let the snap-edge line peek through if it overlaps. With
+        # the "frame as point" convention in BarGeometry, x1 and x2
+        # are already on the bar's intended edges — no half-slot
+        # extension required.
         x1 = geom.frame_to_x(master_start)
         x2 = geom.frame_to_x(master_end)
         bar_rect = QRectF(x1, 4, max(2.0, x2 - x1), BAR_HEIGHT - 8)
@@ -327,8 +385,17 @@ class LayerBar(QWidget):  # type: ignore[misc]
             return
         x = event.position().x()
         kind = self._hit_test(x)
+        # Click landed on the row's bar widget but outside the layer's
+        # actual range (= empty track area before / after the coloured
+        # fill). Treat as a plain "select this layer" gesture — same
+        # outcome as clicking the row body — and don't start a drag.
+        if kind is None:
+            self.focus_requested.emit(self._layer.id)
+            event.accept()
+            return
         self._drag_kind = kind
         self._drag_start_x = x
+        self._drag_start_y = event.position().y()
         self._drag_start_layer_offset = self._layer.offset
         self._drag_start_layer_in = self._layer.layer_in
         self._drag_start_layer_out = self._layer.layer_out
@@ -351,8 +418,33 @@ class LayerBar(QWidget):  # type: ignore[misc]
             else:
                 self.setCursor(Qt.CursorShape.PointingHandCursor)
             return
-        # Active drag.
-        if abs(x - self._drag_start_x) > 1.0:
+        # Active drag — but if the user is moving more vertically
+        # than horizontally past the system drag threshold, they're
+        # trying to reorder the row, not edit this layer's offset /
+        # trim. Hand off to the row's reorder-drag path and bail out
+        # of the in-progress bar drag so we don't ALSO commit an
+        # offset change on release.
+        y = event.position().y()
+        dx = abs(x - self._drag_start_x)
+        dy = abs(y - self._drag_start_y)
+        if (
+            self._drag_kind in ("body", "in", "out")
+            and dy > QApplication.startDragDistance()
+            and dy > dx
+        ):
+            # Reset preview so the bar paints back at its committed
+            # position while the QDrag pixmap takes over.
+            self._drag_kind = None
+            self._drag_preview_offset = None
+            self._drag_preview_layer_in = None
+            self._drag_preview_layer_out = None
+            self._has_moved = False
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.update()
+            self.reorder_drag_requested.emit(event.globalPosition().toPoint())
+            event.accept()
+            return
+        if dx > 1.0:
             self._has_moved = True
         geom = self._geometry()
         delta_frames = geom.x_to_frame(x) - geom.x_to_frame(self._drag_start_x)

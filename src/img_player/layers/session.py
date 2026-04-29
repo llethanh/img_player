@@ -78,6 +78,13 @@ class _SessionLayer:
     source_colorspace: str | None = None
     exposure: float = 0.0
     gamma: float = 1.0
+    # Per-layer transparency model (v1.0): does this layer compose
+    # with alpha over what's beneath, and is the source's alpha
+    # encoded straight or premultiplied? Both default ``False`` so
+    # legacy sessions (no key) round-trip into the safe "topmost-
+    # wins, premult" combination.
+    alpha_composite: bool = False
+    alpha_is_straight: bool = False
 
 
 # ----------------------------------------------------------------- Save
@@ -109,6 +116,8 @@ def save_session(stack: LayerStack, path: Path) -> None:
             source_colorspace=layer.source_colorspace,
             exposure=layer.exposure,
             gamma=layer.gamma,
+            alpha_composite=layer.alpha_composite,
+            alpha_is_straight=layer.alpha_is_straight,
         )
         sel = layer.channel_selection
         if sel is not None:
@@ -160,29 +169,33 @@ def load_session(stack: LayerStack, path: Path) -> LoadResult:
         )
         return result
     layer_entries = payload.get("layers", [])
-    # Empty the live stack first. We do it before scanning so the
-    # cache invalidates only once and the panel rebuilds cleanly.
-    for existing in stack.layers():
-        stack.remove(existing.id)
     rebuilt_focused: str | None = None
     saved_focused = payload.get("focused_id", "")
+    # Wrap the entire load (clear-existing + add-N) into a single
+    # undo step so Ctrl+Z after "Open session" reverts to whatever
+    # the user had before, not just the last layer that was added.
+    with stack.batch():
+        # Empty the live stack first. We do it before scanning so the
+        # cache invalidates only once and the panel rebuilds cleanly.
+        for existing in stack.layers():
+            stack.remove(existing.id)
 
-    for entry in layer_entries:
-        try:
-            layer = _rebuild_layer(entry)
-        except Exception as err:
-            result.skipped += 1
-            result.errors.append(str(err))
-            log.warning("[session] skipped layer entry: %s", err)
-            continue
-        # Add at bottom (position = len) so the list order matches
-        # the saved order (top-most first in JSON → top of stack).
-        stack.add(layer, position=len(stack))
-        result.loaded += 1
-        if layer.id == saved_focused:
-            rebuilt_focused = layer.id
-    if rebuilt_focused is not None:
-        stack.set_focus(rebuilt_focused)
+        for entry in layer_entries:
+            try:
+                layer = _rebuild_layer(entry)
+            except Exception as err:
+                result.skipped += 1
+                result.errors.append(str(err))
+                log.warning("[session] skipped layer entry: %s", err)
+                continue
+            # Add at bottom (position = len) so the list order matches
+            # the saved order (top-most first in JSON → top of stack).
+            stack.add(layer, position=len(stack))
+            result.loaded += 1
+            if layer.id == saved_focused:
+                rebuilt_focused = layer.id
+        if rebuilt_focused is not None:
+            stack.set_focus(rebuilt_focused)
     return result
 
 
@@ -200,6 +213,15 @@ def _rebuild_layer(entry: dict[str, Any]) -> Layer:
             f"Sequence directory missing: {directory}"
         )
     seq = scan(directory, probe=False)
+    # ``scan(probe=False)`` skips the per-file header read (kept fast
+    # for slow filesystems like Drive Stream), so ``seq.width`` /
+    # ``seq.height`` come back as None. The rest of the app reads
+    # those for things like the missing-frame placeholder size — a
+    # 512×512 fallback was kicking in for session-loaded layers,
+    # mismatching the real image dimensions. Probe the first frame's
+    # header here so dimensions ride along with the rebuilt layer.
+    if seq.frames and (not seq.width or not seq.height):
+        seq = _enrich_with_header(seq)
     layer = Layer.from_sequence(
         seq,
         offset=int(entry.get("offset", seq.first_frame)),
@@ -216,6 +238,11 @@ def _rebuild_layer(entry: dict[str, Any]) -> Layer:
     )
     layer.source_colorspace = entry.get("source_colorspace")
     layer.exposure = float(entry.get("exposure", 0.0))
+    layer.alpha_composite = bool(entry.get("alpha_composite", False))
+    if "alpha_is_straight" in entry:
+        layer.alpha_is_straight = bool(entry["alpha_is_straight"])
+    # else: keep whatever ``Layer.from_sequence`` auto-detected from
+    # the file extension (legacy sessions predate this field).
     layer.gamma = float(entry.get("gamma", 1.0))
     # Channel selection — only rebuild if both active label + at
     # least one channel survived.
@@ -233,3 +260,29 @@ def _rebuild_layer(entry: dict[str, Any]) -> Layer:
         )
         layer.channel_selection = ChannelSelection(active=active, tiles=tiles)
     return layer
+
+
+def _enrich_with_header(seq):  # type: ignore[no-untyped-def]
+    """Populate ``seq.width`` / ``seq.height`` / ``channel_names`` by
+    reading the first frame's OIIO header.
+
+    Mirrors ``ImgPlayerApp._enrich_with_header`` (which the live-load
+    flow uses) — duplicated here so the session loader can stay
+    UI-agnostic without growing a callback parameter. Best-effort:
+    swallows read errors (returns the original seq) so a temporarily
+    unreadable file doesn't abort the whole session restore.
+    """
+    try:
+        from dataclasses import replace
+        from img_player.io.reader import read_header
+
+        spec = read_header(seq.frames[0].path)
+        return replace(
+            seq,
+            channel_names=tuple(spec.channelnames or ()) or seq.channel_names,
+            width=spec.width or seq.width,
+            height=spec.height or seq.height,
+        )
+    except Exception:
+        log.exception("[session] header probe failed for %s", seq.frames[0].path)
+        return seq

@@ -17,8 +17,12 @@ drag handles) lands in phase 4.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from pathlib import Path
+
+from PySide6.QtCore import QMimeData, QPoint, Qt, Signal
+from PySide6.QtGui import QDrag, QKeyEvent, QMouseEvent
 from PySide6.QtWidgets import (
+    QApplication,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -39,10 +43,90 @@ from img_player.ui.theme import C, F, G, H, S
 # Widget heights — kept tight so the panel stays unobtrusive when
 # multiple layers stack up. Tuned to match the existing transport-bar
 # button heights for visual continuity.
-_ROW_HEIGHT = 26
+_ROW_HEIGHT = 22
 _NUMBER_W = 26       # leftmost "#" column
 _EYE_W = 26          # visibility toggle
-_BUTTONS_W = 22      # ↑ / ↓ reorder buttons (one width each)
+_T_W = 22            # transparency (alpha_composite) toggle
+_ALPHA_S_W = 28      # straight-alpha toggle (wider for the "αS" glyph)
+
+# Hue tokens for the per-row alpha toggles — kept consistent with the
+# previous transport-bar buttons so the user's mental "T = teal,
+# αS = purple" mapping carries over.
+_T_BTN_COLOR = "#5DC9D2"
+_ALPHA_S_BTN_COLOR = "#B783D9"
+
+
+# Public layout constants exposed so :class:`MasterTimelinePanel` can
+# build an axis row whose timeline starts at exactly the same x as the
+# layer bars. Exposing them avoids hard-coding the same arithmetic in
+# two places — change the row's prefix here and the timeline gutter
+# tracks automatically.
+def layer_row_prefix_width() -> int:
+    """Total pixel width before the bar in a :class:`LayerRow`.
+
+    Mirrors the row's HBoxLayout: ``[content-margin-left, number,
+    spacing, eye, spacing, T, spacing, αS, spacing-before-bar]``.
+    Used by the master-timeline composite to size the gutter that
+    sits left of the timeline so the timeline drawable ends up at
+    the exact same x as each bar drawable.
+    """
+    return (
+        S.SM + _NUMBER_W
+        + S.SM + _EYE_W
+        + S.SM + _T_W
+        + S.SM + _ALPHA_S_W
+        + S.SM
+    )
+
+
+def layer_row_right_margin() -> int:
+    """Right content margin of a :class:`LayerRow`. The composite's
+    axis row uses the same value so the timeline ends at the same x
+    as each layer bar."""
+    return S.SM
+
+
+def _row_alpha_button(
+    label: str,
+    tooltip: str,
+    *,
+    color: str,
+    width: int,
+    height: int,
+    font_size_pt: int | None = None,
+) -> QToolButton:
+    """Build a checkable per-row alpha toggle styled like the
+    transport-bar's old T / αS buttons: coloured when active, dim
+    grey + raised background when inactive. Lives at row scope now
+    that ``Layer.alpha_composite`` / ``Layer.alpha_is_straight`` are
+    per-layer state."""
+    btn = QToolButton()
+    btn.setText(label)
+    btn.setFixedSize(width, height)
+    btn.setCheckable(True)
+    btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+    btn.setToolTip(tooltip)
+    btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    fs = f"font-size: {font_size_pt}pt;" if font_size_pt is not None else ""
+    btn.setStyleSheet(
+        "QToolButton {"
+        f"  color: {color};"
+        f"  font-weight: 600;"
+        f"  padding: 0;"
+        f"  {fs}"
+        "}"
+        "QToolButton:!checked {"
+        f"  color: {H.TEXT_DISABLED};"
+        f"  background: {H.BG_RAISED};"
+        "}"
+    )
+    return btn
+
+# Custom mime type for intra-panel drag-and-drop reordering. Carries
+# the layer id as plain UTF-8 bytes; the panel reads it on drop and
+# routes to ``LayerStack.reorder``. The application/x-... prefix
+# keeps drops from foreign sources from being silently accepted.
+_LAYER_ID_MIME = "application/x-img-player-layer-id"
 
 
 class LayerRow(QFrame):  # type: ignore[misc]
@@ -58,20 +142,20 @@ class LayerRow(QFrame):  # type: ignore[misc]
     focus_requested = Signal(str)
     # Eye toggle — the panel just routes to LayerStack.toggle_visible.
     visibility_toggle_requested = Signal(str)
-    # Move this row up / down in the stack. Carries the layer id.
-    move_up_requested = Signal(str)
-    move_down_requested = Signal(str)
-    # Delete this layer from the stack — the panel forwards to
-    # LayerStack.remove. No confirmation dialog: the user already
-    # has File → New for a clean slate, and the stack is in-memory
-    # so the action is non-destructive (the source files on disk
-    # stay put).
+    # Suppr key on a focused row — the panel forwards to
+    # LayerStack.remove. No confirmation: stack is in-memory and the
+    # source files on disk stay put.
     delete_requested = Signal(str)
     # LayerBar drag commits — forwarded as-is to the panel which
     # routes to LayerStack.update.
     offset_changed = Signal(str, int)
     trim_in_changed = Signal(str, int, int)  # (id, new_layer_in, new_offset)
     layer_out_changed = Signal(str, int)
+    # Per-layer alpha-mode toggles. Both carry the layer id + new
+    # boolean so the panel can route to ``LayerStack.update`` without
+    # scanning rows.
+    transparency_toggled = Signal(str, bool)
+    alpha_straight_toggled = Signal(str, bool)
 
     def __init__(self, layer: Layer, index: int, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -81,6 +165,13 @@ class LayerRow(QFrame):  # type: ignore[misc]
         self.setAutoFillBackground(True)
         # Click anywhere = focus.
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        # Make the row keyboard-focusable so ``Delete`` can be handled
+        # locally via ``keyPressEvent`` — no global shortcut, no
+        # ambiguity about which layer the key targets.
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        # Track press position so ``mouseMoveEvent`` can tell a click
+        # (= focus) from a drag (= reorder) using ``startDragDistance``.
+        self._press_pos: QPoint | None = None
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(S.SM, 0, S.SM, 0)
@@ -106,6 +197,37 @@ class LayerRow(QFrame):  # type: ignore[misc]
         self._eye_btn.clicked.connect(self._on_eye_clicked)
         layout.addWidget(self._eye_btn)
 
+        # --- Per-layer alpha toggles (T + αS) --------------------------
+        # Used to live in the transport bar as global controls; moved
+        # here once the underlying state became per-layer so the user
+        # can flick each layer's alpha mode without re-focusing the
+        # row first. Same teal / purple hues as the transport
+        # buttons used to have, so the mental colour mapping carries.
+        self._transparency_btn = _row_alpha_button(
+            "T",
+            "Transparency — alpha-composite this layer over what's "
+            "below in the stack",
+            color=_T_BTN_COLOR,
+            width=_T_W,
+            height=_ROW_HEIGHT - 4,
+        )
+        self._transparency_btn.setChecked(layer.alpha_composite)
+        self._transparency_btn.toggled.connect(self._on_transparency_clicked)
+        layout.addWidget(self._transparency_btn)
+
+        self._alpha_straight_btn = _row_alpha_button(
+            "αS",
+            "Straight alpha (PNG / TGA convention). Off = premultiplied "
+            "(EXR / VFX rendering default).",
+            color=_ALPHA_S_BTN_COLOR,
+            width=_ALPHA_S_W,
+            height=_ROW_HEIGHT - 4,
+            font_size_pt=9,
+        )
+        self._alpha_straight_btn.setChecked(layer.alpha_is_straight)
+        self._alpha_straight_btn.toggled.connect(self._on_alpha_straight_clicked)
+        layout.addWidget(self._alpha_straight_btn)
+
         # --- Layer bar (range + drag handles) ---------------------------
         # Replaces the plain filename label with an interactive
         # visualisation of the layer's master range. The bar handles
@@ -116,48 +238,16 @@ class LayerRow(QFrame):  # type: ignore[misc]
         self._bar.trim_in_changed.connect(self.trim_in_changed.emit)
         self._bar.layer_out_changed.connect(self.layer_out_changed.emit)
         self._bar.focus_requested.connect(self.focus_requested.emit)
+        # Vertical drag inside the bar = "I want to reorder this row".
+        # The bar emits with the global cursor position so we can map
+        # back to row-local coords for the drag pixmap hotspot.
+        self._bar.reorder_drag_requested.connect(self._on_bar_reorder_drag)
         layout.addWidget(self._bar, 1)
 
-        # --- Reorder buttons (↑ / ↓) -----------------------------------
-        # Phase 3 keyboard-free path. Drag-to-reorder lands in a
-        # later phase; for now these buttons cover the use case.
-        self._up_btn = QToolButton()
-        self._up_btn.setFixedSize(_BUTTONS_W, _ROW_HEIGHT - 4)
-        self._up_btn.setText("↑")
-        self._up_btn.setToolTip("Move layer up (higher priority)")
-        self._up_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._up_btn.clicked.connect(
-            lambda: self.move_up_requested.emit(self._layer_id),
-        )
-        layout.addWidget(self._up_btn)
-
-        self._down_btn = QToolButton()
-        self._down_btn.setFixedSize(_BUTTONS_W, _ROW_HEIGHT - 4)
-        self._down_btn.setText("↓")
-        self._down_btn.setToolTip("Move layer down (lower priority)")
-        self._down_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._down_btn.clicked.connect(
-            lambda: self.move_down_requested.emit(self._layer_id),
-        )
-        layout.addWidget(self._down_btn)
-
-        # --- Delete button ---------------------------------------------
-        # "×" sits last so it doesn't get hit by accident when the
-        # user is reaching for the reorder arrows. Drawn red on
-        # hover via QSS so its destructive intent is obvious.
-        self._delete_btn = QToolButton()
-        self._delete_btn.setFixedSize(_BUTTONS_W, _ROW_HEIGHT - 4)
-        self._delete_btn.setText("×")
-        self._delete_btn.setToolTip("Remove this layer from the stack")
-        self._delete_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._delete_btn.setStyleSheet(
-            "QToolButton { color: #B0B0B0; }"
-            "QToolButton:hover { color: #E84A4A; font-weight: bold; }"
-        )
-        self._delete_btn.clicked.connect(
-            lambda: self.delete_requested.emit(self._layer_id),
-        )
-        layout.addWidget(self._delete_btn)
+        # Reorder is now drag-and-drop on the row body itself; deletion
+        # is keyboard-driven (Suppr on the focused row). The bar
+        # therefore stretches all the way to the panel's right edge,
+        # matching the PDPlayer reference.
 
         # Default unfocused look. ``set_focused(True)`` paints the
         # accent background to match PDPlayer / Nuke conventions.
@@ -188,8 +278,12 @@ class LayerRow(QFrame):  # type: ignore[misc]
 
     def update_layer(self, layer: Layer) -> None:
         """Push a fresh Layer reference into the bar — call after the
-        underlying layer's offset/trim/visibility has mutated."""
+        underlying layer's offset/trim/visibility/alpha-flags have
+        mutated. Keeps the per-row toggles (T / αS) in sync without
+        firing their own signals."""
         self._bar.set_layer(layer)
+        self.set_transparency_state(layer.alpha_composite)
+        self.set_alpha_straight_state(layer.alpha_is_straight)
 
     def set_master_range(self, first: int, last: int) -> None:
         """Coordinate-space update from the panel."""
@@ -211,12 +305,12 @@ class LayerRow(QFrame):  # type: ignore[misc]
             return
         self._focused = on
         self._refresh_palette()
-
-    def set_can_move_up(self, on: bool) -> None:
-        self._up_btn.setEnabled(on)
-
-    def set_can_move_down(self, on: bool) -> None:
-        self._down_btn.setEnabled(on)
+        # When a row becomes focused, also pull keyboard focus so the
+        # ``Delete`` shortcut on the row fires without needing an extra
+        # tab into the panel. Skip on un-focus so we don't yank focus
+        # away from whatever the user clicked next.
+        if on:
+            self.setFocus(Qt.FocusReason.OtherFocusReason)
 
     # ------------------------------------------------------------------ Internals
 
@@ -233,6 +327,29 @@ class LayerRow(QFrame):  # type: ignore[misc]
                 "QLabel { color: #C8C8C8; }"
             )
 
+    def _on_transparency_clicked(self, checked: bool) -> None:
+        self.transparency_toggled.emit(self._layer_id, bool(checked))
+
+    def _on_alpha_straight_clicked(self, checked: bool) -> None:
+        self.alpha_straight_toggled.emit(self._layer_id, bool(checked))
+
+    def set_transparency_state(self, on: bool) -> None:
+        """Sync the T button without retriggering its toggled signal —
+        used when the underlying ``Layer.alpha_composite`` mutates
+        externally (session load, programmatic stack edit)."""
+        self._transparency_btn.blockSignals(True)
+        try:
+            self._transparency_btn.setChecked(bool(on))
+        finally:
+            self._transparency_btn.blockSignals(False)
+
+    def set_alpha_straight_state(self, on: bool) -> None:
+        self._alpha_straight_btn.blockSignals(True)
+        try:
+            self._alpha_straight_btn.setChecked(bool(on))
+        finally:
+            self._alpha_straight_btn.blockSignals(False)
+
     def _on_eye_clicked(self) -> None:
         # Toggle the glyph immediately for snappy feedback; the
         # actual mutation flows back via the LayerStack signal.
@@ -240,12 +357,79 @@ class LayerRow(QFrame):  # type: ignore[misc]
         self._eye_btn.setText("👁" if new_visible else "·")
         self.visibility_toggle_requested.emit(self._layer_id)
 
-    def mousePressEvent(self, event) -> None:  # type: ignore[no-untyped-def]
-        # Click anywhere on the row (outside its sub-buttons) =
-        # focus this layer.
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        # Click anywhere on the row (outside its sub-widgets) =
+        # focus this layer + remember the press position so the next
+        # ``mouseMoveEvent`` can decide whether the user is starting a
+        # reorder drag.
         if event.button() == Qt.MouseButton.LeftButton:
+            self._press_pos = event.position().toPoint()
             self.focus_requested.emit(self._layer_id)
         super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        # Initiate a QDrag once the user has moved beyond the system's
+        # drag-start distance — Qt's standard threshold avoids
+        # accidental drags from imperceptible mouse jitter on click.
+        if (
+            self._press_pos is not None
+            and event.buttons() & Qt.MouseButton.LeftButton
+        ):
+            distance = (event.position().toPoint() - self._press_pos).manhattanLength()
+            if distance >= QApplication.startDragDistance():
+                self._start_reorder_drag()
+                self._press_pos = None
+                return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        self._press_pos = None
+        super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            self.delete_requested.emit(self._layer_id)
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def _on_bar_reorder_drag(self, global_pos: QPoint) -> None:
+        """Hand off from a vertical drag started inside the LayerBar.
+        Compute a row-local press position so the drag pixmap stays
+        anchored where the user grabbed the row, then kick off the
+        same QDrag the row's own mouseMoveEvent uses."""
+        local = self.mapFromGlobal(global_pos)
+        # Clamp inside the row rect so the hotspot can't end up
+        # outside the pixmap (would offset the cursor weirdly).
+        local.setX(max(0, min(self.width() - 1, local.x())))
+        local.setY(max(0, min(self.height() - 1, local.y())))
+        self._press_pos = local
+        self._start_reorder_drag()
+        self._press_pos = None
+
+    def _start_reorder_drag(self) -> None:
+        """Kick off a QDrag carrying this row's layer id. The
+        :class:`LayerPanel` accepts the drop and calls
+        :meth:`LayerStack.reorder` based on the cursor's Y position."""
+        drag = QDrag(self)
+        mime = QMimeData()
+        mime.setData(_LAYER_ID_MIME, self._layer_id.encode("utf-8"))
+        drag.setMimeData(mime)
+        # A snapshot of the row gives the user clear feedback during
+        # the drag — they see what they're moving, not a generic
+        # cursor.
+        pixmap = self.grab()
+        drag.setPixmap(pixmap)
+        # Anchor the pixmap so the cursor stays exactly where the user
+        # grabbed the row — without this, Qt centres the pixmap on the
+        # cursor and the bar appears to jump left at drag-start. Falls
+        # back to a sensible centre if for some reason no press
+        # position was recorded.
+        if self._press_pos is not None:
+            drag.setHotSpot(self._press_pos)
+        else:
+            drag.setHotSpot(QPoint(pixmap.width() // 4, pixmap.height() // 2))
+        drag.exec(Qt.DropAction.MoveAction)
 
 
 # ---------------------------------------------------------------- LayerPanel
@@ -254,6 +438,92 @@ class LayerRow(QFrame):  # type: ignore[misc]
 _HEADER_H = 22
 _PANEL_BG = "#0E0F12"
 _PANEL_HEADER_BG = "#16181D"
+
+
+class _RowsHost(QWidget):  # type: ignore[misc]
+    """Container for :class:`LayerRow` widgets that accepts drops to
+    reorder them. Lives inside :class:`LayerPanel` and forwards every
+    drop to the panel via ``parent()`` — kept tiny on purpose so the
+    panel's API stays the canonical entry point for stack mutations.
+    """
+
+    def __init__(self, panel: "LayerPanel") -> None:
+        super().__init__(panel)
+        self._panel = panel
+        self.setAcceptDrops(True)
+        # Thin horizontal accent line shown during a row-reorder drag
+        # to preview where the row will land. A child QFrame so it
+        # paints on top of the row widgets (a paintEvent on the host
+        # itself would be hidden by them — children paint last).
+        self._drop_indicator = QFrame(self)
+        self._drop_indicator.setFixedHeight(2)
+        self._drop_indicator.setStyleSheet(
+            f"background: {H.ACCENT_BRIGHT};"
+        )
+        self._drop_indicator.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents,
+        )
+        self._drop_indicator.hide()
+
+    def dragEnterEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        if event.mimeData().hasFormat(_LAYER_ID_MIME):
+            event.acceptProposedAction()
+            self._update_drop_indicator(event)
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        if event.mimeData().hasFormat(_LAYER_ID_MIME):
+            event.acceptProposedAction()
+            self._update_drop_indicator(event)
+        else:
+            event.ignore()
+
+    def dragLeaveEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        self._drop_indicator.hide()
+        super().dragLeaveEvent(event)
+
+    def dropEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        self._drop_indicator.hide()
+        mime = event.mimeData()
+        if not mime.hasFormat(_LAYER_ID_MIME):
+            event.ignore()
+            return
+        layer_id = bytes(mime.data(_LAYER_ID_MIME)).decode("utf-8")
+        # Resolve the drop position to a stack index. We compare the
+        # cursor's Y to each row's vertical centre: if the drop is
+        # above the centre we land *above* that row, else below.
+        y = event.position().y() if hasattr(event, "position") else event.pos().y()
+        target_index = self._index_for_y(y)
+        self._panel._on_row_dropped(layer_id, target_index)
+        event.acceptProposedAction()
+
+    def _update_drop_indicator(self, event) -> None:  # type: ignore[no-untyped-def]
+        """Position the insertion line at the gap matching the current
+        cursor Y. Idx 0 = above the first row, idx N = below the last."""
+        y = event.position().y() if hasattr(event, "position") else event.pos().y()
+        idx = self._index_for_y(y)
+        rows = list(self._panel._rows.values())
+        if not rows:
+            self._drop_indicator.hide()
+            return
+        if idx >= len(rows):
+            line_y = rows[-1].geometry().bottom() - 1
+        else:
+            line_y = rows[idx].geometry().top()
+        self._drop_indicator.setGeometry(
+            0, max(0, line_y - 1), self.width(), 2,
+        )
+        self._drop_indicator.raise_()
+        self._drop_indicator.show()
+
+    def _index_for_y(self, y: float) -> int:
+        layers = list(self._panel._rows.values())
+        for i, row in enumerate(layers):
+            geom = row.geometry()
+            if y < geom.top() + geom.height() / 2.0:
+                return i
+        return len(layers)
 
 
 class LayerPanel(QFrame):  # type: ignore[misc]
@@ -289,10 +559,10 @@ class LayerPanel(QFrame):  # type: ignore[misc]
         # Plain QWidget that hosts a QVBoxLayout populated dynamically.
         # When collapsed, this widget is hidden — the header alone
         # remains visible at ``_HEADER_H`` px.
-        self._rows_host = QWidget(self)
+        self._rows_host = _RowsHost(self)
         self._rows_layout = QVBoxLayout(self._rows_host)
         self._rows_layout.setContentsMargins(0, 0, 0, 0)
-        self._rows_layout.setSpacing(1)
+        self._rows_layout.setSpacing(0)
         outer.addWidget(self._rows_host, 1)
 
         self._stack.layers_changed.connect(self._rebuild)
@@ -373,13 +643,13 @@ class LayerPanel(QFrame):  # type: ignore[misc]
         for i, layer in enumerate(layers):
             row = LayerRow(layer, index=i, parent=self._rows_host)
             row.set_focused(layer.id == focused_id)
-            row.set_can_move_up(i > 0)
-            row.set_can_move_down(i < len(layers) - 1)
             row.focus_requested.connect(self._on_row_focus_requested)
             row.visibility_toggle_requested.connect(self._on_row_visibility_toggle)
-            row.move_up_requested.connect(self._on_row_move_up)
-            row.move_down_requested.connect(self._on_row_move_down)
             row.delete_requested.connect(self._on_row_delete_requested)
+            row.transparency_toggled.connect(self._on_row_transparency_toggled)
+            row.alpha_straight_toggled.connect(
+                self._on_row_alpha_straight_toggled,
+            )
             row.offset_changed.connect(self._on_row_offset_changed)
             row.trim_in_changed.connect(self._on_row_trim_in_changed)
             row.layer_out_changed.connect(self._on_row_layer_out_changed)
@@ -397,6 +667,7 @@ class LayerPanel(QFrame):  # type: ignore[misc]
             empty.setStyleSheet("color: #606060; padding: 6px 12px;")
             empty.setFont(F.ui(F.SIZE_XS))
             self._rows_layout.addWidget(empty)
+            return
 
     def _on_visibility_changed(self, layer_id: str) -> None:
         layer = self._stack.find(layer_id)
@@ -423,18 +694,28 @@ class LayerPanel(QFrame):  # type: ignore[misc]
     def _on_row_visibility_toggle(self, layer_id: str) -> None:
         self._stack.toggle_visible(layer_id)
 
-    def _on_row_move_up(self, layer_id: str) -> None:
-        for i, layer in enumerate(self._stack.layers()):
-            if layer.id == layer_id and i > 0:
-                self._stack.reorder(layer_id, i - 1)
-                return
-
-    def _on_row_move_down(self, layer_id: str) -> None:
+    def _on_row_dropped(self, layer_id: str, target_index: int) -> None:
+        """Drag-drop reorder commit. ``target_index`` is the destination
+        index *as if the source had not been removed*; we adjust for
+        the upcoming pop so passing index N from "above the row at N"
+        actually lands on N. ``LayerStack.reorder`` already clamps
+        out-of-range values, so the math here only has to compensate
+        for the pre-removal index shift.
+        """
         layers = self._stack.layers()
-        for i, layer in enumerate(layers):
-            if layer.id == layer_id and i < len(layers) - 1:
-                self._stack.reorder(layer_id, i + 1)
-                return
+        src_index = next(
+            (i for i, l in enumerate(layers) if l.id == layer_id), None,
+        )
+        if src_index is None:
+            return
+        # The user dragged the row over its own position — no-op.
+        if target_index == src_index or target_index == src_index + 1:
+            return
+        # When dropping below the current position, the implicit pop
+        # shifts every later index down by one — so subtract one to
+        # land where the user pointed.
+        adjusted = target_index - 1 if target_index > src_index else target_index
+        self._stack.reorder(layer_id, adjusted)
 
     def _on_row_delete_requested(self, layer_id: str) -> None:
         """Remove this layer. The cache invalidates the layer's
@@ -444,6 +725,12 @@ class LayerPanel(QFrame):  # type: ignore[misc]
         self._stack.remove(layer_id)
 
     # --- Drag commits from LayerBar ----------------------------------
+
+    def _on_row_transparency_toggled(self, layer_id: str, on: bool) -> None:
+        self._stack.update(layer_id, alpha_composite=bool(on))
+
+    def _on_row_alpha_straight_toggled(self, layer_id: str, on: bool) -> None:
+        self._stack.update(layer_id, alpha_is_straight=bool(on))
 
     def _on_row_offset_changed(self, layer_id: str, new_offset: int) -> None:
         self._stack.update(layer_id, offset=new_offset)
@@ -471,6 +758,14 @@ class LayerPanel(QFrame):  # type: ignore[misc]
     ) -> None:
         for row in self._rows.values():
             row.set_master_in_out(in_frame, out_frame)
+
+    def sync_bar_geometry(self) -> None:
+        """Public passthrough to :meth:`_sync_bar_geometry` for callers
+        that mutated a layer's underlying ``sequence`` reference
+        without firing a stack signal (e.g. ``cache.reload``). Lets
+        them refresh the bars without awkward access through the
+        underscore-prefixed method."""
+        self._sync_bar_geometry()
 
     def _sync_bar_geometry(self) -> None:
         """Refresh master_range + per-row snap edges across all bars.
@@ -504,6 +799,19 @@ class LayerPanel(QFrame):  # type: ignore[misc]
                 edges.append(other.master_end)
             row.set_snap_edges(edges)
 
+    def broad_master_range(self) -> tuple[int, int]:
+        """Public accessor for the broad master range used by the bars.
+
+        Exposed so the main timeline can mirror the same scale — without
+        this, the timeline is keyed on the loaded sequence's frame range
+        while the layer bars are keyed on the union of source-potentials,
+        and the two scrubbers move at different speeds. Returns ``(0, 0)``
+        when the stack is empty.
+        """
+        if not self._stack.layers():
+            return (0, 0)
+        return self._broad_master_range()
+
     def _broad_master_range(self) -> tuple[int, int]:
         """Master range that covers each layer's full source extent.
 
@@ -533,3 +841,120 @@ class LayerPanel(QFrame):  # type: ignore[misc]
         if not firsts:
             return (0, 0)
         return (min(firsts), max(lasts))
+
+
+# ---------------------------------------------------------------- MasterTimelinePanel
+
+
+class MasterTimelinePanel(QFrame):  # type: ignore[misc]
+
+    # File / folder dropped on the layers area — append as a new
+    # top layer to the stack. The semantically opposite gesture of
+    # ``ViewerWidget.replace_requested``; route accordingly in the
+    # main window.
+    add_layer_requested = Signal(Path)
+    """Composite that owns the master timeline + the layer panel.
+
+    Why this exists: the timeline and the layer rows used to be two
+    siblings under :class:`MainWindow`'s central layout, and we had a
+    fragile signal (``bar_inset_changed`` → ``set_content_insets``)
+    that measured one widget post-layout to teach the other where to
+    draw. Every time a paint convention drifted between the two
+    (slot-centre vs slot-edge, padding values, range-bar extension)
+    the user spotted a half-slot misalignment.
+
+    Folding both into a single composite with ONE column model fixes
+    the class of bug at its root: the timeline lives in an "axis row"
+    whose left gutter is *exactly* the width of a :class:`LayerRow`'s
+    prefix (number + eye + their spacings) and whose right margin
+    matches the row's right margin. Both widgets are then forced to
+    share the same horizontal axis by the layout system itself — no
+    runtime measurement, no signal coordination.
+
+    The wrapped :class:`Timeline` is still exposed via
+    :attr:`timeline` so existing wiring (controller, scrub signals,
+    cache-bar refresh) keeps working unchanged.
+    """
+
+    def __init__(
+        self,
+        timeline: QWidget,
+        layer_panel: "LayerPanel",
+        frame_display: QWidget | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._timeline = timeline
+        self._layer_panel = layer_panel
+        self._frame_display = frame_display
+
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setStyleSheet(
+            f"MasterTimelinePanel {{ background: {_PANEL_BG}; }}"
+        )
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        # --- Axis row: [gutter (= LayerRow prefix width)] + timeline ---
+        # Switched from a contentsMargins-based gutter to a real
+        # widget so the frame readout can live INSIDE that left
+        # column instead of leaving it empty. Width is still
+        # ``layer_row_prefix_width()`` so the timeline starts at the
+        # exact same x as each LayerBar — alignment is unchanged.
+        prefix_w = layer_row_prefix_width()
+        right_margin = layer_row_right_margin()
+        axis_row = QWidget(self)
+        axis_layout = QHBoxLayout(axis_row)
+        axis_layout.setContentsMargins(0, 0, right_margin, 0)
+        axis_layout.setSpacing(0)
+
+        gutter = QWidget(axis_row)
+        gutter.setFixedWidth(prefix_w)
+        gutter_layout = QHBoxLayout(gutter)
+        gutter_layout.setContentsMargins(0, 0, 0, 0)
+        gutter_layout.setSpacing(0)
+        if frame_display is not None:
+            gutter_layout.addStretch(1)
+            gutter_layout.addWidget(frame_display)
+            gutter_layout.addStretch(1)
+        self._axis_gutter = gutter
+        self._axis_gutter_layout = gutter_layout
+        axis_layout.addWidget(gutter)
+        axis_layout.addWidget(timeline, 1)
+        self._axis_row = axis_row
+        outer.addWidget(axis_row)
+
+        # --- Layer panel below ---------------------------------------
+        outer.addWidget(layer_panel, 1)
+
+        # File-drop zone with an "ADD TO LAYERS" overlay. Folder /
+        # file drops anywhere on the composite (axis row OR layer
+        # rows) trigger ``add_layer_requested``. The :class:`_RowsHost`
+        # already accepts a different mime type for intra-panel
+        # reorder — those drops get ``hasUrls() == False`` and bubble
+        # past our handler back into the row's existing logic.
+        from img_player.ui.drop_zone import (
+            ADD_LAYER_ACCENT, DropOverlay, install_file_drop_zone,
+        )
+        self._drop_overlay = DropOverlay(
+            "ADD TO LAYERS", ADD_LAYER_ACCENT, self,
+        )
+        install_file_drop_zone(
+            self, self._drop_overlay,
+            lambda path: self.add_layer_requested.emit(path),
+        )
+
+    @property
+    def timeline(self) -> QWidget:
+        return self._timeline
+
+    @property
+    def layer_panel(self) -> "LayerPanel":
+        return self._layer_panel
+
+    def resizeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        super().resizeEvent(event)
+        if self._drop_overlay.isVisible():
+            self._drop_overlay.setGeometry(self.rect())

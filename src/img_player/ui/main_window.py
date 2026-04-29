@@ -11,7 +11,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtCore import QEvent, QSize, QTimer, Qt, Signal
 from PySide6.QtGui import (
     QAction,
     QCloseEvent,
@@ -19,15 +19,18 @@ from PySide6.QtGui import (
     QDropEvent,
     QIcon,
     QKeySequence,
+    QMouseEvent,
     QShortcut,
 )
 from PySide6.QtWidgets import (
     QDockWidget,
     QFileDialog,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QMainWindow,
     QMessageBox,
+    QPushButton,
     QSizePolicy,
     QTabWidget,
     QToolButton,
@@ -51,6 +54,46 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
+class _SidePanelDock(QFrame):  # type: ignore[misc]
+    """Drop-in replacement for the side ``QDockWidget`` instances.
+
+    The annotation toolbar's docking code calls ``setWidget(w)`` /
+    ``widget()`` on its dock host (the QDockWidget API). We used to
+    pass a real QDockWidget; that made the annotation column span
+    the full central-area height (down to the timeline / transport
+    panels at the bottom), which the user noticed as a visual
+    inconsistency. Lifting the host into the top row of the central
+    layout keeps the annotation column flanking *only* the viewer.
+
+    Only the small subset of the QDockWidget API the toolbar actually
+    uses is reproduced here: a single child widget with replace
+    semantics. Floating / drag-to-other-edge are gone but the
+    annotation toolbar already had a "float" mode of its own
+    (re-parents itself onto the viewer) that covers the same need.
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        self._widget: QWidget | None = None
+
+    def setWidget(self, widget: QWidget | None) -> None:
+        if self._widget is not None:
+            self.layout().removeWidget(self._widget)
+            self._widget.setParent(None)
+            self._widget = None
+        if widget is not None:
+            widget.setParent(self)
+            self.layout().addWidget(widget)
+            self._widget = widget
+
+    def widget(self) -> QWidget | None:
+        return self._widget
+
+
 class MainWindow(QMainWindow):  # type: ignore[misc]
     """Top-level window wiring all the UI pieces together."""
 
@@ -62,6 +105,12 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
     save_session_requested = Signal(Path)  # File → Save session… (v1.0)
     open_session_requested = Signal(Path)  # File → Open session… (v1.0)
     reload_sequence_requested = Signal()   # Reload cache (Ctrl+R / button)
+    # Edit menu — same chained handlers as the Ctrl+Z / Ctrl+Shift+Z
+    # QShortcuts (annotation first, layer-stack fallback). Routing
+    # via signals keeps the App in charge of priority logic; the
+    # menu's QAction is just the delivery mechanism.
+    undo_requested = Signal()
+    redo_requested = Signal()
     play_toggled = Signal()
     # Full channel selection (single + optional contact-sheet tiles).
     # Carries a :class:`ChannelSelection`. Bridged from
@@ -106,9 +155,25 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("img_player")
+        self.setWindowTitle("Flick Player")
         self.resize(1280, 720)
-        self.setAcceptDrops(True)
+        # Per-zone drops are wired in :class:`ViewerWidget` and
+        # :class:`MasterTimelinePanel`; the main window itself does
+        # not accept drops anymore.
+
+        # Fullscreen mode state. Populated lazily on first toggle —
+        # the floating bottom bar is built once and reused.
+        self._fullscreen: bool = False
+        self._fs_bar: QWidget | None = None
+        self._fs_exit_btn: QPushButton | None = None
+        self._fs_hide_timer: QTimer | None = None
+        # Cursor-position poller. We poll instead of using an event
+        # filter because the viewer's GL child widget consumes mouse
+        # events before they reach the parent — installing the filter
+        # on every descendant is brittle. A 50 ms QTimer reading
+        # ``QCursor.pos()`` covers the case bullet-proofly with
+        # negligible cost.
+        self._fs_cursor_timer: QTimer | None = None
 
         # Widgets
         self._viewer = ViewerWidget(self)
@@ -126,68 +191,140 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         # the app passes a stack reference, so existing single-layer
         # tests / programmatic callers can keep building MainWindow
         # without a stack.
+        #
+        # When a stack is provided we wrap the timeline + layer panel
+        # in a :class:`MasterTimelinePanel` so the two widgets share
+        # the exact same horizontal axis by layout construction (=
+        # PDPlayer-style "one block" master timeline). Without a
+        # stack, the bare ``Timeline`` is still added on its own — the
+        # legacy single-sequence path keeps working.
         self._layer_panel = None
+        self._master_timeline_panel = None
         if layer_stack is not None:
-            from img_player.ui.layer_panel import LayerPanel
+            from img_player.ui.layer_panel import (
+                LayerPanel,
+                MasterTimelinePanel,
+            )
             self._layer_panel = LayerPanel(layer_stack, self)
+            # The frame readout used to sit in the centre of the
+            # transport bar; it migrated into the master timeline's
+            # left gutter so the formerly-empty 122 px column gains
+            # purpose. The widget itself is still owned by
+            # ``TransportBar`` (which keeps the wiring); we just
+            # reparent it visually.
+            #
+            # Pair the readout with a tiny "TC" toggle button so the
+            # user can flip between frame numbers and timecode without
+            # opening the View menu (or remembering Ctrl+T). The
+            # button is wired to ``_show_tc_act`` later in
+            # ``_build_menu`` since the action doesn't exist yet at
+            # this point in __init__.
+            from PySide6.QtWidgets import QToolButton
+            self._tc_toggle_btn = QToolButton(self)
+            self._tc_toggle_btn.setText("TC")
+            self._tc_toggle_btn.setCheckable(True)
+            self._tc_toggle_btn.setToolTip(
+                "Toggle timecode / frame number display (Ctrl+T)"
+            )
+            self._tc_toggle_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            self._tc_toggle_btn.setStyleSheet(
+                "QToolButton {"
+                "  font-size: 9pt;"
+                "  font-weight: 600;"
+                f"  color: {H.TEXT_SECONDARY};"
+                f"  background: {H.BG_RAISED};"
+                f"  border: 1px solid {H.BORDER_DEFAULT};"
+                f"  border-radius: {G.RADIUS_SM}px;"
+                "  padding: 1px 4px;"
+                "}"
+                "QToolButton:checked {"
+                f"  color: #FFFFFF;"
+                f"  background: {H.ACCENT_DIM};"
+                f"  border: 1px solid {H.ACCENT};"
+                "}"
+            )
+            # Compose [TC button] + [frame readout] into a single
+            # widget so the gutter centres them as one unit.
+            fd_wrapper = QWidget(self)
+            fd_lay = QHBoxLayout(fd_wrapper)
+            fd_lay.setContentsMargins(0, 0, 0, 0)
+            fd_lay.setSpacing(4)
+            fd_lay.addWidget(self._tc_toggle_btn)
+            fd_lay.addWidget(self._transport.frame_display)
+            self._master_timeline_panel = MasterTimelinePanel(
+                self._timeline,
+                self._layer_panel,
+                frame_display=fd_wrapper,
+                parent=self,
+            )
 
-        # Central: viewer on top, then timeline + (optional) layer
-        # panel + transport stacked at the bottom.
+        # Side panel (Color + Comments tabs). Used to live as a real
+        # QDockWidget on the right side of the QMainWindow, which
+        # made it span the FULL height of the central area —
+        # including the bottom panels (master timeline + transport).
+        # Reviewer feedback: the panel should only flank the viewer,
+        # not push the timeline / transport area sideways. So it's
+        # now a plain QFrame nested in the central widget's top row,
+        # sitting beside the viewer. We lose the drag-to-float
+        # gesture but the panel is meant to be docked anyway.
+        self._side_tabs = QTabWidget()
+        self._side_tabs.addTab(self._color_panel, "Color")
+        self._side_tabs.addTab(self._comment_panel, "Comments")
+        self._side_dock = QFrame(self)
+        self._side_dock.setObjectName("side_dock")
+        self._side_dock.setFrameShape(QFrame.Shape.NoFrame)
+        self._side_dock.setFixedWidth(280)
+        side_layout = QVBoxLayout(self._side_dock)
+        side_layout.setContentsMargins(0, 0, 0, 0)
+        side_layout.setSpacing(0)
+        side_layout.addWidget(self._side_tabs)
+        # NB: image-dimensions readout used to live here, but it
+        # disappeared whenever the user hid the side panel. Moved to
+        # a top-right overlay on the viewer (see
+        # ``ViewerWidget.set_info_text``) so it stays visible
+        # regardless of the side panel's state.
+
+        # Central: top row [viewer | side panel] (only the display
+        # area gets the side panel beside it), then master-timeline
+        # composite + transport below spanning the full width.
         central = QWidget(self)
         layout = QVBoxLayout(central)
         layout.setContentsMargins(S.SM, S.SM, S.SM, S.SM)
         layout.setSpacing(S.SM)
-        layout.addWidget(self._viewer, stretch=1)
-        layout.addWidget(self._timeline)
-        if self._layer_panel is not None:
-            layout.addWidget(self._layer_panel)
+        top_row = QHBoxLayout()
+        top_row.setContentsMargins(0, 0, 0, 0)
+        top_row.setSpacing(S.SM)
+        # NB: the annotation_dock is constructed below this layout's
+        # construction call but inserted at index 0 once it exists —
+        # putting it after creation here keeps the imports / order
+        # readable. Pre-insert order: [viewer (stretch=1)]
+        # [side_dock] ; final order after annotation insert:
+        # [annotation_dock] [viewer] [side_dock].
+        top_row.addWidget(self._viewer, stretch=1)
+        top_row.addWidget(self._side_dock)
+        self._top_row = top_row
+        layout.addLayout(top_row, stretch=1)
+        if self._master_timeline_panel is not None:
+            layout.addWidget(self._master_timeline_panel)
+        else:
+            layout.addWidget(self._timeline)
         layout.addWidget(self._transport)
         self.setCentralWidget(central)
 
-        # Right-hand dock holds Color + Comments as tabs.
-        self._side_tabs = QTabWidget()
-        self._side_tabs.addTab(self._color_panel, "Color")
-        self._side_tabs.addTab(self._comment_panel, "Comments")
-        # Stored on self so the burger button can toggle it.
-        # objectName is mandatory for QMainWindow.saveState() /
-        # restoreState() to round-trip the dock layout in QSettings —
-        # without it Qt logs a warning and silently drops the state.
-        self._side_dock = QDockWidget("Panels", self)
-        self._side_dock.setObjectName("side_dock")
-        self._side_dock.setWidget(self._side_tabs)
-        self._side_dock.setAllowedAreas(
-            Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
-        )
-        self._side_dock.setFeatures(
-            QDockWidget.DockWidgetFeature.DockWidgetMovable
-            | QDockWidget.DockWidgetFeature.DockWidgetFloatable
-        )
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._side_dock)
-
-        # Empty dock placeholder for the annotation toolbar's "dock"
-        # mode. It starts hidden — `App` populates it with the
-        # AnnotationToolbar widget when the user picks dock mode. By
-        # being a real QDockWidget with an objectName, it participates
-        # in saveState / restoreState so its position stays put across
-        # sessions.
-        self._annotation_dock = QDockWidget("Annotations", self)
+        # Annotation toolbar placeholder. Used to be a real QDockWidget
+        # which made it span the full central-area height; reviewer
+        # feedback: the toolbar should only flank the display area
+        # (consistent with the right-hand panel). Now a plain QFrame
+        # with a ``setWidget`` / ``widget`` compat shim so the
+        # AnnotationToolbar's existing dock-mode code keeps working
+        # without changes. Inserted as the first widget in the top
+        # row of the central layout (= left of the viewer); the
+        # bottom panels (master timeline + transport) span full
+        # width and are unaffected.
+        self._annotation_dock = _SidePanelDock(self)
         self._annotation_dock.setObjectName("annotation_dock")
-        self._annotation_dock.setAllowedAreas(
-            Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
-        )
-        self._annotation_dock.setFeatures(
-            QDockWidget.DockWidgetFeature.DockWidgetMovable
-            | QDockWidget.DockWidgetFeature.DockWidgetFloatable
-            | QDockWidget.DockWidgetFeature.DockWidgetClosable
-        )
-        # Anchored on the LEFT side of the window — keeps the right
-        # side free for the Color / Channels / future Comment panels,
-        # and matches the user's preferred review-tool layout (drawing
-        # tools on the left like Photoshop / Procreate).
-        self.addDockWidget(
-            Qt.DockWidgetArea.LeftDockWidgetArea, self._annotation_dock
-        )
-        self._annotation_dock.hide()  # only shown when toolbar is in dock mode
+        self._annotation_dock.hide()  # shown only when toolbar is in dock mode
+        self._top_row.insertWidget(0, self._annotation_dock)
 
         # Callback hook fired from closeEvent before the window
         # actually closes. Set by ``app.py`` to prompt the user
@@ -240,10 +377,11 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         return self._color_panel
 
     @property
-    def annotation_dock(self) -> QDockWidget:
-        """The empty placeholder dock the AnnotationToolbar reparents
-        into when the user picks dock mode. Owned by MainWindow so its
-        position participates in saveState / restoreState."""
+    def annotation_dock(self) -> "_SidePanelDock":
+        """Placeholder host the AnnotationToolbar reparents into when
+        the user picks dock mode. Provides a ``setWidget`` /
+        ``widget`` shim compatible with the QDockWidget API the
+        toolbar was originally written against."""
         return self._annotation_dock
 
     @property
@@ -303,7 +441,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         stale cache marks is exactly what the user reported, so we
         reset eagerly here.
         """
-        self.setWindowTitle(f"img_player — {sequence.display_pattern()}")
+        self.setWindowTitle(f"Flick Player — {sequence.display_pattern()}")
         self._timeline.set_range(sequence.first_frame, sequence.last_frame)
         # A sequence is loaded → enable the File → Export… action +
         # the 💾 transport bar button + Reload.
@@ -343,6 +481,10 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         # so the menu can render before that happens.
         self._recent_paths_provider: Callable[[], list[Path]] = lambda: []
         self._clear_recent_callback: Callable[[], None] = lambda: None
+        # Same shape but for ``.session`` files. Installed by
+        # ``install_recent_session_provider``.
+        self._recent_sessions_provider: Callable[[], list[Path]] = lambda: []
+        self._clear_recent_sessions_callback: Callable[[], None] = lambda: None
 
         menu_bar = self.menuBar()
         file_menu = menu_bar.addMenu("&File")
@@ -380,6 +522,14 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         open_session_act = QAction("Open Sess&ion…", self)
         open_session_act.triggered.connect(self._on_open_session_action)
         file_menu.addAction(open_session_act)
+        # Open Recent submenu specifically for sessions — same shape
+        # as the sequence-side "Open Recent" but driven by a
+        # different QSettings key so the two lists don't blend.
+        self._recent_sessions_menu = file_menu.addMenu("Open Recent S&ession")
+        self._recent_sessions_menu.aboutToShow.connect(
+            self._refresh_recent_sessions_menu,
+        )
+        self._refresh_recent_sessions_menu()
         self._save_session_act = QAction("Save Sess&ion…", self)
         self._save_session_act.setEnabled(False)
         self._save_session_act.triggered.connect(self._on_save_session_action)
@@ -410,11 +560,30 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self._export_act.triggered.connect(self.export_requested.emit)
         file_menu.addAction(self._export_act)
 
-        file_menu.addSeparator()
-        quit_act = QAction("&Quit", self)
-        quit_act.setShortcut(QKeySequence.StandardKey.Quit)
-        quit_act.triggered.connect(self.close)
-        file_menu.addAction(quit_act)
+        # NB: explicit Quit action removed — the OS-default close
+        # button (X) and Alt+F4 / Cmd+Q already cover the gesture, and
+        # the in-app Ctrl+Q shortcut was unreliable on Windows (Qt's
+        # ``StandardKey.Quit`` resolves to nothing there). Keeping the
+        # action only added a dead menu entry.
+
+        # --- Edit menu : Undo / Redo ----------------------------------
+        # Routes through ``undo_requested`` / ``redo_requested`` so
+        # the app's chained handler (annotations first, layer stack
+        # fallback) stays the single source of truth. The shortcuts
+        # match the QShortcut bindings in ``app.py``; Qt resolves the
+        # collision deterministically (action wins inside the menu's
+        # context, the QShortcut catches keystrokes outside menus —
+        # together they cover every focus situation).
+        edit_menu = menu_bar.addMenu("&Edit")
+        self._undo_act = QAction("&Undo", self)
+        self._undo_act.setShortcut(QKeySequence.StandardKey.Undo)
+        self._undo_act.triggered.connect(self.undo_requested.emit)
+        edit_menu.addAction(self._undo_act)
+
+        self._redo_act = QAction("&Redo", self)
+        self._redo_act.setShortcut(QKeySequence.StandardKey.Redo)
+        self._redo_act.triggered.connect(self.redo_requested.emit)
+        edit_menu.addAction(self._redo_act)
 
         # --- View menu : timeline display mode ----------------------------
         view_menu = menu_bar.addMenu("&View")
@@ -422,6 +591,31 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self._show_tc_act.setShortcut(QKeySequence("Ctrl+T"))
         self._show_tc_act.triggered.connect(self._on_toggle_timecode)
         view_menu.addAction(self._show_tc_act)
+
+        # The "TC" pill next to the frame readout (built earlier in
+        # ``__init__``) drives the same action. Click → trigger the
+        # action; the action's toggled signal then mirrors back to
+        # the button (with signals blocked to avoid the menu /
+        # shortcut path double-firing ``_on_toggle_timecode``).
+        tc_btn = getattr(self, "_tc_toggle_btn", None)
+        if tc_btn is not None:
+            tc_btn.clicked.connect(self._show_tc_act.trigger)
+
+            def _sync_tc_btn(on: bool) -> None:
+                if tc_btn.isChecked() != on:
+                    tc_btn.blockSignals(True)
+                    try:
+                        tc_btn.setChecked(on)
+                    finally:
+                        tc_btn.blockSignals(False)
+
+            self._show_tc_act.toggled.connect(_sync_tc_btn)
+
+        # NB: T / αS used to live here as global View menu toggles.
+        # They moved to per-row buttons in the layer panel once the
+        # underlying state became per-layer; the menu duplicate would
+        # silently target a "focused layer" with no visual cue
+        # showing which layer it edits, which proved confusing.
 
         # --- Burger button → toggle the right-hand dock ------------------
         # Lives in the menu bar's top-right corner so it's always
@@ -480,17 +674,38 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         )
         burger.clicked.connect(self._toggle_side_dock)
 
-        # The burger is wrapped in a transparent widget so we can give
-        # it a tiny right margin — `setCornerWidget` would otherwise
-        # paste it flush against the window edge.
-        burger_wrapper = QWidget(self)
-        burger_wrapper.setStyleSheet("background: transparent;")
-        wrap_layout = QHBoxLayout(burger_wrapper)
-        wrap_layout.setContentsMargins(0, 0, S.MD, 0)  # right padding
-        wrap_layout.setSpacing(0)
+        # The corner widget hosts the burger PLUS the global-state
+        # controls that used to live at the right of the transport
+        # bar (reload, export, channel selector, RGBA mute toggles,
+        # zoom). Putting them here frees the bottom bar for
+        # playback-only tools and gives the user a single "global
+        # state" row at the very top of the window.
+        corner = QWidget(self)
+        corner.setStyleSheet("background: transparent;")
+        wrap_layout = QHBoxLayout(corner)
+        wrap_layout.setContentsMargins(0, 0, S.MD, 0)
+        wrap_layout.setSpacing(S.SM)
+        # Reload + export sit first (left of the channel controls) —
+        # they're file-level commands, kin to File menu actions.
+        wrap_layout.addWidget(self._transport.reload_button)
+        wrap_layout.addWidget(self._transport.export_button)
+        # Channel selector + RGBA mute toggles, grouped tight.
+        wrap_layout.addWidget(self._transport.channel_button)
+        for letter in ("R", "G", "B", "A"):
+            wrap_layout.addWidget(self._transport.channel_mute_buttons[letter])
+        # Zoom selector — preceded by a small "Zoom" label, mirroring
+        # the "FPS" label/field pairing in the transport bar so the
+        # value alone doesn't read as a mystery percentage.
+        zoom_label = QLabel("Zoom")
+        zoom_label.setStyleSheet(f"color: {H.TEXT_SECONDARY};")
+        wrap_layout.addWidget(zoom_label)
+        wrap_layout.addWidget(self._transport.zoom_combo)
+        # Burger last (closest to the right edge — easiest mouse
+        # target).
         wrap_layout.addWidget(burger)
-        menu_bar.setCornerWidget(burger_wrapper, Qt.Corner.TopRightCorner)
+        menu_bar.setCornerWidget(corner, Qt.Corner.TopRightCorner)
         self._burger_btn = burger
+        self._menu_corner = corner
 
         # --- Help menu ----------------------------------------------------
         help_menu = menu_bar.addMenu("&Help")
@@ -499,9 +714,17 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         shortcuts_act.triggered.connect(self._show_shortcuts)
         help_menu.addAction(shortcuts_act)
         help_menu.addSeparator()
-        about_act = QAction("&About img_player", self)
+        about_act = QAction("&About Flick Player", self)
         about_act.triggered.connect(self._show_about)
         help_menu.addAction(about_act)
+
+    def _refresh_image_size_label(self) -> None:
+        """Update the viewer's corner-overlay dimensions readout."""
+        w, h = self._viewer.gl.image_size()
+        if w <= 0 or h <= 0:
+            self._viewer.set_info_text("")
+        else:
+            self._viewer.set_info_text(f"{w} × {h}")
 
     def _on_toggle_timecode(self, checked: bool) -> None:
         mode = "tc" if checked else "frames"
@@ -521,10 +744,29 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self._side_dock.setVisible(not self._side_dock.isVisible())
 
     def _show_shortcuts(self) -> None:
+        """Open the shortcuts reference as a non-modal floating panel.
+
+        Keeping it modeless lets the user actually try the shortcuts
+        while reading the list — they can drag the timeline, toggle
+        the pen, etc. without closing the help first. Reopening the
+        menu while the panel is already up just raises the existing
+        instance instead of stacking duplicates.
+        """
         from img_player.ui.shortcuts_dialog import ShortcutsDialog
 
+        existing = getattr(self, "_shortcuts_dialog", None)
+        if existing is not None and existing.isVisible():
+            existing.raise_()
+            existing.activateWindow()
+            return
+        # Hold the reference on ``self`` so Python doesn't collect
+        # the dialog after this method returns (``show()`` is
+        # non-blocking, unlike ``exec()``).
         dlg = ShortcutsDialog(self)
-        dlg.exec()
+        dlg.setModal(False)
+        dlg.setWindowFlag(Qt.WindowType.Tool, True)
+        dlg.show()
+        self._shortcuts_dialog = dlg
 
     def install_recent_provider(
         self,
@@ -557,6 +799,47 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
     def _on_clear_recent_clicked(self) -> None:
         self._clear_recent_callback()
         self._refresh_recent_menu()
+
+    # --- Recent sessions (mirror of the sequence-side helpers) -----
+
+    def install_recent_session_provider(
+        self,
+        provider: Callable[[], list[Path]],
+        clear_callback: Callable[[], None],
+    ) -> None:
+        """Same contract as :meth:`install_recent_provider` but for
+        the ``.session`` recent list. Kept as a separate hook so the
+        app can wire each list to its own preferences key without
+        risk of cross-pollination."""
+        self._recent_sessions_provider = provider
+        self._clear_recent_sessions_callback = clear_callback
+        self._refresh_recent_sessions_menu()
+
+    def _refresh_recent_sessions_menu(self) -> None:
+        self._recent_sessions_menu.clear()
+        paths = list(self._recent_sessions_provider())
+        if not paths:
+            empty = QAction("(no recent sessions)", self)
+            empty.setEnabled(False)
+            self._recent_sessions_menu.addAction(empty)
+            return
+        for path in paths:
+            act = QAction(self._shorten_path_label(path), self)
+            act.setToolTip(str(path))
+            # Recent click → open the session file. Routes through
+            # the same signal as the File → Open Session… dialog.
+            act.triggered.connect(
+                lambda _=False, p=path: self.open_session_requested.emit(p),
+            )
+            self._recent_sessions_menu.addAction(act)
+        self._recent_sessions_menu.addSeparator()
+        clear = QAction("Clear list", self)
+        clear.triggered.connect(self._on_clear_recent_sessions_clicked)
+        self._recent_sessions_menu.addAction(clear)
+
+    def _on_clear_recent_sessions_clicked(self) -> None:
+        self._clear_recent_sessions_callback()
+        self._refresh_recent_sessions_menu()
 
     @staticmethod
     def _shorten_path_label(path: Path, max_len: int = 60) -> str:
@@ -613,6 +896,15 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             QKeySequence(Qt.Key.Key_Equal), self, activated=lambda: self.exposure_step.emit(0.25)
         )
 
+        # Fullscreen — F to toggle, Esc to exit (Esc only meaningful
+        # while *in* fullscreen; the handler short-circuits otherwise
+        # so it doesn't steal the key from other widgets).
+        QShortcut(QKeySequence(Qt.Key.Key_F), self, activated=self.toggle_fullscreen)
+        QShortcut(
+            QKeySequence(Qt.Key.Key_Escape), self,
+            activated=lambda: self.exit_fullscreen() if self._fullscreen else None,
+        )
+
     def _wire_internal(self) -> None:
         # play_toggled is reserved for direction-agnostic toggles
         # (Space / K shortcuts). The direction-aware play buttons of
@@ -632,6 +924,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self._transport.mark_out_clicked.connect(self.mark_out_requested.emit)
         self._transport.clear_in_out_clicked.connect(self.clear_in_out_requested.emit)
         self._transport.loop_mode_requested.connect(self.loop_mode_requested.emit)
+        self._transport.fullscreen_clicked.connect(self.toggle_fullscreen)
         # Frame display: typing a frame number / TC and pressing Enter
         # asks the controller to seek there.
         self._transport.frame_seek_requested.connect(self.frame_requested.emit)
@@ -659,6 +952,20 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         # timeline scrubber. From the controller's point of view the
         # two sources are indistinguishable.
         self._viewer.gl.frame_requested.connect(self.frame_requested.emit)
+        # Image dimensions readout in the menu corner — refreshed on
+        # every transform change (which fires on size change AND on
+        # zoom/pan; the dedicated update is idempotent so zoom-only
+        # fires are essentially free).
+        self._viewer.gl.transform_changed.connect(self._refresh_image_size_label)
+        self._refresh_image_size_label()
+        # Per-zone drag-and-drop. Drops on the viewer go through the
+        # standard "Open" pipeline (replace), drops on the master
+        # timeline composite append a new layer.
+        self._viewer.replace_requested.connect(self.open_requested.emit)
+        if self._master_timeline_panel is not None:
+            self._master_timeline_panel.add_layer_requested.connect(
+                self.add_layer_requested.emit
+            )
 
     # --------------------------------------------------------------- Menu handlers
 
@@ -704,9 +1011,9 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
     def _show_about(self) -> None:
         QMessageBox.about(
             self,
-            "About img_player",
+            "About Flick Player",
             (
-                "<b>img_player</b><br>"
+                "<b>Flick Player</b><br>"
                 "VFX-grade image sequence player.<br><br>"
                 "OCIO color management, async RAM cache, OpenGL viewport."
             ),
@@ -714,23 +1021,205 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
 
     # --------------------------------------------------------------- Drag & drop
 
-    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
-        if event.mimeData().hasUrls():
-            event.acceptProposedAction()
-        else:
-            event.ignore()
+    # NB: drag-and-drop is now handled per-zone (viewer = "Replace",
+    # master timeline = "Add to layers"). Each zone shows its own
+    # overlay during drag-over. We deliberately don't accept drops
+    # at MainWindow level anymore — a global handler used to swallow
+    # the drop and route through a modal "Add / Replace / Cancel"
+    # dialog, which the per-zone scheme replaces.
 
-    def dropEvent(self, event: QDropEvent) -> None:
-        urls = event.mimeData().urls()
-        if not urls:
-            event.ignore()
+    # --------------------------------------------------------------- Fullscreen
+
+    # Pixel distance from the bottom edge that activates the
+    # auto-show floating bar. Anything closer than this triggers
+    # show; anything further triggers a queued hide.
+    _FS_HOT_ZONE_PX = 80
+    # Delay before hiding once the cursor leaves the hot zone — keeps
+    # the bar from flickering when the user briefly moves up to grab
+    # the timeline scrubber.
+    _FS_HIDE_DELAY_MS = 400
+
+    def toggle_fullscreen(self) -> None:
+        """Flip in or out of fullscreen mode."""
+        if self._fullscreen:
+            self.exit_fullscreen()
+        else:
+            self.enter_fullscreen()
+
+    def enter_fullscreen(self) -> None:
+        """Switch to fullscreen: hide every chrome panel, show the
+        viewer maximised, and prepare a floating bottom bar that
+        auto-reveals on cursor proximity."""
+        if self._fullscreen:
             return
-        local = urls[0].toLocalFile()
-        if not local:
-            event.ignore()
+        self._fullscreen = True
+
+        # Hide every chrome surface — the viewer is the only thing
+        # the user sees outside the auto-show bar.
+        self.menuBar().hide()
+        self._transport.hide()
+        if self._master_timeline_panel is not None:
+            self._master_timeline_panel.hide()
+        self._side_dock.hide()
+        self._annotation_dock.hide()
+        if self.statusBar() is not None:
+            self.statusBar().hide()
+
+        self._build_fullscreen_bar_if_needed()
+        # Switch the timeline into its stripped-down rendering: just
+        # a track + playhead, no ticks / cache bar / annotation
+        # markers. Reviewer feedback ("on préfèrera une time line
+        # épurée et simple" in fullscreen) — the chrome reads as
+        # noise on top of full-frame images.
+        self._timeline.set_minimal_mode(True)
+        # Reparent the frame display + timeline into the floating bar
+        # so the user keeps the frame readout next to the scrubber in
+        # fullscreen (it normally lives in the master panel's left
+        # gutter, which is hidden along with the rest of the chrome).
+        # Order: [frame_display] [timeline (stretch=1)] [exit_btn].
+        if self._master_timeline_panel is not None:
+            frame_display = self._transport.frame_display
+            self._fs_bar_layout.insertWidget(0, frame_display)
+            self._fs_bar_layout.insertWidget(1, self._timeline, 1)
+        self._fs_bar.hide()  # will appear on cursor proximity
+        self._position_fs_bar()
+
+        # Start polling the cursor position. Polling instead of event
+        # filtering because the GL child widget swallows mouse events
+        # before they reach a filter on its parent — leaving the bar
+        # stuck closed even when the user is right at the bottom.
+        if self._fs_cursor_timer is None:
+            self._fs_cursor_timer = QTimer(self)
+            self._fs_cursor_timer.setInterval(50)
+            self._fs_cursor_timer.timeout.connect(self._fs_poll_cursor)
+        self._fs_cursor_timer.start()
+
+        self.showFullScreen()
+        self._transport.set_fullscreen_state(True)
+
+    def exit_fullscreen(self) -> None:
+        """Restore the normal window chrome."""
+        if not self._fullscreen:
             return
-        event.acceptProposedAction()
-        self.open_requested.emit(Path(local))
+        self._fullscreen = False
+
+        # Reparent the timeline + frame display back into the master
+        # panel. The composite exposes ``_axis_gutter_layout`` for the
+        # frame display and the timeline goes back into the axis row
+        # at the end (after the gutter widget).
+        if self._master_timeline_panel is not None and self._timeline is not None:
+            mtp = self._master_timeline_panel
+            mtp._axis_row.layout().addWidget(self._timeline, 1)
+            # Restore the frame display inside the gutter, sandwiched
+            # between two stretches (centred — same as initial build).
+            frame_display = self._transport.frame_display
+            mtp._axis_gutter_layout.insertWidget(1, frame_display)
+            self._master_timeline_panel.show()
+
+        self.menuBar().show()
+        self._transport.show()
+        self._side_dock.show()
+        # Annotation dock: only show if the user had it visible before
+        # — we don't track that explicitly, but Qt's saveState / our
+        # restore logic put it where it should be naturally on next
+        # window-state restore. Leaving it whatever it was is fine.
+        if self.statusBar() is not None:
+            self.statusBar().show()
+
+        if self._fs_bar is not None:
+            self._fs_bar.hide()
+        if self._fs_cursor_timer is not None:
+            self._fs_cursor_timer.stop()
+        if self._fs_hide_timer is not None:
+            self._fs_hide_timer.stop()
+
+        # Restore the timeline to its full-featured rendering.
+        self._timeline.set_minimal_mode(False)
+
+        self.showNormal()
+        self._transport.set_fullscreen_state(False)
+
+    def _fs_poll_cursor(self) -> None:
+        """Poll ``QCursor.pos()`` every 50 ms while in fullscreen and
+        show/hide the bottom bar based on cursor proximity to the
+        bottom edge. Polling instead of event-filtering bypasses the
+        GL viewport child swallowing mouse moves."""
+        if not self._fullscreen or self._fs_bar is None:
+            return
+        from PySide6.QtGui import QCursor
+        global_pos = QCursor.pos()
+        local_pos = self.mapFromGlobal(global_pos)
+        # Only react when the cursor is actually over the window.
+        if not self.rect().contains(local_pos):
+            return
+        distance_from_bottom = self.height() - local_pos.y()
+        if distance_from_bottom <= self._FS_HOT_ZONE_PX:
+            if not self._fs_bar.isVisible():
+                self._position_fs_bar()
+                self._fs_bar.show()
+            self._fs_hide_timer.stop()
+        else:
+            if self._fs_bar.isVisible() and not self._fs_hide_timer.isActive():
+                self._fs_hide_timer.start()
+
+    def _build_fullscreen_bar_if_needed(self) -> None:
+        if self._fs_bar is not None:
+            return
+        bar = QFrame(self)
+        bar.setObjectName("fullscreen_bar")
+        bar.setStyleSheet(
+            "QFrame#fullscreen_bar {"
+            "  background: rgba(14, 15, 18, 220);"
+            "  border-top: 1px solid rgba(255, 255, 255, 30);"
+            "}"
+        )
+        bar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        bar.setFixedHeight(64)
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(S.SM, S.SM, S.SM, S.SM)
+        layout.setSpacing(S.SM)
+
+        # The timeline is reparented in here on ``enter_fullscreen``
+        # at index 0 with stretch=1 so it fills the bar's width. The
+        # exit button below sits to its right at fixed size.
+
+        exit_btn = QPushButton()
+        exit_btn.setFixedSize(G.BTN_TRANSPORT_W, G.BTN_TRANSPORT_H)
+        exit_btn.setIcon(make_icon("fullscreen_exit"))
+        exit_btn.setIconSize(QSize(16, 16))
+        exit_btn.setToolTip("Exit fullscreen (F / Esc)")
+        exit_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        exit_btn.clicked.connect(self.exit_fullscreen)
+        layout.addWidget(exit_btn)
+
+        self._fs_bar = bar
+        self._fs_bar_layout = layout
+        self._fs_exit_btn = exit_btn
+
+        # Hide-with-delay timer: armed when the cursor leaves the hot
+        # zone, fires after ``_FS_HIDE_DELAY_MS``, hides the bar.
+        self._fs_hide_timer = QTimer(self)
+        self._fs_hide_timer.setSingleShot(True)
+        self._fs_hide_timer.setInterval(self._FS_HIDE_DELAY_MS)
+        self._fs_hide_timer.timeout.connect(
+            lambda: self._fs_bar and self._fs_bar.hide(),
+        )
+
+    def _position_fs_bar(self) -> None:
+        """Resize the floating bar to span the window's bottom."""
+        if self._fs_bar is None:
+            return
+        h = self._fs_bar.height()
+        self._fs_bar.setGeometry(0, self.height() - h, self.width(), h)
+        self._fs_bar.raise_()
+
+    def resizeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        super().resizeEvent(event)
+        # Keep the floating bar pinned to the bottom on window resize
+        # in fullscreen (Qt fires ``resize`` when entering / leaving
+        # fullscreen too, so this also covers the initial sizing).
+        if self._fullscreen:
+            self._position_fs_bar()
 
     def closeEvent(self, event: QCloseEvent) -> None:
         # The app can register a callback that runs before the window

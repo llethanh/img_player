@@ -56,6 +56,19 @@ class Layer:
     source_colorspace: str | None = None
     exposure: float = 0.0
     gamma: float = 1.0
+    # Alpha compositing mode (per-layer "T toggle"). When ``True`` this
+    # layer alpha-blends over what's beneath in the stack; when
+    # ``False`` it acts as an opaque "floor" and masks every layer
+    # below entirely. Default ``True`` because the common review case
+    # is "see what my matte looks like" — opaque sources just have
+    # alpha=1 everywhere, so the composite path no-ops on them and
+    # there's no penalty.
+    alpha_composite: bool = True
+    # Alpha encoding convention of the source pixels. Auto-detected
+    # from the file extension at ``from_sequence`` time (PNG / TGA /
+    # JPG → straight, EXR / DPX / TIFF → premult); the user can
+    # still flip the αS button to override per-layer if needed.
+    alpha_is_straight: bool = False
 
     # Sidecar paths for annotations + comments. Resolved at
     # construction time relative to ``sequence.directory`` so a layer
@@ -75,6 +88,13 @@ class Layer:
     ) -> Layer:
         """Build a fresh layer from a sequence, defaulting trim to
         the full source range and ``name`` to the display pattern.
+
+        ``alpha_is_straight`` defaults to ``False`` (premultiplied —
+        the VFX rendering standard). Per-format auto-detection used
+        to live here but turned out to be wrong as often as right —
+        EXR can be straight, PNG can come out of compositors with
+        premult baked in. The user toggles αS per-layer when the
+        default is off.
         """
         return cls(
             sequence=sequence,

@@ -55,7 +55,20 @@ class WorkerPool:
     def clear(self) -> int:
         """Drop all queued tasks that haven't started yet. Returns the count dropped.
 
-        Tasks currently being executed by workers continue to completion.
+        Tasks currently being executed by workers continue to
+        completion (we can't safely interrupt arbitrary Python /
+        OIIO calls). Their result is expected to be discarded by the
+        caller via an epoch check at store time.
+
+        The dedup ``_pending`` set is wiped entirely — including the
+        keys of in-flight tasks — so new submissions for the same
+        keys aren't silently dropped while the old (about-to-be-
+        ghosted) decode finishes. Without this, the very frames the
+        caller most wants to re-decode (i.e. the ones close to the
+        playhead, which were busy when the user e.g. swapped layers)
+        end up un-cached and the viewer freezes black at startup.
+        In-flight workers harmlessly call ``_pending.discard(key)``
+        at the end of their task — a no-op once the key is gone.
         """
         dropped = 0
         drained: list[tuple[int, int, Any, Callable[[], None] | None]] = []
@@ -70,9 +83,14 @@ class WorkerPool:
                 drained.append(item)
                 continue
             if key is not None:
-                with self._lock:
-                    self._pending.discard(key)
                 dropped += 1
+        # Wipe ``_pending`` after the queue drain so we don't reopen
+        # dedup slots while we're still iterating new items into the
+        # queue. In-flight workers (their keys still in the set right
+        # before this clear) will call discard on a missing key —
+        # safe.
+        with self._lock:
+            self._pending.clear()
         for item in drained:
             self._queue.put(item)
         return dropped

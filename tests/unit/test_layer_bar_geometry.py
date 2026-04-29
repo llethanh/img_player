@@ -18,21 +18,18 @@ from img_player.ui.layer_bar import BarGeometry, PADDING_X, snap_master_frame
 
 
 class TestBarGeometry:
-    def test_first_frame_lands_at_left_padding(self) -> None:
+    def test_first_frame_at_left_edge(self) -> None:
         geom = BarGeometry(width=200, master_first=0, master_last=99)
-        x = geom.frame_to_x(0)
-        # Slight offset because the formula maps the LEFT EDGE of
-        # frame 0 to PADDING_X. Roughly equal to PADDING_X.
-        assert abs(x - PADDING_X) < 1e-6
+        # "Frame as point": ``master_first`` lands exactly at
+        # ``PADDING_X`` (= the bar's drawable left edge), pixel-flush
+        # with the timeline's first tick.
+        assert abs(geom.frame_to_x(0) - PADDING_X) < 1e-6
 
-    def test_last_frame_close_to_right_edge(self) -> None:
+    def test_last_frame_at_right_edge(self) -> None:
         geom = BarGeometry(width=200, master_first=0, master_last=99)
-        # The mapping puts master_last + 1 at the right edge — so
-        # master_last lands a fraction-of-a-frame inside.
-        x = geom.frame_to_x(99)
+        # ``master_last`` lands exactly at the drawable right edge.
         right_edge = 200 - PADDING_X
-        assert x < right_edge
-        assert x > right_edge - (geom.usable_w / geom.master_length) * 1.5
+        assert abs(geom.frame_to_x(99) - right_edge) < 1e-6
 
     def test_x_to_frame_round_trip(self) -> None:
         geom = BarGeometry(width=200, master_first=0, master_last=99)
@@ -42,8 +39,10 @@ class TestBarGeometry:
 
     def test_master_length_with_negative_first(self) -> None:
         # Negative offsets are legal (Layer.master_start can be < 0).
+        # Length is the *step count* (last - first), not the frame
+        # count, so [-10, 10] has length 20.
         geom = BarGeometry(width=200, master_first=-10, master_last=10)
-        assert geom.master_length == 21
+        assert geom.master_length == 20
 
     def test_zero_width_falls_back_safely(self) -> None:
         # Defensive: widget might be 0 px wide before its first

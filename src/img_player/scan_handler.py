@@ -125,6 +125,16 @@ def add_layer(app: ImgPlayerApp, path: Path) -> None:
                 seq = picked
         else:
             seq = result  # type: ignore[assignment]
+        # If the interface is empty (no sequence attached to the
+        # controller yet), an "add layer" can't actually start
+        # playing — controller._sequence stays None so play()
+        # early-returns and the viewport never updates. Route to
+        # the regular open path so load_sequence(), channel
+        # restore, annotations sidecar and friends all run.
+        if app._controller.sequence is None:
+            log.info("[add-layer] empty interface → routing to open_path")
+            apply_scan_result(app, path, result)
+            return
         # Header probe so the new layer carries width / height /
         # channel info — same enrichment the main load path uses.
         seq = app._enrich_with_header(seq)

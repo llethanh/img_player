@@ -50,6 +50,51 @@ _DEFAULT_NUM_WORKERS = 4
 _BEHIND_PLAYHEAD_PENALTY = 3.0
 
 
+def _ensure_rgba(arr: np.ndarray) -> np.ndarray:
+    """Pad a 1- or 3-channel buffer to 4 channels with full opacity.
+
+    The compositing path always works in RGBA so the alpha is
+    explicit and the per-pixel maths can stay simple. If the source
+    happens to be RGB-only (no alpha file), we treat the layer as
+    fully opaque — a sensible fallback that mirrors how Nuke / RV
+    handle the case ("missing alpha = solid").
+    """
+    if arr.ndim != 3:
+        raise ValueError(f"Expected HxWxC array, got shape {arr.shape}")
+    if arr.shape[2] == 4:
+        return arr
+    if arr.shape[2] == 3:
+        a = np.ones(
+            (arr.shape[0], arr.shape[1], 1), dtype=arr.dtype,
+        )
+        return np.concatenate([arr, a], axis=2)
+    if arr.shape[2] == 1:
+        rgb = np.broadcast_to(arr, (arr.shape[0], arr.shape[1], 3))
+        a = np.ones(
+            (arr.shape[0], arr.shape[1], 1), dtype=arr.dtype,
+        )
+        return np.ascontiguousarray(np.concatenate([rgb, a], axis=2))
+    raise ValueError(f"Unsupported channel count: {arr.shape[2]}")
+
+
+def _force_alpha_one(arr: np.ndarray) -> np.ndarray:
+    """Set every alpha to 1.0 — used for "opaque floor" layers in the
+    composite path so the layers below them are masked, regardless of
+    the source's actual A channel."""
+    out = arr.copy()
+    out[..., 3:4] = np.ones_like(out[..., 3:4])
+    return out
+
+
+def _premultiply(arr: np.ndarray) -> np.ndarray:
+    """Multiply RGB by alpha so straight-alpha buffers can feed the
+    same over operator that premult buffers do."""
+    out = arr.copy()
+    a = out[..., 3:4]
+    out[..., :3] = out[..., :3] * a
+    return out
+
+
 @dataclass(frozen=True)
 class CacheStats:
     hits: int = 0
@@ -96,10 +141,27 @@ class MasterFrameCache:
         # frames in the now-uncovered tail must be re-decoded
         # (revealing the layer underneath, or going to black).
         self._last_known_range: dict[str, tuple[int, int]] = {}
+        # Last-known per-layer state for pinpointing what changed in
+        # ``_on_layer_modified``. Tuple = (offset, layer_in,
+        # layer_out, channel_selection). When only ``offset`` differs
+        # AND the stack has a single layer, we *re-index* the cached
+        # frames (master_frame F → F + Δ) instead of dropping them —
+        # decoding is the expensive part, and the pixel data is
+        # identical between the two offsets.
+        self._last_known_state: dict[str, tuple] = {}
         # Bumped on every invalidation so workers in flight drop
         # their results when the world has moved on (channel change,
         # visibility flip, layer reorder, …).
         self._epoch = 0
+        # NB: alpha-compositing and the premult/straight convention
+        # both used to live on the cache as global flags. They moved
+        # to per-layer fields (``Layer.alpha_composite`` /
+        # ``Layer.alpha_is_straight``) so a stack can mix conventions
+        # without forcing a single mode for the whole composite.
+        # ``_channels_for`` reads ``alpha_composite`` to decide
+        # whether to force A in the decoded selection;
+        # ``_decode_composited_and_store`` reads
+        # ``alpha_is_straight`` per contributor.
         self._pool = WorkerPool(num_workers=num_workers, name="decode-master")
 
         # Counters
@@ -116,8 +178,25 @@ class MasterFrameCache:
     # ------------------------------------------------------------------ Lifecycle
 
     def shutdown(self) -> None:
-        """Stop the worker pool. Must be called before app exit."""
+        """Stop the worker pool **and flush every cached frame**.
+
+        Without the explicit flush the decoded numpy arrays sit in
+        ``_frames`` until the Python GC tears down the cache object —
+        which on Windows can stall the process exit for a noticeable
+        second or two when the cache holds millions of small RGBA
+        buffers. Dropping the dict here makes the exit snappy and
+        gives the OS the RAM back deterministically. Idempotent: a
+        second call after shutdown sees an empty dict and no-ops.
+        """
         self._pool.shutdown()
+        with self._lock:
+            self._frames.clear()
+            self._missing.clear()
+            self._path_index.clear()
+            self._mtime_index.clear()
+            self._last_known_range.clear()
+            self._last_known_state.clear()
+            self._bytes_used = 0
 
     def clear(self) -> None:
         """Drop every cached frame + bump epoch so in-flight decodes
@@ -144,16 +223,23 @@ class MasterFrameCache:
         no special-case wiring needed.
         """
         from img_player.layers import Layer
-        for existing in self._stack.layers():
-            self._stack.remove(existing.id)
-        layer = Layer.from_sequence(sequence, offset=sequence.first_frame)
-        self._stack.add(layer)
+        # Batch so the multi-step replace (remove every existing
+        # layer + add the new one) collapses to a single undo entry.
+        # Without this, Ctrl+Z after a drop-replace would only revert
+        # the last sub-step, leaving the user with an unexpected
+        # half-state.
+        with self._stack.batch():
+            for existing in self._stack.layers():
+                self._stack.remove(existing.id)
+            layer = Layer.from_sequence(sequence, offset=sequence.first_frame)
+            self._stack.add(layer)
 
     def detach(self) -> None:
         """Drop-in replacement for :meth:`FrameCache.detach`. Empties
         the LayerStack so subsequent decodes see no layers."""
-        for existing in self._stack.layers():
-            self._stack.remove(existing.id)
+        with self._stack.batch():
+            for existing in self._stack.layers():
+                self._stack.remove(existing.id)
 
     def set_channels(self, channels) -> None:  # type: ignore[no-untyped-def]
         """Drop-in replacement for :meth:`FrameCache.set_channels`.
@@ -249,16 +335,25 @@ class MasterFrameCache:
         # invalidate the entire layer range, defeating the
         # mtime-based "kept" frames we just preserved.
         #
-        # In v1.0-phase-2c we also re-anchor offset to the new
-        # sequence's first_frame so master_frame == source_frame
-        # stays true after reload (matches pre-v1.0 single-layer
-        # behaviour). Phase 4 will introduce a "preserve user
-        # offset / trim" flag for multi-layer workflows where the
-        # user has manually shifted layers.
+        # IMPORTANT: preserve the user's offset / layer_in / layer_out.
+        # Earlier revisions re-anchored offset/in/out to the new
+        # sequence's first_frame on every reload so a single-layer
+        # ``master_frame == source_frame`` invariant held. That broke
+        # any layer the user had moved or trimmed: a Ctrl+R after
+        # nudging a layer would teleport it back to its initial
+        # position, and (worse) the cached frames stored under the
+        # OLD master keys would now decode against the NEW layer
+        # geometry — wrong source_frame mapping → wrong pixels on
+        # screen. Keeping offset/in/out as-is means the diff loop's
+        # master keys stay coherent with the live layer.
+        #
+        # If the new sequence shrank past the existing trim, the
+        # out-of-range frames simply turn into missing-placeholders
+        # via the cache's normal sparse-hole path; the user can
+        # extend layer_in / layer_out via the bar's drag handles to
+        # uncover the rest. Same NLE convention as Premiere /
+        # Resolve "media offline" placeholders.
         target.sequence = new_sequence
-        target.layer_in = new_sequence.first_frame
-        target.layer_out = new_sequence.last_frame
-        target.offset = new_sequence.first_frame
         self._path_index[target.id] = new_paths
         self._mtime_index[target.id] = new_mtimes
         missing = sum(
@@ -287,6 +382,18 @@ class MasterFrameCache:
     def contains(self, master_frame: int) -> bool:
         with self._lock:
             return master_frame in self._frames
+
+    def is_gap_frame(self, master_frame: int) -> bool:
+        """True when no visible layer covers this master frame.
+
+        Lets the controller distinguish "cache miss because nothing
+        covers" (= advance through, viewport will paint black) from
+        "cache miss because decode hasn't landed yet" (= stall the
+        playhead until the worker catches up). Without this, playback
+        freezes at every multi-layer gap, which the user reads as a
+        bug rather than an intentional void.
+        """
+        return self._stack.topmost_visible_at(master_frame) is None
 
     def cached_frames(self) -> frozenset[int]:
         """Snapshot of currently cached master-frame indices."""
@@ -320,7 +427,33 @@ class MasterFrameCache:
         with self._lock:
             if master_frame in self._frames:
                 return False
-        layer = self._stack.topmost_visible_at(master_frame)
+        # Per-layer compositing: collect visible layers covering this
+        # master frame top→bottom, take them until we hit one with
+        # ``alpha_composite=False`` (= opaque floor that masks
+        # everything below). If the topmost is itself opaque we
+        # short-circuit to the single-decode fast path — no point
+        # walking a plan of one layer through the composite worker.
+        visible = [
+            layer for layer in self._stack.layers()
+            if layer.visible and layer.covers(master_frame)
+        ]
+        if not visible:
+            return False
+        topmost = visible[0]
+        if not topmost.alpha_composite:
+            # Topmost is opaque — single-layer fast path.
+            layer = topmost
+        else:
+            plan_layers: list = []
+            for layer in visible:
+                plan_layers.append(layer)
+                if not layer.alpha_composite:
+                    break  # opaque floor — stop
+            if len(plan_layers) > 1 or plan_layers[0].alpha_composite:
+                return self._submit_composite(
+                    master_frame, plan_layers, priority,
+                )
+            layer = plan_layers[0]
         if layer is None:
             # Empty region — nothing to decode. The viewer paints
             # black for these master frames.
@@ -345,11 +478,19 @@ class MasterFrameCache:
         channels = self._channels_for(layer)
         ph_w = layer.sequence.width or 512
         ph_h = layer.sequence.height or 512
+        # When ``alpha_composite=False`` the layer is treated as
+        # opaque — strip A from the cached buffer so the shader sees
+        # alpha=1 everywhere and no checker shows. Without this the
+        # source's alpha leaks into the texture and the user sees
+        # checker behind transparent regions even though they
+        # explicitly disabled the layer's transparency mode.
+        strip_alpha = not layer.alpha_composite
         return self._pool.submit(
             priority,
             master_frame,
             lambda: self._decode_and_store(
                 master_frame, path, channels, ph_w, ph_h,
+                strip_alpha=strip_alpha,
             ),
         )
 
@@ -425,13 +566,21 @@ class MasterFrameCache:
                 self._path_index.pop(stale_id, None)
                 self._mtime_index.pop(stale_id, None)
                 self._last_known_range.pop(stale_id, None)
-        # Snapshot the current master ranges so the next
-        # ``layer_modified`` can compute a delta against this
-        # baseline.
+        # Snapshot the current master ranges + per-layer state so
+        # the next ``layer_modified`` can diff against this baseline.
         for layer in self._stack.layers():
             self._last_known_range[layer.id] = (
                 layer.master_start, layer.master_end,
             )
+            self._last_known_state[layer.id] = (
+                layer.offset, layer.layer_in, layer.layer_out,
+                layer.channel_selection,
+                layer.alpha_composite, layer.alpha_is_straight,
+            )
+        # Drop state for layers that no longer exist.
+        for stale_id in list(self._last_known_state.keys()):
+            if stale_id not in {l.id for l in self._stack.layers()}:
+                self._last_known_state.pop(stale_id, None)
         # Eager pre-mark missing frames for every layer so the
         # timeline cache-bar shows holes immediately. Iterating each
         # layer's master range here is O(N) over total master frames,
@@ -477,14 +626,23 @@ class MasterFrameCache:
     def _on_layer_modified(self, layer_id: str) -> None:
         """Trim / offset / channel change on a layer.
 
-        Invalidates the **union** of the layer's previous and new
-        master ranges. The previous range matters when the layer
-        shrunk (trim out, head-trim that moved the offset right):
-        the now-uncovered tail / head holds stale pixels of this
-        layer that need to come from whatever's underneath in the
-        stack. Without the union, those master frames stay glued to
-        the cached image and the user sees the trim handle move but
-        no actual reveal of the layer below.
+        Two paths:
+
+        * **Pure offset shift** (single-layer stack, no trim/channel
+          change). The decoded pixels are identical between the old
+          and new offsets — only their master-frame keys change. We
+          re-index the cache by ``Δ = new_offset - old_offset``
+          rather than dropping and re-decoding. Big win when the
+          user nudges a layer left/right on the timeline: dragging
+          across hundreds of frames used to invalidate the entire
+          range and trigger a full re-decode wave.
+
+        * **Anything else** (trim, channel selection, multi-layer
+          offset shift) — invalidate the union of old and new master
+          ranges, same as before. The previous range matters when
+          the layer shrunk: the now-uncovered tail / head holds
+          stale pixels that must come from whatever's underneath in
+          the stack.
         """
         layer = self._stack.find(layer_id)
         if layer is None:
@@ -494,15 +652,84 @@ class MasterFrameCache:
         )
         new_start = layer.master_start
         new_end = layer.master_end
+        prev_state = self._last_known_state.get(layer_id)
+        new_state = (
+            layer.offset, layer.layer_in, layer.layer_out,
+            layer.channel_selection,
+            layer.alpha_composite, layer.alpha_is_straight,
+        )
+
+        # Detect pure-offset shift. Only safe when:
+        #   * trim (in/out) and channel selection are unchanged
+        #   * a single layer is loaded — otherwise the cached pixels
+        #     at old master frames may have come from a different
+        #     layer (whichever was topmost-visible at decode time)
+        #     and shifting them would scramble the composition.
+        is_offset_only = (
+            prev_state is not None
+            and prev_state[0] != new_state[0]            # offset differs
+            and prev_state[1:] == new_state[1:]          # rest equal
+            and len(self._stack) == 1
+        )
+        if is_offset_only:
+            shift = new_state[0] - prev_state[0]
+            self._shift_cached_frames(prev_start, prev_end, shift)
+            self._last_known_range[layer_id] = (new_start, new_end)
+            self._last_known_state[layer_id] = new_state
+            return
+
         # Cover the union so any frame the layer USED to or NOW does
         # cover gets re-decoded.
         invalidate_first = min(prev_start, new_start)
         invalidate_last = max(prev_end, new_end)
         self._invalidate_master_range(invalidate_first, invalidate_last)
-        # Snapshot the new range for the next mutation's diff.
         self._last_known_range[layer_id] = (new_start, new_end)
+        self._last_known_state[layer_id] = new_state
 
     # ------------------------------------------------------------------ Internals
+
+    def _shift_cached_frames(self, old_first: int, old_last: int, shift: int) -> None:
+        """Re-key cached frames in ``[old_first, old_last]`` by ``shift``.
+
+        Used for the pure-offset-shift fast path: instead of dropping
+        every cached frame and re-decoding (= seconds of work for a
+        100-frame layer), we just move each entry from master key F
+        to F + shift. The decoded pixel buffer is unchanged — only
+        the timeline coordinate it answers to.
+
+        Bumps the epoch so any in-flight decode (which captured the
+        OLD master_frame at submit time) gets dropped at store time
+        rather than landing under a now-stale key. The lost in-flight
+        work is much smaller than what we'd otherwise re-decode, so
+        the trade-off is favourable.
+        """
+        if shift == 0 or old_first > old_last:
+            return
+        with self._lock:
+            # Snapshot the entries to move; iterate later to avoid
+            # mutating the dict while iterating it.
+            to_move: list[tuple[int, np.ndarray, bool]] = []
+            for f in list(self._frames.keys()):
+                if old_first <= f <= old_last:
+                    arr = self._frames.pop(f)
+                    is_missing = f in self._missing
+                    self._missing.discard(f)
+                    to_move.append((f, arr, is_missing))
+            # Apply the shift. If a destination key is already
+            # occupied (shouldn't happen with a single-layer stack,
+            # but be defensive) the existing entry wins and the
+            # shifted one is dropped — that frame will simply be
+            # re-decoded by the next prefetch wave.
+            for old_f, arr, is_missing in to_move:
+                new_f = old_f + shift
+                if new_f in self._frames:
+                    if not is_missing:
+                        self._bytes_used -= arr.nbytes
+                    continue
+                self._frames[new_f] = arr
+                if is_missing:
+                    self._missing.add(new_f)
+            self._epoch += 1
 
     def _invalidate_master_range(self, first: int, last: int) -> None:
         """Drop cached frames in ``[first, last]`` + bump epoch so
@@ -534,15 +761,49 @@ class MasterFrameCache:
         if first > last:
             return
         with self._lock:
-            to_drop = [f for f in self._frames if first <= f <= last]
+            # Skip placeholder slots (entries in ``_missing``) — they
+            # represent "this source file is gone from disk", which a
+            # layer-state change (channel selection, trim, offset on
+            # another layer) doesn't undo. Dropping them would just
+            # cost a re-decode that lands on the same placeholder,
+            # AND it would force an epoch bump that ghosts every
+            # in-flight wave-1 decode for this range. The wave-1
+            # workers' keys stay in the pool's ``_pending`` set until
+            # they finish, so the next ``request_range`` (wave 2)
+            # silently dedup-rejects re-submissions for those keys —
+            # the very frames closest to the playhead end up missing
+            # from the cache forever (= viewer black at startup with
+            # sparse-source sequences).
+            to_drop = [
+                f for f in self._frames
+                if first <= f <= last and f not in self._missing
+            ]
             if not to_drop:
                 return
             for f in to_drop:
                 arr = self._frames.pop(f)
-                if f not in self._missing:
-                    self._bytes_used -= arr.nbytes
-                self._missing.discard(f)
+                self._bytes_used -= arr.nbytes
             self._epoch += 1
+
+    def _broadest_layer_size(self) -> tuple[int, int]:
+        """Largest ``(width, height)`` across the stack's layers.
+
+        Used as the missing-placeholder size when the gap is a true
+        no-coverage hole (no layer reaches this master frame) — picking
+        the broadest layer keeps the placeholder visually consistent
+        with whatever else is on screen during playback. Defaults to
+        512² when the stack is empty or every layer reports zero size."""
+        widths: list[int] = []
+        heights: list[int] = []
+        for layer in self._stack.layers():
+            w = layer.sequence.width or 0
+            h = layer.sequence.height or 0
+            if w > 0 and h > 0:
+                widths.append(w)
+                heights.append(h)
+        if not widths:
+            return (512, 512)
+        return (max(widths), max(heights))
 
     def _ensure_index(self, layer: Layer) -> None:
         """Lazy-build the path + mtime indexes for ``layer``.
@@ -561,15 +822,171 @@ class MasterFrameCache:
             fi.frame_number: fi.mtime for fi in layer.sequence.frames
         }
 
-    @staticmethod
-    def _channels_for(layer: Layer) -> list[str] | None:
+    def _channels_for(self, layer: Layer) -> list[str] | None:
         """Per-layer channel selection → flat list for OIIO. ``None``
-        defers to the reader's default (R/G/B/A)."""
+        defers to the reader's default (R/G/B/A).
+
+        When the layer has ``alpha_composite=True`` AND its source
+        actually has an A channel, A is appended to the explicit
+        selection so the over operator has alpha data to work with
+        even if the user's channel menu is locked on "RGB" / "Y" /
+        etc. Per-layer flag means a stack can mix opaque and
+        compositing layers without a single global toggle forcing
+        the wrong choice.
+        """
         sel = layer.channel_selection
         if sel is None:
-            return None
-        union = list(sel.union_channels())
-        return union or None
+            base: list[str] | None = None
+        else:
+            union = list(sel.union_channels())
+            base = union or None
+        if not layer.alpha_composite:
+            return base
+        if "A" not in layer.sequence.channel_names:
+            return base
+        if base is None:
+            return None  # reader default already RGBA
+        if "A" in base:
+            return base
+        return base + ["A"]
+
+    def _submit_composite(
+        self, master_frame: int, layers: list, priority: int,
+    ) -> bool:
+        """Enqueue a multi-layer over-composite decode.
+
+        Resolves each contributing layer's source path + capture
+        the channel selection at submit time so the worker decodes
+        against a stable view of the world. Layers whose source
+        has a hole at this master frame are skipped (they don't
+        contribute) — the layer below shows through the missing
+        slot, which matches the user's mental model of compositing.
+        """
+        plan: list[dict] = []
+        for layer in layers:
+            self._ensure_index(layer)
+            source_frame = layer.source_frame_at(master_frame)
+            path = self._path_index[layer.id].get(source_frame)
+            if path is None:
+                continue  # sparse hole — skip this layer's contribution
+            plan.append({
+                "layer_id": layer.id,
+                "path": path,
+                "channels": self._channels_for(layer),
+                "ph_w": layer.sequence.width or 512,
+                "ph_h": layer.sequence.height or 512,
+                # Per-layer convention so the over operator picks the
+                # right pre-blend conversion for each contributor.
+                "is_straight": bool(layer.alpha_is_straight),
+                # Opaque "floor" layers don't compose — when the walker
+                # hits one, treat it as alpha=1 even if its source has
+                # an A channel.
+                "is_opaque_floor": not layer.alpha_composite,
+            })
+        # User rule: the checker only shows when the bottom contributor
+        # has *no* layer beneath it in the stack (regardless of
+        # coverage at this master frame). If any layer sits below it
+        # in stack order, transparent regions render as solid black
+        # instead — the user has explicitly stacked layers, so the
+        # checker would feel like a stand-in for content that isn't
+        # there. Black is the honest "no contribution here" value.
+        # Implementation: force the bottom plan entry's opaque-floor
+        # flag when its layer isn't the stack's last one.
+        if plan:
+            all_ids = [l.id for l in self._stack.layers()]
+            bottom_id = plan[-1]["layer_id"]
+            if bottom_id in all_ids:
+                stack_idx = all_ids.index(bottom_id)
+                has_below = stack_idx < len(all_ids) - 1
+                if has_below:
+                    plan[-1]["is_opaque_floor"] = True
+        if not plan:
+            # Every layer had a hole at this frame — pre-mark missing.
+            # Use the broadest layer dimensions in the stack so the
+            # placeholder matches the displayed image size instead of a
+            # fixed 512² square (which got letterboxed weirdly when the
+            # actual sequence was 1920×1080 / 4K).
+            ph_w, ph_h = self._broadest_layer_size()
+            with self._lock:
+                placeholder = get_missing_placeholder(ph_w, ph_h)
+                self._frames[master_frame] = placeholder
+                self._missing.add(master_frame)
+            return False
+        return self._pool.submit(
+            priority,
+            master_frame,
+            lambda: self._decode_composited_and_store(master_frame, plan),
+        )
+
+    def _decode_composited_and_store(
+        self, master_frame: int, plan: list[dict],
+    ) -> None:
+        """Worker entry: decode each layer's contribution + over-blend
+        front-to-back. The first plan entry is the topmost.
+
+        Per-entry convention flags:
+        * ``is_straight`` — input RGB is unpremult; multiply by A
+          before the blend so all contributors are premult internally.
+        * ``is_opaque_floor`` — the layer doesn't compose; treat it as
+          fully opaque (force its alpha to 1.0) so layers below are
+          masked. Reached when the walker hit a non-composing layer.
+
+        Math (everything in premult):
+            accum = top + arr * (1 - accum.a)
+        """
+        with self._lock:
+            epoch = self._epoch
+        try:
+            top_plan = plan[0]
+            top = read_frame(top_plan["path"], channels=top_plan["channels"])
+            top = _ensure_rgba(top)
+            if top_plan["is_straight"]:
+                top = _premultiply(top)
+            if top_plan["is_opaque_floor"]:
+                top = _force_alpha_one(top)
+            # Quick opacity check on the centre row to avoid a full
+            # O(WxH) scan when the top is solid; if it's a floor or
+            # already opaque we skip the deeper decodes.
+            if top.shape[0] > 0 and float(top[top.shape[0] // 2, :, 3].min()) >= 1.0 - 1e-3:
+                accum = top
+            else:
+                accum = top.copy()
+                for layer_plan in plan[1:]:
+                    arr = read_frame(layer_plan["path"], channels=layer_plan["channels"])
+                    arr = _ensure_rgba(arr)
+                    if layer_plan["is_straight"]:
+                        arr = _premultiply(arr)
+                    if layer_plan["is_opaque_floor"]:
+                        arr = _force_alpha_one(arr)
+                    inv_a = (1.0 - accum[..., 3:4]).astype(accum.dtype)
+                    accum = accum + arr * inv_a
+                    if float(accum[..., 3].min()) >= 1.0 - 1e-3:
+                        break
+        except FrameReadError as err:
+            log.warning(
+                "composite decode failed master=%d: %s", master_frame, err,
+            )
+            placeholder = get_missing_placeholder(
+                plan[0]["ph_w"], plan[0]["ph_h"],
+            )
+            with self._lock:
+                self._decode_errors += 1
+                if epoch != self._epoch:
+                    return
+                if master_frame in self._frames:
+                    return
+                self._frames[master_frame] = placeholder
+                self._missing.add(master_frame)
+            return
+
+        with self._lock:
+            if epoch != self._epoch:
+                return
+            if master_frame in self._frames:
+                return
+            self._frames[master_frame] = accum
+            self._bytes_used += accum.nbytes
+            self._evict_if_over_budget()
 
     def _decode_and_store(
         self,
@@ -578,6 +995,7 @@ class MasterFrameCache:
         channels: list[str] | None,
         placeholder_w: int,
         placeholder_h: int,
+        strip_alpha: bool = False,
     ) -> None:
         """Worker entry point — runs on a decode thread.
 
@@ -586,6 +1004,14 @@ class MasterFrameCache:
         if the decode fails so the placeholder matches the expected
         resolution and the GL viewport doesn't have to rescale a
         random size.
+
+        ``strip_alpha`` removes the A channel from the decoded buffer
+        before storing — used when the layer is in opaque mode
+        (``alpha_composite=False``) so the GL viewport's checker
+        compositing has nothing to react to. Without this, an EXR /
+        PNG with an alpha channel would still feed the shader an
+        ``alpha < 1`` value and surface the checker even though the
+        user explicitly disabled transparency on the layer.
         """
         with self._lock:
             epoch = self._epoch
@@ -606,6 +1032,12 @@ class MasterFrameCache:
                 self._frames[master_frame] = placeholder
                 self._missing.add(master_frame)
             return
+
+        if strip_alpha and arr.ndim == 3 and arr.shape[2] == 4:
+            # Slice the alpha channel out + ensure the result is
+            # contiguous so the GL upload's ``glTexSubImage2D`` is
+            # happy with the buffer's stride.
+            arr = np.ascontiguousarray(arr[..., :3])
 
         with self._lock:
             if epoch != self._epoch:

@@ -24,7 +24,7 @@ import OpenImageIO as oiio
 from PySide6.QtGui import QImage, QPainter
 
 from img_player.annotate.store import AnnotationStore
-from img_player.export.settings import ExportSettings
+from img_player.export.settings import ExportSettings, MissingFramePolicy
 from img_player.export.stroke_painter import paint_strokes
 from img_player.export.writers.image_seq import output_dtype_for
 from img_player.io.reader import read_frame
@@ -86,6 +86,13 @@ class FrameRenderer:
         else:
             self._writer_dtype = np.dtype(np.uint8)
 
+        # Cache the missing-frame substitute (BLACK or PLACEHOLDER) so
+        # we don't regenerate it for every hole. The placeholder build
+        # runs a Qt painter + numpy chromatic aberration pass per
+        # call; re-running it on a sequence with thousands of missing
+        # frames would dominate the export time.
+        self._missing_substitute_cache: np.ndarray | None = None
+
     @property
     def output_dtype(self) -> np.dtype:
         """The dtype that :meth:`render` returns. Writers assert on it."""
@@ -104,11 +111,22 @@ class FrameRenderer:
         Raises :class:`FileNotFoundError` if ``source_frame`` is a
         hole in the sequence.
         """
-        if source_frame not in self._frame_paths:
-            raise FileNotFoundError(
-                f"Frame {source_frame} missing from sequence"
-            )
         out_w, out_h = output_size
+        if source_frame not in self._frame_paths:
+            policy = self._settings.missing_frame_policy
+            if policy == MissingFramePolicy.ABORT:
+                raise FileNotFoundError(
+                    f"Frame {source_frame} missing from sequence"
+                )
+            log.info(
+                "[export] frame %d missing — substituting (policy=%s)",
+                source_frame, policy.value,
+            )
+            if self._missing_substitute_cache is None:
+                self._missing_substitute_cache = (
+                    self._build_missing_substitute(out_w, out_h, policy)
+                )
+            return self._to_writer_dtype(self._missing_substitute_cache)
         selection = self._ctx.channel_selection
         is_contact_sheet = selection is not None and selection.is_contact_sheet
 
@@ -190,6 +208,34 @@ class FrameRenderer:
         return self._to_writer_dtype(arr)
 
     # ------------------------------------------------------------------ Helpers
+
+    @staticmethod
+    def _build_missing_substitute(
+        out_w: int, out_h: int, policy: MissingFramePolicy,
+    ) -> np.ndarray:
+        """Generate a stand-in float32 RGBA frame for a missing source.
+
+        Honours :class:`MissingFramePolicy`:
+
+        * ``BLACK`` — a solid opaque black frame, sized to the export.
+        * ``PLACEHOLDER`` — the same "MISSING FRAME" visual the live
+          viewer shows in gaps (greyscale damier + chromatic aberration
+          + 4-corner crosshairs + central boxed label + vignette),
+          generated at the export resolution.
+
+        ``ABORT`` is handled upstream in :meth:`render` — this method
+        is only reached for the substitute policies.
+        """
+        if policy == MissingFramePolicy.BLACK:
+            arr = np.zeros((out_h, out_w, 4), dtype=np.float32)
+            arr[..., 3] = 1.0
+            return arr
+        # PLACEHOLDER — delegate to the same generator the cache uses
+        # so live preview and export stay visually consistent.
+        from img_player.cache.missing_frame import (
+            generate_missing_frame_rgba_float,
+        )
+        return generate_missing_frame_rgba_float(out_w, out_h)
 
     @staticmethod
     def _ensure_rgba(arr: np.ndarray) -> np.ndarray:

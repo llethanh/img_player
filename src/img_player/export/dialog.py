@@ -54,6 +54,7 @@ from img_player.export.settings import (
     ExportFormat,
     ExportFormatKind,
     ExportSettings,
+    MissingFramePolicy,
     estimate_size_bytes,
     format_bytes,
     format_by_key,
@@ -226,8 +227,32 @@ class ExportDialog(QDialog):  # type: ignore[misc]
         wh_row.addSpacing(8)
         wh_row.addWidget(QLabel("H:"))
         wh_row.addWidget(self._height_spin)
+        # "Lock aspect" — mirror the source's W:H ratio when the
+        # user types a Custom value. The reference ratio is captured
+        # from the source resolution at dialog-open time so checking
+        # / unchecking the box mid-edit doesn't suddenly retarget on
+        # whatever's currently in the spinboxes (= confusing).
+        wh_row.addSpacing(8)
+        self._lock_aspect_chk = QCheckBox("Lock aspect")
+        self._lock_aspect_chk.setToolTip(
+            "Keep the current W:H ratio while editing one of the "
+            "Custom dimensions. The ratio is captured at the moment "
+            "the box is checked."
+        )
+        self._lock_aspect_chk.toggled.connect(self._on_lock_aspect_toggled)
+        wh_row.addWidget(self._lock_aspect_chk)
         wh_row.addStretch(1)
         res_form.addRow(wh_row)
+        # Reference aspect — recomputed only at construction (and on
+        # ``set_settings`` if we ever surface a settings reload). The
+        # ``_aspect_lock_busy`` flag breaks the value-change feedback
+        # loop when one spinbox programmatically updates the other.
+        self._aspect_ratio: float = (
+            (self._source_w / self._source_h) if self._source_h > 0 else 1.0
+        )
+        self._aspect_lock_busy: bool = False
+        self._width_spin.valueChanged.connect(self._on_width_changed)
+        self._height_spin.valueChanged.connect(self._on_height_changed)
         root.addWidget(res_box)
 
         # --- FPS (video only) ----------------------------------------
@@ -269,6 +294,38 @@ class ExportDialog(QDialog):  # type: ignore[misc]
         )
         ann_layout.addWidget(self._copy_sidecar_chk)
         root.addWidget(ann_box)
+
+        # --- Missing frames -----------------------------------------
+        # Three radio buttons for the three policies. Default keeps
+        # the legacy abort-on-missing behaviour so a half-empty
+        # sequence doesn't silently produce a corrupt-looking export.
+        miss_box = QGroupBox("Missing frames")
+        miss_layout = QVBoxLayout(miss_box)
+        self._missing_policy_group = QButtonGroup(self)
+        self._missing_radio_abort = QRadioButton(
+            "Abort export with an error (default)"
+        )
+        self._missing_radio_black = QRadioButton(
+            "Write a black frame in their place"
+        )
+        self._missing_radio_placeholder = QRadioButton(
+            "Write the \"MISSING FRAME\" placeholder visual"
+        )
+        self._missing_policy_group.addButton(self._missing_radio_abort, 0)
+        self._missing_policy_group.addButton(self._missing_radio_black, 1)
+        self._missing_policy_group.addButton(self._missing_radio_placeholder, 2)
+        miss_layout.addWidget(self._missing_radio_abort)
+        miss_layout.addWidget(self._missing_radio_black)
+        miss_layout.addWidget(self._missing_radio_placeholder)
+        miss_hint = QLabel(
+            "Picks how holes in the source sequence are exported. "
+            "Black / placeholder keep timing intact; abort surfaces "
+            "incomplete data so you don't ship a silent-error file."
+        )
+        miss_hint.setStyleSheet("color: #8A8A8E; font-size: 11px;")
+        miss_hint.setWordWrap(True)
+        miss_layout.addWidget(miss_hint)
+        root.addWidget(miss_box)
 
         # --- Advanced (collapsible) ---------------------------------
         self._advanced_btn = QToolButton()
@@ -386,6 +443,11 @@ class ExportDialog(QDialog):  # type: ignore[misc]
             self._height_spin.setValue(int(s.height))
             self._width_spin.setEnabled(self._res_combo.currentIndex() == len(RESOLUTION_PRESETS) - 1)
             self._height_spin.setEnabled(self._width_spin.isEnabled())
+        # Lock-aspect is only meaningful in Custom — keep it disabled
+        # otherwise so the checkbox can't accidentally drive a preset.
+        self._lock_aspect_chk.setEnabled(
+            self._res_combo.currentIndex() == len(RESOLUTION_PRESETS) - 1
+        )
         # FPS
         if s.fps is None:
             self._fps_combo.setCurrentIndex(0)  # "Source"
@@ -408,6 +470,13 @@ class ExportDialog(QDialog):  # type: ignore[misc]
         self._bake_chk.setChecked(s.bake_annotations)
         self._copy_sidecar_chk.setChecked(s.copy_sidecar)
         self._copy_sidecar_chk.setEnabled(s.bake_annotations)
+        # Missing-frame policy
+        if s.missing_frame_policy == MissingFramePolicy.BLACK:
+            self._missing_radio_black.setChecked(True)
+        elif s.missing_frame_policy == MissingFramePolicy.PLACEHOLDER:
+            self._missing_radio_placeholder.setChecked(True)
+        else:
+            self._missing_radio_abort.setChecked(True)
         # Advanced
         self._jpg_quality_spin.setValue(int(s.jpg_quality))
         idx = self._exr_compression_combo.findText(s.exr_compression)
@@ -455,6 +524,13 @@ class ExportDialog(QDialog):  # type: ignore[misc]
         else:
             fps = FPS_PRESETS[fps_idx][1]
 
+        if self._missing_radio_black.isChecked():
+            missing_policy = MissingFramePolicy.BLACK
+        elif self._missing_radio_placeholder.isChecked():
+            missing_policy = MissingFramePolicy.PLACEHOLDER
+        else:
+            missing_policy = MissingFramePolicy.ABORT
+
         return ExportSettings(
             output_dir=Path(self._out_dir_edit.text().strip() or "."),
             start_frame=int(self._start_frame_spin.value()),
@@ -472,6 +548,7 @@ class ExportDialog(QDialog):  # type: ignore[misc]
             video_crf=int(self._video_crf_spin.value()),
             prores_profile=int(self._prores_profile_combo.currentData() or 3),
             h26x_preset=str(self._h26x_preset_combo.currentText()),
+            missing_frame_policy=missing_policy,
         )
 
     # ------------------------------------------------------------------ Slots
@@ -521,7 +598,63 @@ class ExportDialog(QDialog):  # type: ignore[misc]
             self._height_spin.setValue(int(h) if h else self._source_h)
             self._width_spin.setEnabled(False)
             self._height_spin.setEnabled(False)
+        # Lock-aspect only matters in Custom mode — disable it
+        # elsewhere so the checkbox state can't influence presets.
+        is_custom = idx == len(RESOLUTION_PRESETS) - 1
+        self._lock_aspect_chk.setEnabled(is_custom)
         self._refresh_estimate()
+
+    def _on_lock_aspect_toggled(self, on: bool) -> None:
+        """Capture the current W:H as the reference ratio when the
+        user checks the box. The box is unchecked at construction so
+        this only fires on user interaction."""
+        if not on:
+            return
+        w = self._width_spin.value()
+        h = self._height_spin.value()
+        if w > 0 and h > 0:
+            self._aspect_ratio = w / h
+
+    def _on_width_changed(self, value: int) -> None:
+        """Mirror W → H using the source aspect ratio when locked.
+
+        Skipped when (a) the box isn't checked, (b) we're not in
+        Custom mode (other presets disable the spins anyway, but a
+        programmatic ``setValue`` from preset selection would also
+        fire valueChanged), or (c) we're already inside an aspect
+        update — the inner ``setValue`` would re-emit and ping-pong.
+        """
+        if self._aspect_lock_busy:
+            return
+        if not self._lock_aspect_chk.isChecked():
+            return
+        if self._res_combo.currentIndex() != len(RESOLUTION_PRESETS) - 1:
+            return
+        if self._aspect_ratio <= 0:
+            return
+        new_h = max(2, int(round(value / self._aspect_ratio)))
+        self._aspect_lock_busy = True
+        try:
+            self._height_spin.setValue(new_h)
+        finally:
+            self._aspect_lock_busy = False
+
+    def _on_height_changed(self, value: int) -> None:
+        """Mirror H → W. Symmetric to :meth:`_on_width_changed`."""
+        if self._aspect_lock_busy:
+            return
+        if not self._lock_aspect_chk.isChecked():
+            return
+        if self._res_combo.currentIndex() != len(RESOLUTION_PRESETS) - 1:
+            return
+        if self._aspect_ratio <= 0:
+            return
+        new_w = max(2, int(round(value * self._aspect_ratio)))
+        self._aspect_lock_busy = True
+        try:
+            self._width_spin.setValue(new_w)
+        finally:
+            self._aspect_lock_busy = False
 
     def _on_fps_preset(self, idx: int) -> None:
         if idx == len(FPS_PRESETS) - 1:

@@ -23,7 +23,10 @@ class is iterable in that order.
 
 from __future__ import annotations
 
+import copy
 import logging
+from contextlib import contextmanager
+from dataclasses import dataclass
 from typing import Iterator
 
 from PySide6.QtCore import QObject, Signal
@@ -31,6 +34,29 @@ from PySide6.QtCore import QObject, Signal
 from img_player.layers.models import Layer
 
 log = logging.getLogger(__name__)
+
+
+# History is bounded so a long session of nudges doesn't grow the
+# undo list unboundedly. 100 steps comfortably covers a typical edit
+# session — comparable to most NLEs' default. Each snapshot is a
+# small dict of layer fields, so memory cost is negligible.
+_MAX_HISTORY = 100
+
+
+@dataclass(frozen=True)
+class _StackSnapshot:
+    """Immutable point-in-time of the LayerStack.
+
+    Kept tiny on purpose: a tuple of shallow-copied Layer dataclasses
+    + the focused id. The underlying ``SequenceInfo`` is frozen so
+    sharing the reference across snapshots is safe; only the Layer
+    itself (whose mutable scalars carry edits) is duplicated. Equality
+    is structural — ``__eq__`` walks every layer's fields, used to
+    suppress duplicate "did nothing" pushes from idempotent calls.
+    """
+
+    layers: tuple[Layer, ...]
+    focused_id: str
 
 
 class LayerStack(QObject):  # type: ignore[misc]
@@ -50,11 +76,157 @@ class LayerStack(QObject):  # type: ignore[misc]
     # the side panels) changed. Empty string when no layer is focused
     # (e.g. all layers were removed).
     focus_changed = Signal(str)
+    # Undo / redo availability flipped. Listeners (the Edit menu,
+    # toolbar buttons) read :attr:`can_undo` / :attr:`can_redo` on
+    # receipt to refresh their enabled state.
+    history_changed = Signal()
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._layers: list[Layer] = []
         self._focused_id: str = ""
+        # --- History ---------------------------------------------------
+        # ``_history_enabled`` is flipped off during ``undo`` / ``redo``
+        # restoration so the mutations they perform don't push more
+        # entries onto the undo stack (otherwise undo would be
+        # impossible to escape from).
+        # ``_batch_depth`` lets callers group several mutations into a
+        # single undo step (e.g. "replace sequence" = remove-all +
+        # add-one). The first push inside a batch records the state
+        # BEFORE the batch; further pushes inside the same batch are
+        # suppressed. Re-entrant via :meth:`batch`'s context manager.
+        self._undo_stack: list[_StackSnapshot] = []
+        self._redo_stack: list[_StackSnapshot] = []
+        self._history_enabled: bool = True
+        self._batch_depth: int = 0
+        self._batch_pending_snap: _StackSnapshot | None = None
+
+    # ------------------------------------------------------------------ Mutation
+
+    # ------------------------------------------------------------------ History API
+
+    def can_undo(self) -> bool:
+        return bool(self._undo_stack)
+
+    def can_redo(self) -> bool:
+        return bool(self._redo_stack)
+
+    def undo(self) -> None:
+        """Restore the previous snapshot. No-op if the undo stack is
+        empty. The current state is pushed onto the redo stack so
+        :meth:`redo` can replay it."""
+        if not self._undo_stack:
+            return
+        current = self._snapshot()
+        snap = self._undo_stack.pop()
+        self._redo_stack.append(current)
+        self._restore(snap)
+        self.history_changed.emit()
+
+    def redo(self) -> None:
+        """Inverse of :meth:`undo`."""
+        if not self._redo_stack:
+            return
+        current = self._snapshot()
+        snap = self._redo_stack.pop()
+        self._undo_stack.append(current)
+        self._restore(snap)
+        self.history_changed.emit()
+
+    def clear_history(self) -> None:
+        """Drop both undo + redo stacks. Call when starting a fresh
+        session (loaded a new file from a clean app state) so the
+        user can't undo across unrelated session boundaries."""
+        had_history = bool(self._undo_stack or self._redo_stack)
+        self._undo_stack.clear()
+        self._redo_stack.clear()
+        if had_history:
+            self.history_changed.emit()
+
+    @contextmanager
+    def batch(self):
+        """Group several mutations into a single undo step.
+
+        Use for high-level actions that decompose into many low-level
+        mutations under the hood (e.g. "replace sequence" =
+        remove-every-existing + add-new; "load session" = clear +
+        add-N). The first ``_push_undo`` inside the batch records the
+        state *before* any change; subsequent pushes are suppressed.
+        Re-entrant — nested batches collapse into the outermost one.
+        """
+        self._batch_depth += 1
+        try:
+            yield
+        finally:
+            self._batch_depth -= 1
+            if self._batch_depth == 0 and self._batch_pending_snap is not None:
+                snap = self._batch_pending_snap
+                self._batch_pending_snap = None
+                if not self._undo_stack or self._undo_stack[-1] != snap:
+                    self._undo_stack.append(snap)
+                    if len(self._undo_stack) > _MAX_HISTORY:
+                        self._undo_stack.pop(0)
+                    self._redo_stack.clear()
+                    self.history_changed.emit()
+
+    # ------------------------------------------------------------------ History internals
+
+    def _snapshot(self) -> _StackSnapshot:
+        """Capture the current stack as a ``_StackSnapshot``.
+
+        Layers are shallow-copied (``copy.copy``) — their mutable
+        scalars (offset, layer_in/out, alpha flags, exposure, gamma)
+        are duplicated; the frozen :class:`SequenceInfo` /
+        :class:`ChannelSelection` are shared by reference. Cheap and
+        correct: undo only needs to roll back layer-level state, not
+        the underlying scanned files."""
+        return _StackSnapshot(
+            layers=tuple(copy.copy(layer) for layer in self._layers),
+            focused_id=self._focused_id,
+        )
+
+    def _push_undo(self) -> None:
+        """Record the current state as the next undo target.
+
+        Called by every mutating method *before* it changes anything.
+        Suppressed during ``undo`` / ``redo`` restoration and when a
+        :meth:`batch` is open (the batch records one snapshot total
+        for all the mutations it covers).
+        """
+        if not self._history_enabled:
+            return
+        if self._batch_depth > 0:
+            if self._batch_pending_snap is None:
+                self._batch_pending_snap = self._snapshot()
+            return
+        snap = self._snapshot()
+        if self._undo_stack and self._undo_stack[-1] == snap:
+            return  # idempotent: nothing actually changed
+        self._undo_stack.append(snap)
+        if len(self._undo_stack) > _MAX_HISTORY:
+            self._undo_stack.pop(0)
+        self._redo_stack.clear()
+        self.history_changed.emit()
+
+    def _restore(self, snap: _StackSnapshot) -> None:
+        """Apply a snapshot to the live stack and re-emit signals so
+        every listener (panel, cache, viewport) refreshes."""
+        old_focus = self._focused_id
+        self._history_enabled = False
+        try:
+            # Materialise the snapshot's layers as fresh mutable copies
+            # so future edits don't accidentally write back through to
+            # other snapshots that share the reference.
+            self._layers = [copy.copy(layer) for layer in snap.layers]
+            self._focused_id = snap.focused_id
+        finally:
+            self._history_enabled = True
+        # Composition + per-layer state both potentially changed —
+        # ``layers_changed`` triggers a full panel rebuild + cache
+        # nuke-and-rebuild, which is the right hammer here.
+        self.layers_changed.emit()
+        if self._focused_id != old_focus:
+            self.focus_changed.emit(self._focused_id)
 
     # ------------------------------------------------------------------ Mutation
 
@@ -70,6 +242,7 @@ class LayerStack(QObject):  # type: ignore[misc]
         steal focus mid-edit.
         """
         position = max(0, min(position, len(self._layers)))
+        self._push_undo()
         self._layers.insert(position, layer)
         self.layers_changed.emit()
         if not self._focused_id:
@@ -84,6 +257,7 @@ class LayerStack(QObject):  # type: ignore[misc]
         """
         for i, layer in enumerate(self._layers):
             if layer.id == layer_id:
+                self._push_undo()
                 del self._layers[i]
                 if self._focused_id == layer_id:
                     new_focus = self._layers[0].id if self._layers else ""
@@ -103,6 +277,7 @@ class LayerStack(QObject):  # type: ignore[misc]
             if layer.id == layer_id:
                 if i == new_position:
                     return  # idempotent — no signal
+                self._push_undo()
                 self._layers.pop(i)
                 clamped = max(0, min(new_position, len(self._layers)))
                 self._layers.insert(clamped, layer)
@@ -114,6 +289,7 @@ class LayerStack(QObject):  # type: ignore[misc]
         layer = self._find(layer_id)
         if layer is None:
             return
+        self._push_undo()
         layer.visible = not layer.visible
         self.visibility_changed.emit(layer_id)
 
@@ -122,6 +298,7 @@ class LayerStack(QObject):  # type: ignore[misc]
         layer = self._find(layer_id)
         if layer is None or layer.visible == bool(visible):
             return
+        self._push_undo()
         layer.visible = bool(visible)
         self.visibility_changed.emit(layer_id)
 
@@ -156,13 +333,27 @@ class LayerStack(QObject):  # type: ignore[misc]
         layer = self._find(layer_id)
         if layer is None or not fields:
             return
-        changed = False
+        # Pre-scan to determine whether any field actually changes —
+        # we want one undo entry per *real* edit, not one per call.
+        # This also matches the existing "suppress no-op signals"
+        # contract documented above.
+        will_change = False
         for name, value in fields.items():
             if not hasattr(layer, name):
                 log.warning("LayerStack.update: unknown field %r", name)
                 continue
+            if getattr(layer, name) != value:
+                will_change = True
+                break
+        if not will_change:
+            return
+        self._push_undo()
+        changed = False
+        for name, value in fields.items():
+            if not hasattr(layer, name):
+                continue  # already warned in the pre-scan
             if getattr(layer, name) == value:
-                continue  # no-op; skip the setattr to keep ``changed`` honest
+                continue
             setattr(layer, name, value)
             changed = True
         if changed:
@@ -225,6 +416,23 @@ class LayerStack(QObject):  # type: ignore[misc]
         first = min(layer.master_start for layer in self._layers)
         last = max(layer.master_end for layer in self._layers)
         return (first, last)
+
+    def gap_frames(self) -> frozenset[int]:
+        """Master frames in ``[first, last]`` that no *visible* layer
+        covers. Used by the timeline to paint gaps distinctly from
+        cached / missing frames so the user can tell at a glance
+        why playback would stall there (= nothing to decode rather
+        than slow decode). Hidden layers count as not-covering, so
+        toggling visibility live updates the gap visualisation.
+        """
+        if not self._layers:
+            return frozenset()
+        first, last = self.master_range()
+        gaps: list[int] = []
+        for f in range(first, last + 1):
+            if self.topmost_visible_at(f) is None:
+                gaps.append(f)
+        return frozenset(gaps)
 
     def master_length(self) -> int:
         """Total span of the master timeline in frames."""

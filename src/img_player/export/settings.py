@@ -27,6 +27,29 @@ class ExportFormatKind(Enum):
     VIDEO = "video"
 
 
+class MissingFramePolicy(Enum):
+    """How the engine handles a hole in the source sequence.
+
+    * ``ABORT`` — raise on the first missing frame so the user sees
+      the sequence is incomplete (default — matches the legacy
+      behaviour and surfaces silent data loss).
+    * ``BLACK`` — write a solid black frame at the export resolution.
+      Keeps timing intact for video / contact-sheet review when the
+      user knows there are gaps and just wants the playable file.
+    * ``PLACEHOLDER`` — write the "MISSING FRAME" placeholder visual
+      (greyscale damier + crosshairs + label). Preserves timing AND
+      makes the gap unmistakable on screen — best for review copies.
+    """
+
+    ABORT = "abort"
+    BLACK = "black"
+    PLACEHOLDER = "placeholder"
+
+
+# Allowed string keys for round-trip through QSettings.
+_MISSING_FRAME_POLICY_VALUES = {p.value for p in MissingFramePolicy}
+
+
 @dataclass(frozen=True)
 class ExportFormat:
     """One row in the format catalog.
@@ -296,6 +319,14 @@ class ExportSettings:
     # is "view-only".
     copy_sidecar: bool = False
 
+    # ---- Missing-frame handling -----------------------------------
+    # Default = ABORT to match the legacy behaviour: an incomplete
+    # sequence shouldn't silently produce a corrupt-looking export
+    # unless the user explicitly opts in.
+    missing_frame_policy: "MissingFramePolicy" = field(
+        default_factory=lambda: MissingFramePolicy.ABORT,
+    )
+
     # ---- Format-specific (Advanced) -------------------------------
     jpg_quality: int = 95           # 1..100
     exr_compression: str = "zip"    # one of EXR_COMPRESSIONS
@@ -395,6 +426,7 @@ class ExportSettings:
             "video_crf": self.video_crf,
             "prores_profile": self.prores_profile,
             "h26x_preset": self.h26x_preset,
+            "missing_frame_policy": self.missing_frame_policy.value,
         }
 
     @classmethod
@@ -459,6 +491,13 @@ class ExportSettings:
             video_crf=_safe_int(data.get("video_crf", 18), 18),
             prores_profile=_safe_int(data.get("prores_profile", 3), 3),
             h26x_preset=_safe_str(data.get("h26x_preset", "medium"), "medium"),
+            missing_frame_policy=MissingFramePolicy(
+                _safe_str(
+                    data.get("missing_frame_policy", MissingFramePolicy.ABORT.value),
+                    MissingFramePolicy.ABORT.value,
+                    tuple(_MISSING_FRAME_POLICY_VALUES),
+                )
+            ),
         )
 
     def with_changes(self, **kwargs: object) -> ExportSettings:

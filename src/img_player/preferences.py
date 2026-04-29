@@ -62,6 +62,30 @@ class Preferences:
     def clear_recent(self) -> None:
         self._s.remove("session/recent")
 
+    # ---- Recent .session files (multi-layer setups) -----------------
+    # Same shape as ``recent_paths`` above but for ``.session`` JSON
+    # files (saved multi-layer setups). Kept in a separate QSettings
+    # key so the two recent lists don't bleed into each other in the
+    # File menu.
+
+    def recent_sessions(self) -> list[Path]:
+        raw = self._s.value("session_files/recent", [])
+        if isinstance(raw, str):
+            raw = [raw]
+        if not isinstance(raw, list):
+            return []
+        return [Path(str(p)) for p in raw if p]
+
+    def push_recent_session(self, path: Path) -> None:
+        existing = [str(p) for p in self.recent_sessions()]
+        spath = str(path)
+        existing = [p for p in existing if p != spath]
+        existing.insert(0, spath)
+        self._s.setValue("session_files/recent", existing[:_RECENT_LIMIT])
+
+    def clear_recent_sessions(self) -> None:
+        self._s.remove("session_files/recent")
+
     # ------------------------------------------------------------------ Playback / color
 
     @property
@@ -183,6 +207,31 @@ class Preferences:
     @display_timecode.setter
     def display_timecode(self, value: bool) -> None:
         self._s.setValue("view/display_timecode", bool(value))
+
+    @property
+    def side_panel_visible(self) -> bool:
+        """Whether the right-hand Color/Comments panel is visible.
+
+        Used to live in :meth:`QMainWindow.saveState` (when the panel
+        was a real QDockWidget); promoted to an explicit pref now
+        that the panel is a plain widget nested inside the central
+        layout — saveState doesn't see it anymore.
+        """
+        raw = self._s.value("view/side_panel_visible", True)
+        if isinstance(raw, str):
+            return raw.lower() in ("true", "1", "yes")
+        return bool(raw)
+
+    @side_panel_visible.setter
+    def side_panel_visible(self, value: bool) -> None:
+        self._s.setValue("view/side_panel_visible", bool(value))
+
+    # Transparency / alpha convention previously lived here as global
+    # prefs. They moved to ``Layer.alpha_composite`` /
+    # ``Layer.alpha_is_straight`` (per-layer, auto-detected from the
+    # source extension in ``Layer.from_sequence``). The QSettings
+    # values are now ignored — old keys stay in the user's INI but
+    # nothing reads them.
 
     # ------------------------------------------------------------------ Annotation toolbar (slice 3)
 

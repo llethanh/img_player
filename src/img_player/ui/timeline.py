@@ -50,7 +50,14 @@ class Timeline(QWidget):  # type: ignore[misc]
     set_out_at_requested = Signal(int)
 
     # ---- Geometry (from charter) -------------------------------------
-    MARGIN_X      = 8
+    # MARGIN_X used to be 8 to give edge labels overflow room. With
+    # the :class:`MasterTimelinePanel` composite the timeline widget
+    # shares its x-range with the layer bars (whose ``PADDING_X`` is
+    # 0) — any non-zero MARGIN_X would push the timeline's drawable
+    # half a slot off vs the bars, recreating the misalignment we
+    # just fixed. Edge labels are clamped to widget bounds in
+    # ``_draw_ticks_and_labels`` instead of relying on overflow space.
+    MARGIN_X      = 0
     LABEL_H       = 14
     TICK_TOP      = 14
     TICK_MINOR_H  = 5
@@ -81,9 +88,19 @@ class Timeline(QWidget):  # type: ignore[misc]
         # placeholder) so playback continues; only the colour
         # changes here.
         self._missing_frames: frozenset[int] = frozenset()
+        # Master frames not covered by any visible layer (multi-layer
+        # gaps). Painted distinctly from cached / missing so the user
+        # reads them as "no content" rather than "slow decode".
+        self._gap_frames: frozenset[int] = frozenset()
         self._annotated_frames: frozenset[int] = frozenset()
         self._commented_frames: frozenset[int] = frozenset()
         self._scrubbing = False
+        # Minimal mode: skip every decoration (cache bar, annotation
+        # / comment markers, in-out flags, tick labels) and render
+        # just the range track + playhead. Used by ``MainWindow``'s
+        # fullscreen mode where the user wants a clean review
+        # surface without the review-tool chrome on top.
+        self._minimal_mode: bool = False
         # Drag mode for Ctrl-modified mouse interactions:
         #   None         → normal scrub
         #   "drag_in"    → moving the in-point
@@ -140,6 +157,16 @@ class Timeline(QWidget):  # type: ignore[misc]
         self._missing_frames = frames
         self.update()
 
+    def set_gap_frames(self, frames: frozenset[int]) -> None:
+        """Master frames not covered by any visible layer. Painted in
+        a neutral light grey on the cache bar — distinct from
+        ``cached`` (orange) and ``missing`` (red) so the user reads
+        them as "expected void" rather than a decode failure."""
+        if frames == self._gap_frames:
+            return
+        self._gap_frames = frames
+        self.update()
+
     def set_annotated_frames(self, frames: frozenset[int]) -> None:
         """Frames with at least one annotation stroke. Drives the
         accent-coloured triangle markers above the cache bar.
@@ -149,6 +176,15 @@ class Timeline(QWidget):  # type: ignore[misc]
         if frames == self._annotated_frames:
             return
         self._annotated_frames = frames
+        self.update()
+
+    def set_minimal_mode(self, enabled: bool) -> None:
+        """Toggle the stripped-down rendering used by the fullscreen
+        bottom bar — track + playhead only, no labels / cache bar /
+        annotation markers / etc."""
+        if bool(enabled) == self._minimal_mode:
+            return
+        self._minimal_mode = bool(enabled)
         self.update()
 
     def set_commented_frames(self, frames: frozenset[int]) -> None:
@@ -176,6 +212,18 @@ class Timeline(QWidget):  # type: ignore[misc]
             return
 
         painter.setFont(self._label_font)
+        if self._minimal_mode:
+            # Fullscreen rendering: the user wants frame ticks + the
+            # cache bar (so they can still see what's loaded), plus
+            # the range bar and playhead. The chatty per-frame
+            # markers (annotation triangles, comment dots, in / out
+            # flags) stay off — they add visual noise on top of the
+            # full-frame image content.
+            self._draw_ticks_and_labels(painter)
+            self._draw_range_bar(painter)
+            self._draw_playhead(painter)
+            self._draw_cache_bar(painter)
+            return
         self._draw_ticks_and_labels(painter)
         self._draw_range_bar(painter)
         self._draw_in_out_markers(painter)
@@ -184,19 +232,26 @@ class Timeline(QWidget):  # type: ignore[misc]
         self._draw_annotation_markers(painter)
         self._draw_comment_markers(painter)
 
+
     def _usable_width(self) -> int:
         return max(1, int(self.width() - 2 * self.MARGIN_X))
 
     def _total_frames(self) -> int:
-        return max(1, self._last - self._first + 1)
+        # "Frame as point" — see BarGeometry for the rationale. Length
+        # is the number of intervals between first and last, not the
+        # count of frames, so ``frame_to_x(first) == MARGIN_X`` and
+        # ``frame_to_x(last) == MARGIN_X + usable_width`` exactly,
+        # aligning the timeline's tick endpoints with the layer bar's
+        # fill endpoints below.
+        return max(1, self._last - self._first)
 
     def _frame_to_x(self, frame: int) -> float:
         ppf = self._usable_width() / self._total_frames()
-        return self.MARGIN_X + (frame - self._first + 0.5) * ppf
+        return self.MARGIN_X + (frame - self._first) * ppf
 
     def _x_to_frame(self, x: float) -> int:
         ppf = self._usable_width() / self._total_frames()
-        raw = round((x - self.MARGIN_X) / ppf - 0.5 + self._first)
+        raw = round((x - self.MARGIN_X) / ppf + self._first)
         return max(self._first, min(self._last, raw))
 
     def _tick_spacings(self) -> tuple[int, int]:
@@ -238,6 +293,9 @@ class Timeline(QWidget):  # type: ignore[misc]
                 label = self._format_label(frame)
                 label_w = metrics.horizontalAdvance(label)
                 lx = x - label_w // 2
+                # Clamp into widget bounds so edge labels (frame_first
+                # / frame_last with MARGIN_X==0) don't get clipped.
+                lx = max(0, min(int(self.width()) - label_w, lx))
                 if lx - last_label_x > label_w + 8:
                     painter.setPen(C.TICK_LABEL)
                     painter.drawText(lx, label_y, label)
@@ -247,8 +305,10 @@ class Timeline(QWidget):  # type: ignore[misc]
                 painter.drawLine(x, tick_baseline, x, tick_baseline + self.TICK_MINOR_H)
 
     def _draw_range_bar(self, painter: QPainter) -> None:
-        in_x  = self._frame_to_x(self._in_frame  if self._in_frame  is not None else self._first)
-        out_x = self._frame_to_x(self._out_frame if self._out_frame is not None else self._last)
+        in_frame = self._in_frame if self._in_frame is not None else self._first
+        out_frame = self._out_frame if self._out_frame is not None else self._last
+        in_x = self._frame_to_x(in_frame)
+        out_x = self._frame_to_x(out_frame)
         if out_x <= in_x:
             return
         rect = QRectF(in_x, self.RANGE_Y, out_x - in_x, self.RANGE_H)
@@ -306,10 +366,19 @@ class Timeline(QWidget):  # type: ignore[misc]
         bar_rect = QRectF(self.MARGIN_X, self.CACHE_TOP, self._usable_width(), self.CACHE_H)
         painter.fillRect(bar_rect, C.CACHE_BAR_BG)
 
+        # Pass 0 — light-grey runs for multi-layer gaps. Drawn first
+        # so the orange / red runs paint over them if a frame ever
+        # ended up in both sets (shouldn't happen — a gap can't be
+        # cached — but the order keeps the colour priority obvious).
+        if self._gap_frames:
+            painter.setBrush(QColor(160, 160, 160, 110))
+            painter.setPen(QPen(QColor("#909090"), 1))
+            self._draw_runs(painter, self._gap_frames)
+
         # Pass 1 — orange runs of *real* cached frames (cached minus
         # missing). Drawn first so the red "missing" run lands on top
         # if both states ever overlap.
-        ok_cached = self._cached_frames - self._missing_frames
+        ok_cached = self._cached_frames - self._missing_frames - self._gap_frames
         if ok_cached:
             painter.setBrush(C.CACHE_BAR)
             painter.setPen(QPen(C.CACHE_BAR_BORDER, 1))
