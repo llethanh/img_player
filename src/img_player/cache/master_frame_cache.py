@@ -411,16 +411,33 @@ class MasterFrameCache:
             return master_frame in self._frames
 
     def is_gap_frame(self, master_frame: int) -> bool:
-        """True when no visible layer covers this master frame.
+        """True when this cache will never decode for this master frame.
 
-        Lets the controller distinguish "cache miss because nothing
-        covers" (= advance through, viewport will paint black) from
-        "cache miss because decode hasn't landed yet" (= stall the
-        playhead until the worker catches up). Without this, playback
-        freezes at every multi-layer gap, which the user reads as a
-        bug rather than an intentional void.
+        Two cases qualify as "gap" from the controller's perspective:
+
+        1. **No visible layer covers the frame** — the multi-layer
+           void between two clips, or before/after the only layer.
+           The viewport paints black; the playhead must advance
+           through (otherwise it freezes at the void edge).
+        2. **The topmost-visible layer is video** — video layers
+           bypass this cache entirely (pixels come from
+           :class:`VideoSourceManager`), so ``cache.contains`` will
+           never be true for them. Without this carve-out, the
+           controller's "stall when not cached" guard fires forever
+           and play() doesn't advance the playhead through video
+           clips.
+
+        The shared semantic is "the cache has nothing to say about
+        this frame" — the viewport's frame_changed handler is what
+        produces pixels (gap placeholder for case 1, video decode
+        for case 2).
         """
-        return self._stack.topmost_visible_at(master_frame) is None
+        top = self._stack.topmost_visible_at(master_frame)
+        if top is None:
+            return True
+        if getattr(top, "is_video", False):
+            return True
+        return False
 
     def cached_frames(self) -> frozenset[int]:
         """Snapshot of currently cached master-frame indices."""
