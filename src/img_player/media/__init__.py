@@ -21,10 +21,12 @@ from img_player.media.video_probe import (
     is_video_file,
     probe_video,
 )
+from img_player.media.video_source import VideoSource
 
 __all__ = [
     "VIDEO_EXTENSIONS",
     "VideoMetadata",
+    "VideoSource",
     "is_video_file",
     "probe_video",
 ]
