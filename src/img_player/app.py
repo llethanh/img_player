@@ -2201,30 +2201,61 @@ class ImgPlayerApp:
             return
 
         layer = Layer.from_video(metadata)
-        # Wipe the previous stack in one batched undo step. Mirrors
-        # the "load sequence" semantic: a fresh open replaces, doesn't
-        # accumulate.
+        # Detach the cache first — without this the previous sequence's
+        # prefetch keeps walking image paths in the background while
+        # we swap in a video layer the cache can't decode.
+        self._cache.detach()
+        # Wipe the previous stack in one batched undo step, then add
+        # the video layer. We do NOT call ``controller.load_sequence``
+        # because that calls ``cache.attach(sequence)`` which would
+        # rebuild a *image-sequence* Layer wrapping the synthetic
+        # video sequence — clobbering our Layer.from_video and
+        # pointing the cache's path index at the .mp4 container.
+        # Instead, push the controller's sequence + navigable range
+        # directly, then re-emit a synthetic frame_changed so the
+        # viewport renders the first video frame.
         with self._layer_stack.batch():
             for existing in tuple(self._layer_stack):
                 self._layer_stack.remove(existing.id)
             self._layer_stack.add(layer, position=0)
             self._layer_stack.set_focus(layer.id)
-        # The controller needs a sequence to drive the transport — the
-        # synthetic one we attached to the layer plays that role.
-        # ``load_sequence`` resets the playhead to first_frame and
-        # broadcasts state_changed, which is exactly what we want.
-        self._controller.load_sequence(layer.sequence)
+        # Bypass ``controller.load_sequence`` (which would re-attach
+        # the cache and re-create an image-sequence layer). Directly
+        # seed the private state instead — the controller's invariant
+        # is that ``self._sequence`` describes a frame range; the
+        # synthetic sequence does. Bounds come from the video layer's
+        # master range so play / scrub honour the clip length.
+        from dataclasses import replace
+        self._controller._sequence = layer.sequence  # type: ignore[attr-defined]
+        self._controller._state = replace(  # type: ignore[attr-defined]
+            self._controller._state,  # type: ignore[attr-defined]
+            current_frame=layer.master_start,
+            is_playing=False,
+            in_frame=None,
+            out_frame=None,
+            dropped_frames=0,
+        )
+        self._controller.set_navigable_range(
+            layer.master_start, layer.master_end,
+        )
         # Default playback FPS to the video's native rate so the
         # session FPS combo reads "23.976" / "29.97" / etc.
         if metadata.fps is not None:
             self._controller.set_fps(float(metadata.fps))
+        # Broadcast the state we just installed by hand so transport,
+        # timeline, layer panel etc. all rebind to the new clip.
+        self._controller.state_changed.emit(self._controller._state)  # type: ignore[attr-defined]
+        self._controller.frame_changed.emit(layer.master_start)
         self._window.update_sequence_info(layer.sequence)
-        self._window.set_status(
-            f"Loaded video {path.name} "
-            f"({metadata.width}×{metadata.height}, "
-            f"{float(metadata.fps):.3f} fps, {metadata.frame_count} frames)"
-            if metadata.fps else f"Loaded video {path.name}"
-        )
+        if metadata.fps is not None:
+            self._window.set_status(
+                f"Loaded video {path.name} "
+                f"({metadata.width}×{metadata.height}, "
+                f"{float(metadata.fps):.3f} fps, "
+                f"{metadata.frame_count} frames)"
+            )
+        else:
+            self._window.set_status(f"Loaded video {path.name}")
 
     def _is_replace_destructive(self) -> bool:
         """True when a Replace would wipe state the user might want

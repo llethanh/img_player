@@ -460,9 +460,16 @@ class MasterFrameCache:
         # everything below). If the topmost is itself opaque we
         # short-circuit to the single-decode fast path — no point
         # walking a plan of one layer through the composite worker.
+        #
+        # Video-backed layers are excluded here: video pixels come
+        # from :class:`VideoSourceManager` (PyAV), not from this
+        # OIIO-driven cache. Including them would point the path
+        # index at the .mp4 container and the OIIO reader would log
+        # noisy "unsupported format" errors on every prefetch tick.
         visible = [
             layer for layer in self._stack.layers()
             if layer.visible and layer.covers(master_frame)
+            and not getattr(layer, "is_video", False)
         ]
         if not visible:
             return False
