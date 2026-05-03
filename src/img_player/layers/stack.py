@@ -100,6 +100,17 @@ class LayerStack(QObject):  # type: ignore[misc]
         self._history_enabled: bool = True
         self._batch_depth: int = 0
         self._batch_pending_snap: _StackSnapshot | None = None
+        # Signal coalescing during a batch — defer ``layers_changed``
+        # emits to the batch exit. Without this, a multi-step
+        # operation like a multi-select reorder (which calls
+        # ``reorder`` N times in a batch) fires N signals → N cache
+        # invalidations → N panel rebuilds. Each pass invalidates
+        # frames whose chain transiently changed in an intermediate
+        # state, so cached frames whose FINAL chain is identical to
+        # the original get dropped anyway. Coalescing into a single
+        # emit at batch exit ensures listeners only see the start
+        # vs end states.
+        self._batch_layers_changed_pending: bool = False
 
     # ------------------------------------------------------------------ Mutation
 
@@ -143,6 +154,21 @@ class LayerStack(QObject):  # type: ignore[misc]
         if had_history:
             self.history_changed.emit()
 
+    def _emit_layers_changed(self) -> None:
+        """Emit ``layers_changed`` immediately, OR mark it as pending
+        if a batch is currently active.
+
+        Single source of truth for the signal — replaces direct
+        ``self.layers_changed.emit()`` calls in mutating methods.
+        Inside a batch, listeners see exactly one signal at exit
+        instead of one per mutation, which lets the cache compare
+        original-vs-final chains rather than per-step intermediates.
+        """
+        if self._batch_depth > 0:
+            self._batch_layers_changed_pending = True
+        else:
+            self.layers_changed.emit()
+
     @contextmanager
     def batch(self):
         """Group several mutations into a single undo step.
@@ -159,15 +185,24 @@ class LayerStack(QObject):  # type: ignore[misc]
             yield
         finally:
             self._batch_depth -= 1
-            if self._batch_depth == 0 and self._batch_pending_snap is not None:
-                snap = self._batch_pending_snap
-                self._batch_pending_snap = None
-                if not self._undo_stack or self._undo_stack[-1] != snap:
-                    self._undo_stack.append(snap)
-                    if len(self._undo_stack) > _MAX_HISTORY:
-                        self._undo_stack.pop(0)
-                    self._redo_stack.clear()
-                    self.history_changed.emit()
+            if self._batch_depth == 0:
+                if self._batch_pending_snap is not None:
+                    snap = self._batch_pending_snap
+                    self._batch_pending_snap = None
+                    if not self._undo_stack or self._undo_stack[-1] != snap:
+                        self._undo_stack.append(snap)
+                        if len(self._undo_stack) > _MAX_HISTORY:
+                            self._undo_stack.pop(0)
+                        self._redo_stack.clear()
+                        self.history_changed.emit()
+                # Flush the deferred ``layers_changed`` if any
+                # mutation happened during the batch. A single emit
+                # = listeners see one start→end transition, the
+                # cache's chain comparison runs once and skips
+                # transient intermediate states.
+                if self._batch_layers_changed_pending:
+                    self._batch_layers_changed_pending = False
+                    self.layers_changed.emit()
 
     # ------------------------------------------------------------------ History internals
 
@@ -224,7 +259,7 @@ class LayerStack(QObject):  # type: ignore[misc]
         # Composition + per-layer state both potentially changed —
         # ``layers_changed`` triggers a full panel rebuild + cache
         # nuke-and-rebuild, which is the right hammer here.
-        self.layers_changed.emit()
+        self._emit_layers_changed()
         if self._focused_id != old_focus:
             self.focus_changed.emit(self._focused_id)
 
@@ -244,7 +279,7 @@ class LayerStack(QObject):  # type: ignore[misc]
         position = max(0, min(position, len(self._layers)))
         self._push_undo()
         self._layers.insert(position, layer)
-        self.layers_changed.emit()
+        self._emit_layers_changed()
         if not self._focused_id:
             self.set_focus(layer.id)
 
@@ -263,7 +298,7 @@ class LayerStack(QObject):  # type: ignore[misc]
                     new_focus = self._layers[0].id if self._layers else ""
                     self._focused_id = new_focus
                     self.focus_changed.emit(new_focus)
-                self.layers_changed.emit()
+                self._emit_layers_changed()
                 return
 
     def reorder(self, layer_id: str, new_position: int) -> None:
@@ -281,7 +316,7 @@ class LayerStack(QObject):  # type: ignore[misc]
                 self._layers.pop(i)
                 clamped = max(0, min(new_position, len(self._layers)))
                 self._layers.insert(clamped, layer)
-                self.layers_changed.emit()
+                self._emit_layers_changed()
                 return
 
     def toggle_visible(self, layer_id: str) -> None:

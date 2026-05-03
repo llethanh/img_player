@@ -155,8 +155,19 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _resolve_tune(args: argparse.Namespace) -> PerformanceTune:
+def _resolve_tune(
+    args: argparse.Namespace,
+) -> tuple[PerformanceTune, PerformanceTune]:
     """Run the auto-tune pipeline for these CLI args.
+
+    Returns ``(after_cli, final)``:
+    * ``after_cli`` — pre-runtime-constraint tune (compute_tune + profile +
+      CLI overrides). The "ceiling" the user explicitly asked for. Passed
+      to the app so the per-session re-tune can recompute the cache
+      budget against fresh ``RuntimeState`` whenever the user opens a
+      new project.
+    * ``final`` — post-runtime-constraint tune. The actual values applied
+      this boot (cache may be clamped if RAM was tight at launch).
 
     At boot time the GL context isn't alive yet, so we pass
     ``gpu_renderer=None`` — that yields ``gpu_kind="unknown"`` and
@@ -205,7 +216,7 @@ def _resolve_tune(args: argparse.Namespace) -> PerformanceTune:
     log_runtime_state(state, after_cli, final)
 
     log_applied_tune(final)
-    return final
+    return after_cli, final
 
 
 # ----------------------------------------------------------------------------
@@ -236,7 +247,7 @@ def main(argv: list[str] | None = None) -> int:
     # (8 GB cache, 6 workers, 1 OIIO thread) are now produced as a
     # special case of compute_tune() when gpu_kind is "unknown" —
     # which it is at this stage, before the GL context is alive.
-    tune = _resolve_tune(args)
+    after_cli_tune, tune = _resolve_tune(args)
 
     budget = int(tune.cache_gb * 1024**3)
     workers = tune.num_workers
@@ -273,6 +284,7 @@ def main(argv: list[str] | None = None) -> int:
         num_workers=workers,
         oiio_threads=oiio_threads,
         cli_args=args,
+        boot_tune=after_cli_tune,
     )
 
 

@@ -164,6 +164,22 @@ class LayerBar(QWidget):  # type: ignore[misc]
     # Carrying the layer id lets the LayerPanel route to LayerStack
     # without scanning rows.
     offset_changed = Signal(str, int)         # (layer_id, new_offset)
+    # Live preview during a body drag — fires on every mouseMove that
+    # advances the offset. The panel listens to propagate the delta
+    # to peer bars in a multi-select group, so the user sees the
+    # whole group slide in real time instead of only the dragged bar.
+    # Cleared on release (``offset_changed``) or drag cancel.
+    offset_preview_changed = Signal(str, int)  # (layer_id, preview_offset)
+    # Cleared after offset_changed / drag cancel — panel resets peer
+    # previews. Emitted with the source layer id so the panel knows
+    # which group to clean up.
+    offset_preview_cleared = Signal(str)
+    # Mirror of :attr:`LayerRow.row_clicked` — the panel uses it to
+    # drive the multi-select state machine even when the press lands
+    # on the bar's body / handles (which ``accept()`` the event and
+    # so don't bubble back to the row's own ``mousePressEvent``).
+    # ``kind`` is one of ``"single"`` / ``"ctrl"`` / ``"shift"``.
+    row_clicked = Signal(str, str)
     # IN handle drag: standard NLE convention — the LEFT edge of the
     # visible bar moves while the RIGHT edge stays put. That requires
     # changing both ``layer_in`` and ``offset`` by the same delta in
@@ -213,6 +229,25 @@ class LayerBar(QWidget):  # type: ignore[misc]
         self._drag_preview_offset: int | None = None
         self._drag_preview_layer_in: int | None = None
         self._drag_preview_layer_out: int | None = None
+        # External preview offset pushed by the panel during a peer's
+        # drag (= "this bar is part of a multi-select group, the user
+        # is dragging another bar in the group, here's what your
+        # offset should look like during that drag"). Takes priority
+        # over the local committed offset in paint, but yields to the
+        # local ``_drag_preview_offset`` when this bar is itself
+        # being dragged. Cleared by the panel on the source bar's
+        # commit / cancel.
+        self._external_preview_offset: int | None = None
+        # Multi-select membership flag — set by the panel via
+        # ``set_in_selection``. Drives the deferred-single-click
+        # logic: pressing on a bar that's already part of the group
+        # without a modifier could be the start of a drag (move whole
+        # group) or a plain click (demote to just this layer). We
+        # defer the ``row_clicked("single")`` emit to mouseRelease so
+        # the disambiguation happens only after we know whether a
+        # drag took place.
+        self._in_selection: bool = False
+        self._pending_single_click: bool = False
         # Capture the press position so we can detect "click without
         # drag" (= focus, no offset change) by checking total motion.
         # ``_drag_start_y`` is also used to detect vertical-dominant
@@ -269,6 +304,27 @@ class LayerBar(QWidget):  # type: ignore[misc]
         """Other layers' master_start / master_end edges to snap against."""
         self._snap_edges = list(edges)
 
+    def set_external_preview_offset(self, offset: int | None) -> None:
+        """Push a preview offset coming from a peer's drag (multi-
+        select group). ``None`` clears the override and the bar
+        paints at its committed offset again. Cheap — just updates
+        a member and triggers a repaint."""
+        if offset == self._external_preview_offset:
+            return
+        self._external_preview_offset = offset
+        self.update()
+
+    def set_in_selection(self, on: bool) -> None:
+        """Set the multi-select membership flag for this bar.
+
+        Drives the deferred-single-click logic in
+        :meth:`mousePressEvent` / :meth:`mouseReleaseEvent`. The
+        panel calls this in lockstep with ``LayerRow.set_selected``
+        so press-without-drag on a grouped layer correctly demotes
+        the selection to just that layer at release time.
+        """
+        self._in_selection = bool(on)
+
     # ------------------------------------------------------------------ Painting
 
     def paintEvent(self, event: QPaintEvent) -> None:
@@ -276,9 +332,14 @@ class LayerBar(QWidget):  # type: ignore[misc]
         geom = self._geometry()
         layer = self._layer
         # Apply preview values when dragging so the visual moves
-        # with the mouse before the commit.
-        offset = self._drag_preview_offset
-        if offset is None:
+        # with the mouse before the commit. Local drag preview wins
+        # over external (= "I'm being actively dragged"), and either
+        # wins over the committed layer.offset.
+        if self._drag_preview_offset is not None:
+            offset = self._drag_preview_offset
+        elif self._external_preview_offset is not None:
+            offset = self._external_preview_offset
+        else:
             offset = layer.offset
         layer_in = self._drag_preview_layer_in
         if layer_in is None:
@@ -383,16 +444,44 @@ class LayerBar(QWidget):  # type: ignore[misc]
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() != Qt.MouseButton.LeftButton:
             return
+        # Capture modifiers FIRST so the panel's selection state
+        # machine sees the click before the drag setup decides what
+        # to do with it. Without this, dragging a non-selected
+        # layer's body would skip "replace selection with this
+        # layer" (the bar accepts the event, so the row's own
+        # mousePressEvent never sees it).
+        mods = event.modifiers()
+        if mods & Qt.KeyboardModifier.ShiftModifier:
+            click_kind = "shift"
+        elif mods & Qt.KeyboardModifier.ControlModifier:
+            click_kind = "ctrl"
+        else:
+            click_kind = "single"
+        self._pending_single_click = False
+        if click_kind == "single" and self._in_selection:
+            # Defer: a press on an already-grouped bar might still
+            # become a drag (move whole group) or a plain click
+            # (demote selection). Wait for mouseRelease /
+            # mouseMove to disambiguate. Without this, the panel
+            # would shrink the selection to {id} on press and the
+            # subsequent drag would only move one bar.
+            self._pending_single_click = True
+        else:
+            self.row_clicked.emit(self._layer.id, click_kind)
         x = event.position().x()
         kind = self._hit_test(x)
-        # Click landed on the row's bar widget but outside the layer's
-        # actual range (= empty track area before / after the coloured
-        # fill). Treat as a plain "select this layer" gesture — same
-        # outcome as clicking the row body — and don't start a drag.
+        # ``None`` means the click landed outside the layer's actual
+        # range (= empty track area before / after the coloured
+        # fill). Pre-v1.0.x we bailed out of the drag here, so the
+        # user could only grab the layer where the orange fill was —
+        # awkward when the layer was short or sat near the timeline
+        # edge. Treat the entire bar width as a "body" hit so the
+        # user can drag from anywhere along the row's length. The
+        # offset math is identical: it computes the cursor delta in
+        # master frames and applies it to ``_drag_start_layer_offset``,
+        # which is independent of where on the bar the press landed.
         if kind is None:
-            self.focus_requested.emit(self._layer.id)
-            event.accept()
-            return
+            kind = "body"
         self._drag_kind = kind
         self._drag_start_x = x
         self._drag_start_y = event.position().y()
@@ -434,6 +523,7 @@ class LayerBar(QWidget):  # type: ignore[misc]
         ):
             # Reset preview so the bar paints back at its committed
             # position while the QDrag pixmap takes over.
+            was_body_drag = (self._drag_kind == "body")
             self._drag_kind = None
             self._drag_preview_offset = None
             self._drag_preview_layer_in = None
@@ -441,11 +531,19 @@ class LayerBar(QWidget):  # type: ignore[misc]
             self._has_moved = False
             self.setCursor(Qt.CursorShape.PointingHandCursor)
             self.update()
+            # Cancel any peer previews that were set during the
+            # body-drag we just abandoned in favour of a reorder drag.
+            if was_body_drag:
+                self.offset_preview_cleared.emit(self._layer.id)
             self.reorder_drag_requested.emit(event.globalPosition().toPoint())
             event.accept()
             return
         if dx > 1.0:
             self._has_moved = True
+            # Drag underway → cancel any deferred single-click
+            # demote. Without this, releasing after a drag would
+            # also shrink the selection at release time.
+            self._pending_single_click = False
         geom = self._geometry()
         delta_frames = geom.x_to_frame(x) - geom.x_to_frame(self._drag_start_x)
         snap_dist = self._snap_distance_in_frames(geom)
@@ -457,6 +555,11 @@ class LayerBar(QWidget):  # type: ignore[misc]
                 snap_dist,
             )
             self._drag_preview_offset = new_offset
+            # Live preview hook — the panel uses this to slide every
+            # peer bar in a multi-select group in lockstep with the
+            # dragged one. Without this signal, peers would only
+            # snap to their new positions on release.
+            self.offset_preview_changed.emit(self._layer.id, int(new_offset))
         elif self._drag_kind == "in":
             # Standard NLE in-trim: the LEFT edge of the bar moves,
             # the right edge stays where it is. That means BOTH
@@ -520,6 +623,12 @@ class LayerBar(QWidget):  # type: ignore[misc]
         kind = self._drag_kind
         if not self._has_moved:
             # Pure click → emit focus request. No mutation.
+            # If a deferred single-click was pending (= the user
+            # pressed on a grouped bar without a modifier and
+            # didn't drag), fire it NOW: that's the "demote to
+            # this one layer" intent the deferred logic exists for.
+            if self._pending_single_click:
+                self.row_clicked.emit(self._layer.id, "single")
             self.focus_requested.emit(self._layer.id)
         else:
             if kind == "body" and self._drag_preview_offset is not None:
@@ -544,13 +653,20 @@ class LayerBar(QWidget):  # type: ignore[misc]
                     self._layer.id, int(self._drag_preview_layer_out),
                 )
         # Reset.
+        was_body_drag = (kind == "body")
         self._drag_kind = None
         self._drag_preview_offset = None
         self._drag_preview_layer_in = None
         self._drag_preview_layer_out = None
         self._has_moved = False
+        self._pending_single_click = False
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.update()
+        # Tell the panel to drop any peer previews it set during the
+        # drag. Done AFTER the offset_changed emit so the cascade
+        # handler reads the committed delta from a clean state.
+        if was_body_drag:
+            self.offset_preview_cleared.emit(self._layer.id)
         event.accept()
 
     # ------------------------------------------------------------------ Internals

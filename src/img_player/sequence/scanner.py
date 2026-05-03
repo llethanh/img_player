@@ -4,12 +4,29 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from img_player.io.formats import is_supported
 from img_player.io.reader import FrameReadError, read_header
 from img_player.sequence.models import FrameInfo, SequenceInfo
+
+
+@dataclass(frozen=True)
+class FolderGroup:
+    """A bucket of sequences for the multi-source picker.
+
+    ``folder`` is ``None`` when the group is filled from raw files
+    dropped on the player (loose files appear at the root of the
+    picker, with no folder header). ``empty`` flags a folder the user
+    dropped that contained zero detectable sequences — kept in the
+    result so the picker can render a greyed entry rather than
+    silently swallowing the drop.
+    """
+
+    folder: Path | None
+    sequences: tuple[SequenceInfo, ...] = field(default_factory=tuple)
+    empty: bool = False
 
 _FRAME_PATTERN = re.compile(r"^(.*?)(\d+)\.([^.]+)$")
 
@@ -178,6 +195,93 @@ def _scan_from_file(file: Path, *, probe: bool = True) -> SequenceInfo:
         height=height,
         channel_names=channels,
     )
+
+
+def scan_paths(
+    paths: list[Path] | tuple[Path, ...], *, probe: bool = False,
+) -> list[FolderGroup]:
+    """Scan a heterogeneous drop (folders + loose files) into groups.
+
+    Behaviour
+    ---------
+    * For every directory in ``paths``: enumerate sequences at level 1
+      only (no recursion into sub-folders) — produces one
+      :class:`FolderGroup` per directory, possibly with ``empty=True``
+      when nothing was detected.
+    * For every file in ``paths``: resolve its sequence via
+      :func:`scan` and add it to the special "loose files" group whose
+      ``folder`` is ``None``. Multiple loose files that resolve to the
+      same sequence are de-duplicated.
+
+    Sort order: the loose group comes first (None header), then the
+    folder groups sorted alphabetically by folder name. Within each
+    group, sequences are sorted alphabetically by display pattern.
+    Missing paths are silently skipped — the picker can't show a
+    folder that doesn't exist.
+    """
+    folder_to_seqs: dict[Path, list[SequenceInfo]] = {}
+    folder_seen_keys: dict[Path, set[tuple[str, int, str]]] = {}
+    loose: list[SequenceInfo] = []
+    loose_seen_keys: set[tuple[str, int, str, Path]] = set()
+    empty_folders: set[Path] = set()
+
+    for raw in paths:
+        p = Path(raw)
+        if p.is_dir():
+            try:
+                seqs = scan_all(p, probe=probe)
+            except SequenceNotFoundError:
+                seqs = []
+            if not seqs:
+                empty_folders.add(p)
+                folder_to_seqs.setdefault(p, [])
+                folder_seen_keys.setdefault(p, set())
+                continue
+            keys = folder_seen_keys.setdefault(p, set())
+            bucket = folder_to_seqs.setdefault(p, [])
+            for s in seqs:
+                k = (s.base_name, s.padding, s.extension.lstrip(".").lower())
+                if k in keys:
+                    continue
+                keys.add(k)
+                bucket.append(s)
+        elif p.is_file():
+            try:
+                seq = scan(p, probe=probe)
+            except SequenceNotFoundError:
+                continue
+            k = (
+                seq.base_name,
+                seq.padding,
+                seq.extension.lstrip(".").lower(),
+                seq.directory,
+            )
+            if k in loose_seen_keys:
+                continue
+            loose_seen_keys.add(k)
+            loose.append(seq)
+        # else: vanished path — skip.
+
+    groups: list[FolderGroup] = []
+    if loose:
+        loose_sorted = tuple(
+            sorted(loose, key=lambda s: s.display_pattern().lower())
+        )
+        groups.append(FolderGroup(folder=None, sequences=loose_sorted))
+
+    for folder in sorted(folder_to_seqs.keys(), key=lambda p: p.name.lower()):
+        seqs = folder_to_seqs[folder]
+        seqs_sorted = tuple(
+            sorted(seqs, key=lambda s: s.display_pattern().lower())
+        )
+        groups.append(
+            FolderGroup(
+                folder=folder,
+                sequences=seqs_sorted,
+                empty=(folder in empty_folders and not seqs_sorted),
+            )
+        )
+    return groups
 
 
 def _scan_from_dir(directory: Path, *, probe: bool = True) -> SequenceInfo:

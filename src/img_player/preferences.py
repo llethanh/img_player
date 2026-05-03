@@ -336,6 +336,34 @@ class Preferences:
             return
         self._s.setValue("ephemeral/duration_preset", v)
 
+    # ------------------------------------------------------------------ Pen stabilizer (Lazy Mouse)
+
+    @property
+    def pen_stabilizer_level(self) -> int:
+        """Index of the pen stabilizer (Lazy Mouse) preset.
+
+        ``0`` = off (default — line follows the cursor exactly),
+        ``1`` = medium (light filtering of hand tremor),
+        ``2`` = strong (line trails noticeably behind the cursor for
+        ultra-clean review annotations). Persisted so the user's
+        chosen smoothing survives an app restart.
+        """
+        try:
+            v = int(self._s.value("annotate/stabilizer_level", 0))
+        except (TypeError, ValueError):
+            return 0
+        return v if v in (0, 1, 2) else 0
+
+    @pen_stabilizer_level.setter
+    def pen_stabilizer_level(self, value: int) -> None:
+        try:
+            v = int(value)
+        except (TypeError, ValueError):
+            return
+        if v not in (0, 1, 2):
+            return
+        self._s.setValue("annotate/stabilizer_level", v)
+
     @property
     def ephemeral_mode_enabled(self) -> bool:
         """Whether ghost mode is on. Persisted so the user finds the

@@ -97,11 +97,15 @@ class _SidePanelDock(QFrame):  # type: ignore[misc]
 class MainWindow(QMainWindow):  # type: ignore[misc]
     """Top-level window wiring all the UI pieces together."""
 
-    open_requested = Signal(Path)
+    # All "open" / "add layer" signals carry a list of paths so a
+    # single drop can mix multiple folders or loose files. Single-path
+    # entry points (Open menu, Recent menu, programmatic boot) wrap
+    # their path in a one-element list.
+    open_requested = Signal(list)
     export_requested = Signal()  # File → Export… (v0.5.0)
     new_sequence_requested = Signal()      # File → New (Ctrl+N) — clear the loaded sequence
-    add_layer_requested = Signal(Path)     # File → Add layer… (v1.0)
-                                           #   carries the picked path
+    add_layer_requested = Signal(list)     # File → Add layer… (v1.0)
+                                           #   carries the picked paths
     save_session_requested = Signal(Path)  # File → Save session… (v1.0)
     open_session_requested = Signal(Path)  # File → Open session… (v1.0)
     reload_sequence_requested = Signal()   # Reload cache (Ctrl+R / button)
@@ -160,6 +164,13 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         # Per-zone drops are wired in :class:`ViewerWidget` and
         # :class:`MasterTimelinePanel`; the main window itself does
         # not accept drops anymore.
+
+        # Path of the currently-loaded / last-saved session file. Set
+        # by ``set_current_session_path`` from the App after a
+        # successful Open / Save / Save As. Drives the Ctrl+S vs
+        # Ctrl+Shift+S routing — Save (Ctrl+S) writes to this path
+        # silently, falling back to Save As if it's None.
+        self._current_session_path: Path | None = None
 
         # Fullscreen mode state. Populated lazily on first toggle —
         # the floating bottom bar is built once and reused.
@@ -311,6 +322,25 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         layout.addWidget(self._transport)
         self.setCentralWidget(central)
 
+        # Full-window "OPEN SESSION" overlay. Shown only during a
+        # drag-over carrying a ``.session`` file — the per-zone
+        # REPLACE / ADD overlays don't apply to project files
+        # (those need to wipe the entire stack, the spatial drop
+        # disambiguation has nothing to choose between). Lives as
+        # a child of ``self`` so it can absolute-position over
+        # everything including the menu bar.
+        from img_player.ui.drop_zone import (
+            DropOverlay,
+            SESSION_ACCENT,
+            get_default_coordinator,
+        )
+        self._session_drop_overlay = DropOverlay(
+            "OPEN SESSION", SESSION_ACCENT, self,
+        )
+        get_default_coordinator().register_session_overlay(
+            self._session_drop_overlay,
+        )
+
         # Annotation toolbar placeholder. Used to be a real QDockWidget
         # which made it span the full central-area height; reviewer
         # feedback: the toolbar should only flank the display area
@@ -453,6 +483,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             self._add_layer_act.setEnabled(True)
         if hasattr(self, "_save_session_act"):
             self._save_session_act.setEnabled(True)
+        if hasattr(self, "_save_session_as_act"):
+            self._save_session_as_act.setEnabled(True)
         self._transport.set_export_enabled(True)
         self._transport.set_reload_enabled(True)
         # Clear the cache bar so we don't briefly show the old run
@@ -520,6 +552,10 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         # without redoing every drop / trim / channel choice.
         file_menu.addSeparator()
         open_session_act = QAction("Open Sess&ion…", self)
+        # Ctrl+L (Load) — paired with Ctrl+S below. Ctrl+O is already
+        # taken by sequence open and Ctrl+Shift+O by Add Layer, so we
+        # use a distinct mnemonic for the session-level entry point.
+        open_session_act.setShortcut(QKeySequence("Ctrl+L"))
         open_session_act.triggered.connect(self._on_open_session_action)
         file_menu.addAction(open_session_act)
         # Open Recent submenu specifically for sessions — same shape
@@ -530,10 +566,29 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             self._refresh_recent_sessions_menu,
         )
         self._refresh_recent_sessions_menu()
-        self._save_session_act = QAction("Save Sess&ion…", self)
+        self._save_session_act = QAction("Save Session", self)
+        # Ctrl+S — silent overwrite of the current ``.session`` file
+        # when one is known (= a session was opened or save-as'd
+        # earlier in the session). Falls back to the file picker
+        # via ``Save Session As`` when no current path is set, so the
+        # user still gets a graceful path on first save. Gated by
+        # the sequence-loaded flag — Qt skips disabled QActions, so
+        # Ctrl+S on an empty player is a silent no-op.
+        self._save_session_act.setShortcut(QKeySequence("Ctrl+S"))
         self._save_session_act.setEnabled(False)
         self._save_session_act.triggered.connect(self._on_save_session_action)
         file_menu.addAction(self._save_session_act)
+        self._save_session_as_act = QAction("Save Session &As…", self)
+        # Ctrl+Shift+S — always opens the file picker, regardless of
+        # whether a current session path exists. Used to fork the
+        # session into a new file or to give a name to a never-yet-
+        # saved working state.
+        self._save_session_as_act.setShortcut(QKeySequence("Ctrl+Shift+S"))
+        self._save_session_as_act.setEnabled(False)
+        self._save_session_as_act.triggered.connect(
+            self._on_save_session_as_action,
+        )
+        file_menu.addAction(self._save_session_as_act)
 
         # File → Reload (Ctrl+R): smart re-scan of the source folder.
         # Keeps cached frames whose mtime is unchanged, drops the
@@ -789,7 +844,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         for path in paths:
             act = QAction(self._shorten_path_label(path), self)
             act.setToolTip(str(path))
-            act.triggered.connect(lambda _=False, p=path: self.open_requested.emit(p))
+            act.triggered.connect(lambda _=False, p=path: self.open_requested.emit([p]))
             self._recent_menu.addAction(act)
         self._recent_menu.addSeparator()
         clear = QAction("Clear list", self)
@@ -977,7 +1032,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             "Images (*.exr *.dpx *.tif *.tiff *.png *.jpg *.jpeg *.tga);;All files (*.*)",
         )
         if path_str:
-            self.open_requested.emit(Path(path_str))
+            self.open_requested.emit([Path(path_str)])
 
     def _on_add_layer_action(self) -> None:
         """File → Add layer… opens a folder picker; the chosen folder
@@ -988,7 +1043,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             "",
         )
         if path_str:
-            self.add_layer_requested.emit(Path(path_str))
+            self.add_layer_requested.emit([Path(path_str)])
 
     def _on_open_session_action(self) -> None:
         """File → Open session…"""
@@ -1000,13 +1055,59 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             self.open_session_requested.emit(Path(path_str))
 
     def _on_save_session_action(self) -> None:
-        """File → Save session…"""
+        """File → Save Session (Ctrl+S).
+
+        Silent overwrite of the current session file. When no current
+        path is known (= the user hasn't opened or save-as'd yet)
+        we transparently delegate to Save As so first save still
+        produces a usable file rather than crashing or silently
+        no-op'ing.
+        """
+        if self._current_session_path is not None:
+            self.save_session_requested.emit(self._current_session_path)
+            return
+        # No current path → behave like Save As.
+        self._on_save_session_as_action()
+
+    def _on_save_session_as_action(self) -> None:
+        """File → Save Session As… (Ctrl+Shift+S).
+
+        Always opens the file picker. The chosen path is emitted via
+        ``save_session_requested``; the App handler is responsible
+        for calling :meth:`set_current_session_path` after a
+        successful write so subsequent Ctrl+S targets the same file.
+        """
+        # Pre-fill the dialog with the current path when known so
+        # "Save As" defaults to the same folder + a sensible filename
+        # the user can edit (= classic "duplicate this project"
+        # workflow).
+        initial = (
+            str(self._current_session_path)
+            if self._current_session_path is not None
+            else ""
+        )
         path_str, _ = QFileDialog.getSaveFileName(
-            self, "Save the current session", "",
+            self, "Save the current session", initial,
             "Session files (*.session)",
         )
         if path_str:
             self.save_session_requested.emit(Path(path_str))
+
+    def set_current_session_path(self, path: Path | None) -> None:
+        """Update the path Ctrl+S targets.
+
+        Called by the App after a successful Open Session, Save
+        Session, or Save As — and with ``None`` after File → New so
+        a stale pointer doesn't get silently overwritten on the
+        next Ctrl+S. Also reflects the file name in the window
+        title so the user always knows which session they're
+        working in.
+        """
+        self._current_session_path = path
+        if path is not None:
+            self.setWindowTitle(f"Flick Player — {path.name}")
+        else:
+            self.setWindowTitle("Flick Player")
 
     def _show_about(self) -> None:
         QMessageBox.about(
@@ -1220,6 +1321,15 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         # fullscreen too, so this also covers the initial sizing).
         if self._fullscreen:
             self._position_fs_bar()
+        # Full-window session-drop overlay tracks the window rect so
+        # ``OPEN SESSION`` always covers the entire surface during a
+        # drag-over. Cheap — only sets geometry when the overlay is
+        # currently visible.
+        if (
+            getattr(self, "_session_drop_overlay", None) is not None
+            and self._session_drop_overlay.isVisible()
+        ):
+            self._session_drop_overlay.setGeometry(self.rect())
 
     def closeEvent(self, event: QCloseEvent) -> None:
         # The app can register a callback that runs before the window

@@ -26,9 +26,11 @@ from img_player.ui.drop_zone import (
 class ViewerWidget(QWidget):  # type: ignore[misc]
     """GL viewport + decorative brackets overlay (and future annotation slot)."""
 
-    # File / folder dropped on the viewer — the user wants to replace
-    # the currently loaded sequence. Same destination as File → Open.
-    replace_requested = Signal(Path)
+    # File(s) / folder(s) dropped on the viewer — the user wants to
+    # replace the currently loaded sequence. Same destination as
+    # File → Open. Carries a list because a single drop can include
+    # multiple folders / files; the picker resolves the choice.
+    replace_requested = Signal(list)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -53,7 +55,7 @@ class ViewerWidget(QWidget):  # type: ignore[misc]
         self._drop_overlay = DropOverlay("REPLACE", REPLACE_ACCENT, self)
         install_file_drop_zone(
             self, self._drop_overlay,
-            lambda path: self.replace_requested.emit(path),
+            lambda paths: self.replace_requested.emit(paths),
         )
 
         # Info label, top-right corner overlay. Always visible

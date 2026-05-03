@@ -33,7 +33,13 @@ from img_player.comment import load_comments
 from img_player.annotate import load_annotations
 from img_player.annotate.persistence import sidecar_path
 from img_player.sequence.models import SequenceInfo
-from img_player.sequence.scanner import SequenceNotFoundError, scan, scan_all
+from img_player.sequence.scanner import (
+    FolderGroup,
+    SequenceNotFoundError,
+    scan,
+    scan_all,
+    scan_paths,
+)
 
 if TYPE_CHECKING:
     from img_player.app import ImgPlayerApp
@@ -57,6 +63,26 @@ class ScanRunner(QObject):  # type: ignore[misc]
     """
 
     done = Signal(object)
+
+    def run_paths_async(self, paths: list[Path]) -> None:
+        """Scan a heterogeneous batch (folders + loose files) on a worker.
+
+        Emits ``list[FolderGroup]`` on success, or an :class:`Exception`
+        when the scan blew up unexpectedly. Empty results (no
+        detectable sequence anywhere in the drop) still emit a list
+        so the caller can surface a friendly status message rather
+        than an error popup.
+        """
+        def worker() -> None:
+            try:
+                groups = scan_paths(paths, probe=False)
+                self.done.emit(groups)
+            except Exception as err:
+                self.done.emit(err)
+
+        threading.Thread(
+            target=worker, name="scan-paths-worker", daemon=True,
+        ).start()
 
     def run_async(self, path: Path) -> None:
         def worker() -> None:
@@ -109,6 +135,7 @@ def add_layer(app: ImgPlayerApp, path: Path) -> None:
             log.warning("[add-layer] scan failed for %s: %s", path, result)
             app._window.set_status(f"Add layer failed: {result}")
             return
+        extras: list[SequenceInfo] = []
         if isinstance(result, list):
             sequences: list[SequenceInfo] = result
             if not sequences:
@@ -118,11 +145,15 @@ def add_layer(app: ImgPlayerApp, path: Path) -> None:
                 seq = sequences[0]
             else:
                 from img_player.ui.sequence_picker import SequencePickerDialog
-                picked = SequencePickerDialog.pick(sequences, parent=app._window)
-                if picked is None:
+                group = FolderGroup(folder=path, sequences=tuple(sequences))
+                picked = SequencePickerDialog.pick_grouped(
+                    [group], parent=app._window,
+                )
+                if not picked:
                     app._window.set_status("Add layer canceled.")
                     return
-                seq = picked
+                seq = picked[0]
+                extras = list(picked[1:])
         else:
             seq = result  # type: ignore[assignment]
         # If the interface is empty (no sequence attached to the
@@ -140,12 +171,134 @@ def add_layer(app: ImgPlayerApp, path: Path) -> None:
         seq = app._enrich_with_header(seq)
         layer = Layer.from_sequence(seq, offset=seq.first_frame)
         app._layer_stack.add(layer)  # auto-positions at top (= focus shifts)
-        app._window.set_status(
-            f"Added layer: {seq.display_pattern()} ({seq.frame_count} frames)"
-        )
+        for extra in extras:
+            extra2 = app._enrich_with_header(extra)
+            extra_layer = Layer.from_sequence(extra2, offset=extra2.first_frame)
+            app._layer_stack.add(extra_layer)
+        total = 1 + len(extras)
+        if total == 1:
+            app._window.set_status(
+                f"Added layer: {seq.display_pattern()} ({seq.frame_count} frames)"
+            )
+        else:
+            app._window.set_status(f"Added {total} layers from {path.name}.")
 
     runner.done.connect(on_done)
     runner.run_async(path)
+
+
+def _resolve_groups_picker(
+    app: ImgPlayerApp, groups: list[FolderGroup],
+) -> list[SequenceInfo]:
+    """Show the grouped picker and return the user's checked sequences.
+
+    Returns ``[]`` on cancel or when no sequences were detected at
+    all (in which case the picker isn't even shown — we just surface
+    a status message).
+    """
+    total = sum(len(g.sequences) for g in groups)
+    if total == 0:
+        app._window.set_status("Drop: no sequence found.")
+        return []
+    from img_player.ui.sequence_picker import SequencePickerDialog
+    picked = SequencePickerDialog.pick_grouped(groups, parent=app._window)
+    return list(picked)
+
+
+def open_paths(app: ImgPlayerApp, paths: list[Path]) -> None:
+    """Multi-source replace flow: scan ``paths``, prompt picker, load.
+
+    The first picked sequence becomes the active sequence (replaces
+    the controller's binding via the standard ``apply_scan_result``
+    pipeline — channels, annotations sidecar, recent path, etc.).
+    Each subsequent picked sequence is appended as a top layer in
+    pick order so their on-screen layer-panel order mirrors what
+    the user saw in the picker.
+    """
+    app._window.set_status(
+        f"Scanning {len(paths)} sources…"
+    )
+    app._scan_generation += 1
+    gen = app._scan_generation
+    runner = ScanRunner()
+    app._scan_runner = runner
+
+    def on_done(result: object) -> None:
+        if gen != app._scan_generation:
+            return
+        if isinstance(result, Exception):
+            log.exception("[multi-open] scan failed: %s", result)
+            QMessageBox.critical(
+                app._window, "Scan failed", str(result),
+            )
+            app._window.set_status("Ready.")
+            return
+        groups: list[FolderGroup] = result  # type: ignore[assignment]
+        picked = _resolve_groups_picker(app, groups)
+        if not picked:
+            app._window.set_status("Open canceled.")
+            return
+        # Use the first picked seq's directory as the "primary" path
+        # for the recent / sidecar bookkeeping in apply_scan_result.
+        primary_path = picked[0].directory
+        apply_scan_result(app, primary_path, picked[0])
+        from img_player.layers import Layer
+        for seq in picked[1:]:
+            seq2 = app._enrich_with_header(seq)
+            layer = Layer.from_sequence(seq2, offset=seq2.first_frame)
+            app._layer_stack.add(layer)
+        if len(picked) > 1:
+            app._window.set_status(
+                f"Loaded {len(picked)} sequences from drop."
+            )
+
+    runner.done.connect(on_done)
+    runner.run_paths_async(paths)
+
+
+def add_layers(app: ImgPlayerApp, paths: list[Path]) -> None:
+    """Multi-source add-layer flow: scan ``paths``, prompt picker, append.
+
+    Every checked sequence becomes a new top-of-stack layer (in pick
+    order). If the player has no active sequence yet, the first
+    picked sequence routes through the standard open path so the
+    controller binds properly; the rest are appended as layers.
+    """
+    app._window.set_status(
+        f"Scanning {len(paths)} sources for add-layer…"
+    )
+    runner = ScanRunner()
+    app._scan_runner = runner
+
+    def on_done(result: object) -> None:
+        if isinstance(result, Exception):
+            log.warning("[multi-add-layer] scan failed: %s", result)
+            app._window.set_status(f"Add layer failed: {result}")
+            return
+        groups: list[FolderGroup] = result  # type: ignore[assignment]
+        picked = _resolve_groups_picker(app, groups)
+        if not picked:
+            app._window.set_status("Add layer canceled.")
+            return
+        from img_player.layers import Layer
+        start_index = 0
+        if app._controller.sequence is None:
+            # Empty player — bootstrap the controller with the first
+            # pick the same way ``open_path`` does, so playback is
+            # actually functional. The remaining picks become layers.
+            apply_scan_result(app, picked[0].directory, picked[0])
+            start_index = 1
+        for seq in picked[start_index:]:
+            seq2 = app._enrich_with_header(seq)
+            layer = Layer.from_sequence(seq2, offset=seq2.first_frame)
+            app._layer_stack.add(layer)
+        app._window.set_status(
+            f"Added {len(picked) - start_index} layer"
+            f"{'s' if len(picked) - start_index != 1 else ''}."
+        )
+
+    runner.done.connect(on_done)
+    runner.run_paths_async(paths)
 
 
 def open_path(app: ImgPlayerApp, path: Path) -> None:
@@ -182,19 +335,29 @@ def apply_scan_result(app: ImgPlayerApp, path: Path, result: object) -> None:
         app._window.set_status("Ready.")
         return
     # Directory scan returns a list. One sequence → load it
-    # directly. Two or more → prompt the user via the picker
-    # dialog so they don't get the "largest first" silent fallback.
+    # directly. Two or more → prompt with the grouped picker so the
+    # user can also pick MULTIPLE sequences from this single folder
+    # (each extra one becomes a top-of-stack layer, same model as a
+    # multi-folder drop). Avoids the "largest first" silent fallback
+    # AND lines up the single-folder UX with the multi-source one.
+    extras: list[SequenceInfo] = []
     if isinstance(result, list):
         sequences: list[SequenceInfo] = result
         if len(sequences) == 1:
             seq = sequences[0]
         else:
             from img_player.ui.sequence_picker import SequencePickerDialog
-            picked = SequencePickerDialog.pick(sequences, parent=app._window)
-            if picked is None:
+            group = FolderGroup(folder=path, sequences=tuple(sequences))
+            picked = SequencePickerDialog.pick_grouped(
+                [group], parent=app._window,
+            )
+            if not picked:
                 app._window.set_status("Open canceled.")
                 return
-            seq = picked
+            seq = picked[0]
+            # Extra ticks become layers, mirroring the multi-folder
+            # path's behaviour.
+            extras = list(picked[1:])
     else:
         seq = result  # type: ignore[assignment]
     log.info("loaded sequence: %s (%d frames)", seq.display_pattern(), seq.frame_count)
@@ -225,6 +388,16 @@ def apply_scan_result(app: ImgPlayerApp, path: Path, result: object) -> None:
     # cache to decode the reader's RGB(A) default rather than
     # what the menu shows.
     app._controller.load_sequence(seq)
+    # If the multi-pick gave us extra sequences (single-folder picker
+    # with several boxes ticked), append each as a top-of-stack layer
+    # in pick order. Same enrichment + offset model as the multi-
+    # source ``open_paths`` path.
+    if extras:
+        from img_player.layers import Layer
+        for extra in extras:
+            extra2 = app._enrich_with_header(extra)
+            layer = Layer.from_sequence(extra2, offset=extra2.first_frame)
+            app._layer_stack.add(layer)
     # Restore the saved channel-menu state (active radio + tile
     # checkboxes + layout). Best-effort: labels not present in
     # this sequence's group list are silently skipped, so the

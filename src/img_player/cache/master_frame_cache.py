@@ -123,6 +123,19 @@ class MasterFrameCache:
         self._bytes_used = 0
         self._current_frame = 0
         self._direction = 1
+        # Loop-aware eviction (set by the controller on
+        # ``set_loop_range``). When ``_loop_enabled``, the eviction
+        # scoring switches from signed-distance to **ring distance**:
+        # frames near ``_loop_lo`` are treated as "imminent" once the
+        # playhead approaches ``_loop_hi``, instead of being charged
+        # the behind-playhead penalty. Without this, the wrap target
+        # (``lo``) has the highest score in ``_evict_if_over_budget``
+        # and is evicted the moment the worker finishes decoding it —
+        # the playhead then stalls forever at ``hi`` because every
+        # decode of ``lo`` is immediately undone.
+        self._loop_lo: int | None = None
+        self._loop_hi: int | None = None
+        self._loop_enabled: bool = False
         # Per-layer path / mtime index. Built lazily on first
         # request() for a given layer + cleared / refreshed via
         # ``_on_layers_changed``. The dict layouts:
@@ -149,6 +162,17 @@ class MasterFrameCache:
         # decoding is the expensive part, and the pixel data is
         # identical between the two offsets.
         self._last_known_state: dict[str, tuple] = {}
+        # Per-frame contributor chain snapshot — captures which layers
+        # produced each cached frame's pixels (top→bottom in stack
+        # order, walking until an opaque floor). Used by
+        # ``_on_layers_changed`` to detect which frames are still
+        # valid after a reorder / add / remove: when the chain at a
+        # given master frame is unchanged, the cached pixels stay
+        # accurate and we can skip the re-decode. Without this,
+        # every reorder triggered a nuclear ``clear()`` and the user
+        # saw a noticeable freeze + grey cache bar while every frame
+        # came back from disk.
+        self._chain_snapshot: dict[int, tuple[str, ...]] = {}
         # Bumped on every invalidation so workers in flight drop
         # their results when the world has moved on (channel change,
         # visibility flip, layer reorder, …).
@@ -192,6 +216,7 @@ class MasterFrameCache:
         with self._lock:
             self._frames.clear()
             self._missing.clear()
+            self._chain_snapshot.clear()
             self._path_index.clear()
             self._mtime_index.clear()
             self._last_known_range.clear()
@@ -205,6 +230,7 @@ class MasterFrameCache:
         with self._lock:
             self._frames.clear()
             self._missing.clear()
+            self._chain_snapshot.clear()
             self._bytes_used = 0
             self._epoch += 1
 
@@ -328,6 +354,7 @@ class MasterFrameCache:
                         self._bytes_used -= arr.nbytes
                         dropped += 1
                 self._missing.discard(master_frame)
+                self._chain_snapshot.pop(master_frame, None)
             self._epoch += 1
         # Rebuild the index against the refreshed sequence. Mutate
         # the layer dataclass directly (no stack.update call) so the
@@ -471,6 +498,7 @@ class MasterFrameCache:
                 )
                 self._frames[master_frame] = placeholder
                 self._missing.add(master_frame)
+                self._record_frame_chain(master_frame)
             return False
         # Capture the layer + channels at submit time so the worker
         # decodes against a stable selection even if the user toggles
@@ -526,16 +554,63 @@ class MasterFrameCache:
         with self._lock:
             self._direction = 1 if direction >= 0 else -1
 
+    def set_loop_range(
+        self, lo: int | None, hi: int | None, enabled: bool,
+    ) -> None:
+        """Inform the cache of the playback loop range.
+
+        When ``enabled`` is True, ``_evict_if_over_budget`` switches
+        to **ring distance** scoring: a frame's distance from the
+        playhead wraps around at ``hi → lo`` so the wrap target
+        stays cheap to keep instead of being the first thing evicted.
+
+        Pass ``enabled=False`` (or ``None`` bounds) to revert to the
+        signed-distance scoring used outside loop playback (ONCE
+        mode, scrub, in/out range with non-loop semantics).
+        """
+        with self._lock:
+            if not enabled or lo is None or hi is None or hi <= lo:
+                self._loop_lo = None
+                self._loop_hi = None
+                self._loop_enabled = False
+                return
+            self._loop_lo = int(lo)
+            self._loop_hi = int(hi)
+            self._loop_enabled = True
+
     def shrink_budget(self, new_bytes: int) -> None:
         """Reduce the budget at runtime + force an immediate eviction.
 
         Mirrors the single-layer cache's runtime-monitor hook.
-        Never grows back: once shrunk, stays shrunk for the session.
+        Never grows back via this entry point: once shrunk, stays
+        shrunk for the runtime-monitor's autonomic loop. Use
+        :meth:`set_budget` for the explicit per-session re-tune
+        (which is allowed to grow when the user has freed RAM
+        between Flick launch and project open).
         """
         with self._lock:
             if new_bytes >= self._budget:
                 return
             self._budget = max(0, new_bytes)
+            self._evict_if_over_budget()
+
+    def set_budget(self, new_bytes: int) -> None:
+        """Set the budget to an explicit value, growing or shrinking.
+
+        Forces an eviction if the new value is below current usage.
+        Used by the per-session re-tune (``app._retune_for_current_ram``):
+        when the user opens a new project, we re-snapshot
+        ``RuntimeState`` and call this to follow ambient RAM
+        availability — closing Chrome between Flick launch and
+        opening a project gives the next project a roomier cache,
+        without the oscillation risk of a continuous grow-back loop.
+
+        Distinct from :meth:`shrink_budget`: that one is the
+        runtime-monitor's one-way safety valve and intentionally
+        refuses to grow.
+        """
+        with self._lock:
+            self._budget = max(0, int(new_bytes))
             self._evict_if_over_budget()
 
     def wait_idle(self, timeout: float = 5.0) -> bool:
@@ -547,19 +622,100 @@ class MasterFrameCache:
             time.sleep(0.005)
         return False
 
+    def _record_frame_chain(self, master_frame: int) -> None:
+        """Store the current contributor chain for ``master_frame``.
+
+        Called next to every ``self._frames[mf] = ...`` insertion
+        point so ``_on_layers_changed`` always has an accurate "old
+        chain" to compare against. Cheap (a list walk + dict write
+        under the existing lock); a no-op overhead per decode.
+        """
+        self._chain_snapshot[master_frame] = self._compute_chain_at(master_frame)
+
+    def _compute_chain_at(self, master_frame: int) -> tuple[str, ...]:
+        """Return the ordered tuple of contributor layer ids that
+        would produce the pixels at ``master_frame`` under the
+        current stack state.
+
+        Walks visible layers top→bottom, collecting ids until the
+        first ``alpha_composite=False`` (opaque floor) or the bottom
+        of the stack. Empty tuple when no layer covers the frame —
+        that's a "no coverage" gap, the viewer paints black.
+
+        Used by ``_on_layers_changed`` to compare per-frame chains
+        before / after a stack mutation. Cheap to call: a few
+        attribute reads + a list walk per layer in the stack.
+        """
+        chain: list[str] = []
+        for layer in self._stack.layers():
+            if not layer.visible or not layer.covers(master_frame):
+                continue
+            chain.append(layer.id)
+            if not layer.alpha_composite:
+                # Opaque floor — anything below is masked, the chain
+                # ends here.
+                break
+        return tuple(chain)
+
     # ------------------------------------------------------------------ Stack signals → invalidation
 
     def _on_layers_changed(self) -> None:
-        """Composition mutated → drop everything + rebuild indexes.
+        """Composition mutated → invalidate selectively.
 
-        Add / remove / reorder are rare enough that nuclear is
-        acceptable. We also pre-mark missing frames here so the
-        timeline cache bar lights up red on holes immediately
-        rather than after the first prefetch wave reaches them.
+        For each cached master frame, recompute the contributor
+        chain under the new stack state and compare with the chain
+        recorded at decode time. Drop only frames whose chain
+        actually changed; the rest stay cached and the user sees no
+        freeze on reorders that don't affect their pixels (e.g.
+        swapping two layers below an opaque-floor topmost, or
+        moving an invisible layer).
+
+        Add / remove are uniformly handled by the same comparison:
+        adding a top layer changes the chain at every frame it
+        covers; removing a layer that was contributing changes the
+        chain at every frame in its old reach. Frames untouched by
+        the mutation keep their pixels.
+
+        We still ``pool.clear()`` and bump the epoch to discard any
+        in-flight decode whose result might no longer match the
+        new state (cheap correctness over salvaging a few hundred
+        ms of in-flight work). The dropped pending re-fires through
+        the controller's ``replan_prefetch`` immediately after.
         """
-        self.clear()
+        # Compute new chains for every currently-cached frame and
+        # gather the set to drop.
+        with self._lock:
+            cached_frames = list(self._frames.keys())
+        frames_to_drop: list[int] = []
+        new_chains: dict[int, tuple[str, ...]] = {}
+        for f in cached_frames:
+            new_chain = self._compute_chain_at(f)
+            old_chain = self._chain_snapshot.get(f)
+            new_chains[f] = new_chain
+            if old_chain != new_chain:
+                frames_to_drop.append(f)
+
+        # Drop pending decodes (their target chain may also have
+        # changed) and bump the epoch so in-flight workers' results
+        # land in the bin instead of polluting the cache.
+        self._pool.clear()
+        with self._lock:
+            for f in frames_to_drop:
+                arr = self._frames.pop(f, None)
+                if arr is not None and f not in self._missing:
+                    self._bytes_used -= arr.nbytes
+                self._missing.discard(f)
+                self._chain_snapshot.pop(f, None)
+            self._epoch += 1
+            # Refresh chain snapshot for kept frames so the next
+            # ``_on_layers_changed`` compares against the current
+            # state, not a stale one.
+            for f, chain in new_chains.items():
+                if f in self._frames:
+                    self._chain_snapshot[f] = chain
+
         # Drop indexes for layers that no longer exist; rebuild for
-        # layers that do. Cheap relative to the cache clear above.
+        # layers that do. Cheap relative to a per-frame eviction.
         live_ids = {layer.id for layer in self._stack.layers()}
         for stale_id in list(self._path_index.keys()):
             if stale_id not in live_ids:
@@ -614,6 +770,7 @@ class MasterFrameCache:
                         with self._lock:
                             self._frames[master_frame] = placeholder
                             self._missing.add(master_frame)
+                            self._record_frame_chain(master_frame)
 
     def _on_visibility_changed(self, layer_id: str) -> None:
         """The toggled layer's master-frame region needs re-decode
@@ -714,6 +871,9 @@ class MasterFrameCache:
                     arr = self._frames.pop(f)
                     is_missing = f in self._missing
                     self._missing.discard(f)
+                    # Drop the old chain snapshot too — re-recorded
+                    # at the new key below.
+                    self._chain_snapshot.pop(f, None)
                     to_move.append((f, arr, is_missing))
             # Apply the shift. If a destination key is already
             # occupied (shouldn't happen with a single-layer stack,
@@ -727,6 +887,7 @@ class MasterFrameCache:
                         self._bytes_used -= arr.nbytes
                     continue
                 self._frames[new_f] = arr
+                self._record_frame_chain(new_f)
                 if is_missing:
                     self._missing.add(new_f)
             self._epoch += 1
@@ -783,6 +944,7 @@ class MasterFrameCache:
             for f in to_drop:
                 arr = self._frames.pop(f)
                 self._bytes_used -= arr.nbytes
+                self._chain_snapshot.pop(f, None)
             self._epoch += 1
 
     def _broadest_layer_size(self) -> tuple[int, int]:
@@ -911,6 +1073,7 @@ class MasterFrameCache:
                 placeholder = get_missing_placeholder(ph_w, ph_h)
                 self._frames[master_frame] = placeholder
                 self._missing.add(master_frame)
+                self._record_frame_chain(master_frame)
             return False
         return self._pool.submit(
             priority,
@@ -977,6 +1140,7 @@ class MasterFrameCache:
                     return
                 self._frames[master_frame] = placeholder
                 self._missing.add(master_frame)
+                self._record_frame_chain(master_frame)
             return
 
         with self._lock:
@@ -986,6 +1150,7 @@ class MasterFrameCache:
                 return
             self._frames[master_frame] = accum
             self._bytes_used += accum.nbytes
+            self._record_frame_chain(master_frame)
             self._evict_if_over_budget()
 
     def _decode_and_store(
@@ -1031,6 +1196,7 @@ class MasterFrameCache:
                     return
                 self._frames[master_frame] = placeholder
                 self._missing.add(master_frame)
+                self._record_frame_chain(master_frame)
             return
 
         if strip_alpha and arr.ndim == 3 and arr.shape[2] == 4:
@@ -1046,18 +1212,47 @@ class MasterFrameCache:
                 return  # raced — keep existing
             self._frames[master_frame] = arr
             self._bytes_used += arr.nbytes
+            self._record_frame_chain(master_frame)
             self._evict_if_over_budget()
 
     def _evict_if_over_budget(self) -> None:
         """Distance-from-playhead eviction with a behind-the-playhead
-        penalty (= we evict frames the user just played first)."""
+        penalty (= we evict frames the user just played first).
+
+        In LOOP mode (``set_loop_range(enabled=True)``), scoring uses
+        **ring distance** instead: ``f``'s score is its forward
+        wrap-around distance from the playhead within ``[lo, hi]``.
+        This keeps the wrap target (``lo``) cheap to retain when the
+        playhead approaches ``hi`` — without it, ``lo`` has the
+        highest signed-distance score and gets evicted the instant a
+        worker finishes decoding it, locking playback at ``hi``
+        forever (the loop never visibly fires). Frames outside the
+        loop range fall back to signed-distance scoring (effectively
+        evicted first since they're not part of the active ring)."""
         if self._bytes_used <= self._budget:
             return
         cur = self._current_frame
         d = self._direction
         penalty = _BEHIND_PLAYHEAD_PENALTY
+        loop_lo = self._loop_lo
+        loop_hi = self._loop_hi
+        loop_on = (
+            self._loop_enabled
+            and loop_lo is not None
+            and loop_hi is not None
+        )
+        ring_size = (loop_hi - loop_lo + 1) if loop_on else 0
 
         def score(f: int) -> float:
+            if loop_on and loop_lo <= f <= loop_hi:
+                # Ring forward distance — frames "ahead" along the
+                # loop direction are cheap to keep, frames already
+                # passed (which will only be revisited after a full
+                # wrap) sit at distance ``ring_size - 1`` and are
+                # evicted first. Reverse direction mirrors the wrap.
+                if d >= 0:
+                    return float((f - cur) % ring_size)
+                return float((cur - f) % ring_size)
             delta = (f - cur) * d
             if delta < 0:
                 return -delta * penalty
@@ -1071,4 +1266,5 @@ class MasterFrameCache:
             if f not in self._missing:
                 self._bytes_used -= arr.nbytes
             self._missing.discard(f)
+            self._chain_snapshot.pop(f, None)
             self._evictions += 1

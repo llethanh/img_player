@@ -160,6 +160,57 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
         """
         self._prefetch_ahead = max(4, int(value))
 
+    def _sync_loop_range_to_cache(self) -> None:
+        """Push the active playback range + loop flag down to the cache.
+
+        The cache uses these to switch its eviction scoring to ring
+        distance when LOOP is on (see
+        ``MasterFrameCache._evict_if_over_budget``). Called whenever
+        anything that could change the effective range or the loop
+        mode flips: ``load_sequence``, ``seek``, ``set_loop_mode``,
+        ``set_in_out``, ``set_navigable_range``. Cheap (a lock + 3
+        attribute writes) and idempotent — safe to over-call.
+
+        No-op when no sequence is loaded; the cache treats absent /
+        invalid bounds as ``loop_enabled=False``.
+        """
+        if not hasattr(self._cache, "set_loop_range"):
+            return
+        if self._sequence is None:
+            self._cache.set_loop_range(None, None, False)
+            return
+        lo = self._effective_in_frame()
+        hi = self._effective_out_frame()
+        enabled = self._state.loop_mode == LoopMode.LOOP and hi > lo
+        self._cache.set_loop_range(lo, hi, enabled)
+
+    def replan_prefetch(self) -> None:
+        """Re-schedule a full-sequence prefetch from the current playhead.
+
+        Public hook for the app's ``_refresh_after_stack_change`` so a
+        LayerStack mutation (add / remove / reorder, eye toggle,
+        offset / trim drag, channel switch) replays the same
+        priority-ranked submit pass that ``seek`` and ``load_sequence``
+        run. Without this the multi-layer cache wipe (driven by
+        ``MasterFrameCache._on_layers_changed``) leaves the cache empty
+        outside the close window — the user then sees idle gaps on the
+        timeline cache bar that only fill once playback rolls the
+        playhead through them.
+
+        No-op when no sequence is attached. Idempotent: ``request``
+        dedup-rejects frames already cached or pending.
+        """
+        if self._sequence is None:
+            return
+        # Refresh loop hints first — a stack mutation can change the
+        # broad master range (= the active loop range) and the cache
+        # needs the updated bounds before the new prefetch pass picks
+        # up its loop-aware priorities.
+        self._sync_loop_range_to_cache()
+        self._prefetch_full_sequence(
+            self._state.current_frame, self._state.direction,
+        )
+
     # ------------------------------------------------------------------ Commands
 
     def load_sequence(self, sequence: SequenceInfo) -> None:
@@ -176,6 +227,12 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
             dropped_frames=0,
         )
         self._cache.set_current_frame(first)
+        # Tell the cache about the loop range BEFORE the first
+        # prefetch pass — without this the wave-1 ring-distance
+        # priorities (computed below) and the eviction scoring (run
+        # at decode-store time) disagree, and frames near ``first_f``
+        # can still be evicted in a tight-budget multi-layer load.
+        self._sync_loop_range_to_cache()
         # Schedule the *whole* sequence to be filled in the background,
         # prioritised by distance from the playhead. The close window
         # decodes first (the worker pool is a min-heap on priority);
@@ -261,6 +318,11 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
         self._cache.clear_pending()
         self._update(current_frame=clamped)
         self._cache.set_current_frame(clamped)
+        # Re-sync loop hints — the seek may have crossed in/out
+        # boundaries that affect the effective range, and the next
+        # prefetch wave + every subsequent eviction round needs the
+        # right bounds to score frames correctly.
+        self._sync_loop_range_to_cache()
         # Re-plan the entire sequence's prefetch, prioritised by
         # distance from the new playhead. ``clear_pending`` just
         # dropped the old queue, including any "middle of the
@@ -289,6 +351,10 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
 
     def set_loop_mode(self, mode: LoopMode) -> None:
         self._update(loop_mode=mode)
+        # Cache eviction scoring depends on whether LOOP is active —
+        # flip the ring-distance mode in lockstep so the next budget
+        # eviction round sees the matching geometry.
+        self._sync_loop_range_to_cache()
 
     def set_direction(self, direction: int) -> None:
         """Set playback direction: +1 forward, -1 backward."""
@@ -324,6 +390,10 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
         # Playback ``_tick`` is the only place that snaps, and only
         # when the user actually presses play.
         self._update(in_frame=in_frame, out_frame=out_frame)
+        # In/out markers are the loop's effective bounds — push them
+        # to the cache so ring-distance eviction scopes to the new
+        # playback range.
+        self._sync_loop_range_to_cache()
 
     def shutdown(self) -> None:
         self._timer.stop()
@@ -526,9 +596,31 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
             first_f, last_f = bounds
         else:
             first_f, last_f = seq.first_frame, seq.last_frame
+        # In LOOP mode, prioritise frames by their **ring distance**
+        # forward from the playhead instead of signed distance with
+        # a behind-penalty. Otherwise the wrap target (``first_f``)
+        # is queued at priority ``range_len * BEHIND_PENALTY``
+        # (= bottom of the worker pool), so when ``_tick`` stalls at
+        # ``last_f`` waiting for the wrap, the dedup-rejected high-
+        # priority re-request stays stuck behind every other backlog
+        # frame and the loop visibly never fires.
+        loop_on = (
+            self._state.loop_mode == LoopMode.LOOP
+            and last_f > first_f
+        )
+        ring_size = last_f - first_f + 1 if loop_on else 0
         for f in range(first_f, last_f + 1):
-            delta = (f - frame) * d
-            priority = delta if delta >= 0 else (-delta * self._BEHIND_PRIORITY_PENALTY)
+            if loop_on:
+                if d >= 0:
+                    priority = (f - frame) % ring_size
+                else:
+                    priority = (frame - f) % ring_size
+            else:
+                delta = (f - frame) * d
+                priority = (
+                    delta if delta >= 0
+                    else (-delta * self._BEHIND_PRIORITY_PENALTY)
+                )
             self._cache.request(f, priority=priority)
 
     def _interval_ms(self) -> int:
@@ -564,8 +656,14 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
         """
         if last < first:
             self._navigable_range = None
-            return
-        self._navigable_range = (int(first), int(last))
+        else:
+            self._navigable_range = (int(first), int(last))
+        # The navigable range IS the loop range when no in/out marker
+        # is set — refresh the cache so eviction scoring updates with
+        # the new bounds. Important for multi-layer stacks: the broad
+        # master range is set here on every stack mutation, and the
+        # cache wouldn't otherwise pick up the change.
+        self._sync_loop_range_to_cache()
 
     def _nav_bounds(self) -> tuple[int, int] | None:
         """Effective (first, last) navigable bounds, or ``None`` when

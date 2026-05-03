@@ -20,10 +20,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QMimeData, QPoint, Qt, Signal
-from PySide6.QtGui import QDrag, QKeyEvent, QMouseEvent
+from PySide6.QtGui import QColor, QDrag, QKeyEvent, QMouseEvent, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
+    QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -140,6 +141,13 @@ class LayerRow(QFrame):  # type: ignore[misc]
     # Mouse-press anywhere on the row asks the panel to focus this
     # layer. The panel forwards to LayerStack.set_focus.
     focus_requested = Signal(str)
+    # Mouse-press with modifier kind (``"single"`` / ``"ctrl"`` /
+    # ``"shift"``) — drives multi-select. The panel decides what each
+    # modifier does (replace / toggle / range). ``focus_requested``
+    # is still emitted for the single-click case so existing wiring
+    # (LayerBar.focus_requested chain, etc.) keeps working without
+    # change.
+    row_clicked = Signal(str, str)
     # Eye toggle — the panel just routes to LayerStack.toggle_visible.
     visibility_toggle_requested = Signal(str)
     # Suppr key on a focused row — the panel forwards to
@@ -151,6 +159,18 @@ class LayerRow(QFrame):  # type: ignore[misc]
     offset_changed = Signal(str, int)
     trim_in_changed = Signal(str, int, int)  # (id, new_layer_in, new_offset)
     layer_out_changed = Signal(str, int)
+    # Live offset preview during a body drag — forwarded for the
+    # multi-select cascade so peer rows can paint at the same delta
+    # while the user is still dragging.
+    offset_preview_changed = Signal(str, int)
+    offset_preview_cleared = Signal(str)
+    # Reorder QDrag lifecycle — the panel uses these to ghost every
+    # selected row during a drag (so the user can see through to
+    # the drop target underneath). ``str`` is the source layer id;
+    # carries it for symmetry but the panel doesn't need it (it
+    # ghosts every row currently in the selection).
+    reorder_drag_started = Signal(str)
+    reorder_drag_ended = Signal(str)
     # Per-layer alpha-mode toggles. Both carry the layer id + new
     # boolean so the panel can route to ``LayerStack.update`` without
     # scanning rows.
@@ -235,9 +255,21 @@ class LayerRow(QFrame):  # type: ignore[misc]
         # the row to the panel and finally LayerStack.update.
         self._bar = LayerBar(layer, parent=self)
         self._bar.offset_changed.connect(self.offset_changed.emit)
+        self._bar.offset_preview_changed.connect(
+            self.offset_preview_changed.emit,
+        )
+        self._bar.offset_preview_cleared.connect(
+            self.offset_preview_cleared.emit,
+        )
         self._bar.trim_in_changed.connect(self.trim_in_changed.emit)
         self._bar.layer_out_changed.connect(self.layer_out_changed.emit)
         self._bar.focus_requested.connect(self.focus_requested.emit)
+        # Modifier-aware press inside the bar — same UX as a click on
+        # the row body. The panel uses this to update multi-select
+        # before the drag setup runs (so dragging a non-selected
+        # layer's body replaces the selection with just that layer
+        # before applying the offset delta to it alone).
+        self._bar.row_clicked.connect(self.row_clicked.emit)
         # Vertical drag inside the bar = "I want to reorder this row".
         # The bar emits with the global cursor position so we can map
         # back to row-local coords for the drag pixmap hotspot.
@@ -251,7 +283,25 @@ class LayerRow(QFrame):  # type: ignore[misc]
 
         # Default unfocused look. ``set_focused(True)`` paints the
         # accent background to match PDPlayer / Nuke conventions.
+        # ``_selected`` is a separate state for multi-select (Ctrl/
+        # Shift+click): rows that are part of the active group but
+        # not THE focus. Visually softer than focused (subtle tint
+        # instead of full bg) so the user can still tell which row
+        # drives the channel menu.
         self._focused = False
+        self._selected = False
+        # Deferred-single-click flag: set on mousePress when a click
+        # without modifier lands on a row that's already in the
+        # multi-select group. We don't emit ``row_clicked("single")``
+        # immediately — that would shrink the selection to {id} and
+        # ruin the drag-on-selection workflow. Instead we wait for
+        # mouseRelease: if the user dragged, cancel; if they just
+        # clicked, fire the deferred emit (demote intent).
+        self._pending_single_click: bool = False
+        # Ghost-during-drag effect handle. Lazy-allocated by
+        # :meth:`set_ghost` so unused rows don't carry a dangling
+        # QGraphicsOpacityEffect instance.
+        self._ghost_effect: QGraphicsOpacityEffect | None = None
         self._refresh_palette()
 
     # ------------------------------------------------------------------ Public API
@@ -300,6 +350,11 @@ class LayerRow(QFrame):  # type: ignore[misc]
     def set_snap_edges(self, edges: list[int]) -> None:
         self._bar.set_snap_edges(edges)
 
+    def set_bar_external_preview_offset(self, offset: int | None) -> None:
+        """Pass-through to the LayerBar so the panel can drive a
+        peer-drag preview without poking the bar widget directly."""
+        self._bar.set_external_preview_offset(offset)
+
     def set_focused(self, on: bool) -> None:
         if on == self._focused:
             return
@@ -312,11 +367,65 @@ class LayerRow(QFrame):  # type: ignore[misc]
         if on:
             self.setFocus(Qt.FocusReason.OtherFocusReason)
 
+    def set_ghost(self, on: bool) -> None:
+        """Toggle the "ghosted during drag" look (~50 % opacity).
+
+        Used by the panel during a multi-select reorder drag so the
+        user can see THROUGH the rows being moved to the panel area
+        underneath — including the orange drop indicator that marks
+        the target slot. Restored to full opacity at drag end.
+        Cheap — Qt's ``QGraphicsOpacityEffect`` is just a per-paint
+        alpha multiplier, no relayout, no widget rebuild.
+        """
+        if on:
+            if self._ghost_effect is None:
+                self._ghost_effect = QGraphicsOpacityEffect(self)
+            self._ghost_effect.setOpacity(0.5)
+            self.setGraphicsEffect(self._ghost_effect)
+        else:
+            # Setting None drops the effect (Qt also deletes it
+            # since the row is its parent).
+            self.setGraphicsEffect(None)
+            self._ghost_effect = None
+
+    def set_selected(self, on: bool) -> None:
+        """Mark this row as part of the multi-select group.
+
+        Updates both the row's visual state AND the underlying
+        LayerBar's ``_in_selection`` flag — the bar uses it for the
+        deferred-single-click logic, so press-on-grouped-bar +
+        no-drag correctly demotes the selection at release time
+        instead of shrinking on press.
+        """
+        if on == self._selected:
+            # Even on a no-op state update, keep the bar in lockstep
+            # — defensive against any caller that toggles the bar
+            # flag directly (none today, but this contract is
+            # cheap to honour).
+            self._bar.set_in_selection(on)
+            return
+        self._selected = on
+        self._bar.set_in_selection(on)
+        self._refresh_palette()
+
     # ------------------------------------------------------------------ Internals
 
     def _refresh_palette(self) -> None:
-        """Apply the focused/unfocused background tint."""
-        if self._focused:
+        """Apply the focused / selected / default background tint.
+
+        Two visual states (per user feedback):
+
+        * **Focused or selected** — full ACCENT_DIM background, white
+          labels. Every member of the active group looks identical
+          so the user can't mistake which layers will be affected by
+          the next group action. The "focus" within the group still
+          drives the channel menu but is no longer visually
+          distinguished — that distinction lives in functionality
+          (channel menu, dragged-from layer for cascades) not in
+          paint.
+        * **Neither** — transparent background, default label colour.
+        """
+        if self._focused or self._selected:
             self.setStyleSheet(
                 f"QFrame {{ background: {H.ACCENT_DIM}; }}"
                 f"QLabel {{ color: #FFF; }}"
@@ -364,7 +473,28 @@ class LayerRow(QFrame):  # type: ignore[misc]
         # reorder drag.
         if event.button() == Qt.MouseButton.LeftButton:
             self._press_pos = event.position().toPoint()
-            self.focus_requested.emit(self._layer_id)
+            self._pending_single_click = False
+            mods = event.modifiers()
+            if mods & Qt.KeyboardModifier.ShiftModifier:
+                kind = "shift"
+            elif mods & Qt.KeyboardModifier.ControlModifier:
+                kind = "ctrl"
+            else:
+                kind = "single"
+            if kind == "single" and self._selected:
+                # Defer: the user pressed on an already-selected
+                # row. Could be the start of a drag (move whole
+                # group) OR a plain click (demote selection to
+                # just this row). We can't tell yet — wait for
+                # mouseMove (drag → cancel) or mouseRelease (click
+                # → fire). Without this deferral the selection
+                # would be shrunk on press and the drag-on-multi
+                # workflow would break.
+                self._pending_single_click = True
+            else:
+                self.row_clicked.emit(self._layer_id, kind)
+                if kind == "single":
+                    self.focus_requested.emit(self._layer_id)
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
@@ -377,12 +507,23 @@ class LayerRow(QFrame):  # type: ignore[misc]
         ):
             distance = (event.position().toPoint() - self._press_pos).manhattanLength()
             if distance >= QApplication.startDragDistance():
+                # The user is dragging — cancel the deferred demote.
+                # Without this, releasing after a reorder drag would
+                # also shrink the selection.
+                self._pending_single_click = False
                 self._start_reorder_drag()
                 self._press_pos = None
                 return
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        # Fire the deferred single-click if it's still pending — the
+        # user pressed on an already-selected row and didn't drag,
+        # so they want to demote the selection to just this row.
+        if self._pending_single_click:
+            self.row_clicked.emit(self._layer_id, "single")
+            self.focus_requested.emit(self._layer_id)
+        self._pending_single_click = False
         self._press_pos = None
         super().mouseReleaseEvent(event)
 
@@ -410,26 +551,98 @@ class LayerRow(QFrame):  # type: ignore[misc]
     def _start_reorder_drag(self) -> None:
         """Kick off a QDrag carrying this row's layer id. The
         :class:`LayerPanel` accepts the drop and calls
-        :meth:`LayerStack.reorder` based on the cursor's Y position."""
+        :meth:`LayerStack.reorder` based on the cursor's Y position.
+
+        When the source row is part of a multi-select group, the
+        floating drag pixmap is a composite of every selected row
+        stacked vertically — the user sees the WHOLE block they're
+        moving, not just the one they grabbed. The hotspot is
+        positioned so the cursor lands at the same y-offset within
+        the source row regardless of how many other rows sit above
+        / below it in the composite.
+
+        Notifies the panel via ``reorder_drag_started`` /
+        ``reorder_drag_ended`` so it can ghost every selected row in
+        the panel for the duration of the drag — lets the user see
+        through to the drop target underneath. ``drag.exec()``
+        blocks until the drag completes, so the ended emit always
+        fires (whether the user dropped, canceled with Esc, or
+        released on an invalid target).
+        """
         drag = QDrag(self)
         mime = QMimeData()
         mime.setData(_LAYER_ID_MIME, self._layer_id.encode("utf-8"))
         drag.setMimeData(mime)
-        # A snapshot of the row gives the user clear feedback during
-        # the drag — they see what they're moving, not a generic
-        # cursor.
-        pixmap = self.grab()
+        # Build the drag pixmap. Either the multi-row composite
+        # (from the panel) or a single-row snapshot fallback. We
+        # capture BEFORE the ghost effect kicks in, so the floating
+        # pixmap stays at full opacity even though the rows behind
+        # it are about to fade.
+        pixmap, hotspot = self._build_drag_pixmap()
         drag.setPixmap(pixmap)
-        # Anchor the pixmap so the cursor stays exactly where the user
-        # grabbed the row — without this, Qt centres the pixmap on the
-        # cursor and the bar appears to jump left at drag-start. Falls
-        # back to a sensible centre if for some reason no press
-        # position was recorded.
+        drag.setHotSpot(hotspot)
+        self.reorder_drag_started.emit(self._layer_id)
+        try:
+            drag.exec(Qt.DropAction.MoveAction)
+        finally:
+            # Always restore opacity, even on exception or cancel.
+            self.reorder_drag_ended.emit(self._layer_id)
+
+    def _build_drag_pixmap(self) -> tuple[QPixmap, QPoint]:
+        """Return ``(pixmap, hotspot)`` for the QDrag.
+
+        For a multi-select reorder, asks the parent ``LayerPanel`` to
+        compose every selected row's snapshot into a vertical stack.
+        Falls back to a single-row grab when the panel can't be
+        located (= test harness, partial wiring) or when the source
+        row isn't part of a multi-select group.
+        """
+        panel = self._find_panel()
+        if panel is not None:
+            composite = panel.compose_reorder_drag_pixmap(self._layer_id)
+            if composite is not None:
+                pixmap, source_y = composite
+                # Hotspot: keep the cursor at the same row-local
+                # coordinates the user clicked, but offset
+                # vertically by where the source row sits within
+                # the composite stack.
+                local = self._press_pos or QPoint(
+                    self.width() // 4, self.height() // 2,
+                )
+                return pixmap, QPoint(local.x(), source_y + local.y())
+        # Fallback: single-row pixmap, painted at 50 % opacity so the
+        # user can see the drop indicator + panel underneath while
+        # the row floats with the cursor. Same intent as the
+        # composite path — the only difference is the source has a
+        # single tile instead of a stack.
+        snap = self.grab()
+        pixmap = QPixmap(snap.size())
+        pixmap.fill(QColor(0, 0, 0, 0))
+        painter = QPainter(pixmap)
+        try:
+            painter.setOpacity(0.5)
+            painter.drawPixmap(0, 0, snap)
+        finally:
+            painter.end()
         if self._press_pos is not None:
-            drag.setHotSpot(self._press_pos)
-        else:
-            drag.setHotSpot(QPoint(pixmap.width() // 4, pixmap.height() // 2))
-        drag.exec(Qt.DropAction.MoveAction)
+            return pixmap, self._press_pos
+        return pixmap, QPoint(pixmap.width() // 4, pixmap.height() // 2)
+
+    def _find_panel(self) -> "LayerPanel | None":
+        """Walk up the parent chain to locate the owning panel.
+
+        Cleaner than passing the panel reference through the
+        constructor (which would couple the row's API to the
+        panel's lifetime). The chain in practice is always
+        row → ``_RowsHost`` → ``LayerPanel``, so this is a quick
+        two-step lookup with no allocations.
+        """
+        p = self.parent()
+        while p is not None:
+            if isinstance(p, LayerPanel):
+                return p
+            p = p.parent()
+        return None
 
 
 # ---------------------------------------------------------------- LayerPanel
@@ -534,6 +747,11 @@ class LayerPanel(QFrame):  # type: ignore[misc]
     parented under the timeline.
     """
 
+    # Multi-select state changes — emitted with a ``frozenset[str]``
+    # (sent as object since Qt can't sniff parametrised typing). The
+    # focused layer is always part of this set.
+    selection_changed = Signal(object)
+
     def __init__(
         self,
         stack: LayerStack,
@@ -543,6 +761,17 @@ class LayerPanel(QFrame):  # type: ignore[misc]
         self._stack = stack
         self._collapsed = False
         self._rows: dict[str, LayerRow] = {}
+        # Multi-select group. Always contains the focused layer when
+        # one is set — the focus is a primary intent (channel menu,
+        # cache hint), so it can't be excluded from the group it's
+        # part of. Mutations go through ``set_selection`` /
+        # ``toggle_selected`` / ``range_select`` so the visual sync
+        # + signal emission happens in one place.
+        self._selected_ids: set[str] = set()
+        # Anchor for Shift+click range selection — set on every
+        # single/Ctrl click so the next Shift+click knows where to
+        # start the range from.
+        self._selection_anchor: str | None = None
 
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setStyleSheet(f"LayerPanel {{ background: {_PANEL_BG}; }}")
@@ -643,7 +872,9 @@ class LayerPanel(QFrame):  # type: ignore[misc]
         for i, layer in enumerate(layers):
             row = LayerRow(layer, index=i, parent=self._rows_host)
             row.set_focused(layer.id == focused_id)
+            row.set_selected(layer.id in self._selected_ids)
             row.focus_requested.connect(self._on_row_focus_requested)
+            row.row_clicked.connect(self._on_row_clicked)
             row.visibility_toggle_requested.connect(self._on_row_visibility_toggle)
             row.delete_requested.connect(self._on_row_delete_requested)
             row.transparency_toggled.connect(self._on_row_transparency_toggled)
@@ -651,6 +882,18 @@ class LayerPanel(QFrame):  # type: ignore[misc]
                 self._on_row_alpha_straight_toggled,
             )
             row.offset_changed.connect(self._on_row_offset_changed)
+            row.offset_preview_changed.connect(
+                self._on_row_offset_preview_changed,
+            )
+            row.offset_preview_cleared.connect(
+                self._on_row_offset_preview_cleared,
+            )
+            row.reorder_drag_started.connect(
+                self._on_row_reorder_drag_started,
+            )
+            row.reorder_drag_ended.connect(
+                self._on_row_reorder_drag_ended,
+            )
             row.trim_in_changed.connect(self._on_row_trim_in_changed)
             row.layer_out_changed.connect(self._on_row_layer_out_changed)
             self._rows_layout.addWidget(row)
@@ -667,13 +910,35 @@ class LayerPanel(QFrame):  # type: ignore[misc]
             empty.setStyleSheet("color: #606060; padding: 6px 12px;")
             empty.setFont(F.ui(F.SIZE_XS))
             self._rows_layout.addWidget(empty)
+            self._prune_selection_to_live()
             return
+        # Drop any selection ids that don't correspond to a live row
+        # anymore (= layer removed since the last rebuild). Keeps the
+        # cascade handlers + the visible row tints in lockstep.
+        self._prune_selection_to_live()
+        # Ensure the focused layer is always part of the selection
+        # (the invariant ``_on_focus_changed`` enforces at runtime).
+        # Without this seed, a panel built AFTER the stack already
+        # has a focused layer would start with an empty selection,
+        # and the first Ctrl+click would create a group that doesn't
+        # include the focus — confusing for the user since the row
+        # they were "editing" wouldn't cascade in the next group op.
+        if focused_id and focused_id not in self._selected_ids:
+            self._set_selection_internal(self._selected_ids | {focused_id})
 
     def _on_visibility_changed(self, layer_id: str) -> None:
         layer = self._stack.find(layer_id)
         row = self._rows.get(layer_id)
         if layer is not None and row is not None:
             row.set_visible_state(layer.visible)
+
+    def _prune_selection_to_live(self) -> None:
+        """Drop selection ids that no longer exist in the stack —
+        called from the rebuild after add/remove/reorder. Avoids the
+        cascade-handlers acting on phantom ids."""
+        live = {lid for lid in self._selected_ids if lid in self._rows}
+        if live != self._selected_ids:
+            self._set_selection_internal(live)
 
     def _on_layer_modified(self, layer_id: str) -> None:
         layer = self._stack.find(layer_id)
@@ -687,11 +952,160 @@ class LayerPanel(QFrame):  # type: ignore[misc]
     def _on_focus_changed(self, layer_id: str) -> None:
         for lid, row in self._rows.items():
             row.set_focused(lid == layer_id)
+        # Focus must always be part of the selection. Stack mutations
+        # that move focus elsewhere (layer added / removed / reordered)
+        # would otherwise leave a "selected but not focused, and the
+        # focus isn't selected" inconsistent state — auto-add to keep
+        # the invariant.
+        if layer_id and layer_id not in self._selected_ids:
+            self._set_selection_internal(self._selected_ids | {layer_id})
+
+    # ------------------------------------------------------------------ Multi-select public API
+
+    def selected_ids(self) -> frozenset[str]:
+        """Snapshot of the active multi-select group."""
+        return frozenset(self._selected_ids)
+
+    def is_selected(self, layer_id: str) -> bool:
+        return layer_id in self._selected_ids
+
+    def set_selection(self, ids: set[str]) -> None:
+        """Replace the selection wholesale. Trims to known-layer ids
+        so a stale id from an out-of-date caller is silently ignored.
+        Emits ``selection_changed`` only when something actually
+        moved."""
+        live = {lid for lid in ids if lid in self._rows}
+        if live == self._selected_ids:
+            return
+        self._set_selection_internal(live)
+
+    def clear_selection(self) -> None:
+        """Drop every selected id EXCEPT the focused one (focus stays
+        in the selection by invariant). Used when the user clicks
+        outside any row to dismiss the multi-select group."""
+        focused = self._stack.focused_id
+        new = {focused} if focused else set()
+        if new == self._selected_ids:
+            return
+        self._set_selection_internal(new)
+
+    # ------------------------------------------------------------------ Multi-select internals
+
+    def _set_selection_internal(self, ids: set[str]) -> None:
+        """Apply a new selection set, sync row visuals + emit signal."""
+        self._selected_ids = set(ids)
+        for lid, row in self._rows.items():
+            row.set_selected(lid in self._selected_ids)
+        self.selection_changed.emit(frozenset(self._selected_ids))
+
+    def _on_row_clicked(self, layer_id: str, kind: str) -> None:
+        """Modifier-aware click router.
+
+        ``kind`` is one of ``"single"`` / ``"ctrl"`` / ``"shift"``.
+        - **single** : focus + replace selection with ``{layer_id}``.
+        - **ctrl** : toggle ``layer_id`` in the selection. If the
+          clicked layer wasn't focused, it takes focus. If it was
+          focused AND there are other selected layers, focus shifts
+          to one of them (focus must always be in the selection).
+        - **shift** : range-select between the current anchor (or
+          focus if no anchor) and ``layer_id``, plus focus the
+          clicked layer.
+
+        ``focus_requested`` is emitted separately by
+        :meth:`LayerRow.mousePressEvent` for the simple case so the
+        existing ``_on_row_focus_requested`` chain (which calls
+        ``stack.set_focus``) still fires — we only handle the
+        selection-state side here.
+        """
+        if kind == "single":
+            # Always replace the selection with ``{layer_id}``. The
+            # press/drag distinction lives in the LayerRow / LayerBar
+            # widgets: they DEFER the ``row_clicked("single")`` emit
+            # to mouseRelease when the user pressed on an already-
+            # selected row, and only fire if there was no drag in
+            # between. So by the time we're called here, we know
+            # for sure the user wants to switch context to this one
+            # layer (either pressed on a fresh layer, or click-and-
+            # released on a selected one). Either way: replace.
+            self._set_selection_internal({layer_id})
+            self._selection_anchor = layer_id
+            return
+        if kind == "ctrl":
+            new_sel = set(self._selected_ids)
+            if layer_id in new_sel:
+                # Toggle off — but never leave the selection empty
+                # while a focus exists; the focus row stays in.
+                if layer_id == self._stack.focused_id:
+                    # Clicking off the focused row in a Ctrl flow:
+                    # promote some other selected id to focus, then
+                    # drop the original.
+                    others = [i for i in new_sel if i != layer_id]
+                    if others:
+                        self._stack.set_focus(others[0])
+                        new_sel.discard(layer_id)
+                    # If it was the only selection, ignore — the
+                    # focus must remain part of the set.
+                else:
+                    new_sel.discard(layer_id)
+            else:
+                new_sel.add(layer_id)
+                self._stack.set_focus(layer_id)
+            self._set_selection_internal(new_sel)
+            self._selection_anchor = layer_id
+            return
+        if kind == "shift":
+            anchor = (
+                self._selection_anchor
+                or self._stack.focused_id
+                or layer_id
+            )
+            ids = list(self._rows.keys())
+            try:
+                a_idx = ids.index(anchor)
+                b_idx = ids.index(layer_id)
+            except ValueError:
+                # One of the ids vanished between the anchor capture
+                # and now — fall back to single-select on the click.
+                self._set_selection_internal({layer_id})
+                self._selection_anchor = layer_id
+                self._stack.set_focus(layer_id)
+                return
+            lo, hi = sorted((a_idx, b_idx))
+            new_sel = set(ids[lo:hi + 1])
+            self._stack.set_focus(layer_id)
+            self._set_selection_internal(new_sel)
+            # Anchor doesn't move on shift-click — successive
+            # shift-clicks expand/shrink the range from the same
+            # original anchor (Excel / Photoshop convention).
 
     def _on_row_focus_requested(self, layer_id: str) -> None:
         self._stack.set_focus(layer_id)
 
     def _on_row_visibility_toggle(self, layer_id: str) -> None:
+        # Multi-select cascade: clicking the eye on a row that's part
+        # of the active group toggles every group member to the same
+        # new state. ``toggle_visible`` flips per layer, but a group
+        # is supposed to land on a single uniform state — so we read
+        # the SOURCE row's freshly-toggled visible flag and force the
+        # rest there. This avoids the "every layer flips
+        # individually" outcome where a partially-mixed selection
+        # ends up partially-mixed-again instead of unified.
+        if (
+            layer_id in self._selected_ids
+            and len(self._selected_ids) > 1
+        ):
+            source = self._stack.find(layer_id)
+            if source is None:
+                return
+            new_visible = not source.visible
+            with self._stack.batch():
+                self._stack.update(layer_id, visible=new_visible)
+                for sid in self._selected_ids:
+                    if sid == layer_id:
+                        continue
+                    if self._stack.find(sid) is not None:
+                        self._stack.update(sid, visible=new_visible)
+            return
         self._stack.toggle_visible(layer_id)
 
     def _on_row_dropped(self, layer_id: str, target_index: int) -> None:
@@ -701,6 +1115,14 @@ class LayerPanel(QFrame):  # type: ignore[misc]
         actually lands on N. ``LayerStack.reorder`` already clamps
         out-of-range values, so the math here only has to compensate
         for the pre-removal index shift.
+
+        Multi-select cascade: if the dragged layer is part of the
+        active selection, the whole group moves together as a
+        contiguous block — the dragged layer ends up at the target
+        and the other selected layers cluster around it preserving
+        their original relative order. We compute the desired final
+        permutation in Python first, then call ``reorder`` once per
+        layer in batch so the view sees a single ``layers_changed``.
         """
         layers = self._stack.layers()
         src_index = next(
@@ -708,12 +1130,49 @@ class LayerPanel(QFrame):  # type: ignore[misc]
         )
         if src_index is None:
             return
-        # The user dragged the row over its own position — no-op.
+
+        # Multi-select: move the entire group as a contiguous block.
+        if (
+            layer_id in self._selected_ids
+            and len(self._selected_ids) > 1
+        ):
+            non_selected = [
+                l for l in layers if l.id not in self._selected_ids
+            ]
+            selected_in_order = [
+                l for l in layers if l.id in self._selected_ids
+            ]
+            # Insertion point in the non-selected list = target_index
+            # minus how many selected layers used to sit above it.
+            # That collapses the pre-removal coord into a post-removal
+            # coord, where the group will be inserted as a unit.
+            above_count = sum(
+                1 for i, l in enumerate(layers)
+                if l.id in self._selected_ids and i < target_index
+            )
+            insertion = max(
+                0, min(target_index - above_count, len(non_selected)),
+            )
+            desired = (
+                non_selected[:insertion]
+                + selected_in_order
+                + non_selected[insertion:]
+            )
+            # No-op when the desired order matches the current one
+            # (the user dragged the group within its own block).
+            if [l.id for l in desired] == [l.id for l in layers]:
+                return
+            with self._stack.batch():
+                for new_idx, layer in enumerate(desired):
+                    # Idempotent reorders short-circuit inside the
+                    # stack itself, so calling for already-placed
+                    # layers is cheap (no signal, no undo entry).
+                    self._stack.reorder(layer.id, new_idx)
+            return
+
+        # Single-layer path (existing behaviour).
         if target_index == src_index or target_index == src_index + 1:
             return
-        # When dropping below the current position, the implicit pop
-        # shifts every later index down by one — so subtract one to
-        # land where the user pointed.
         adjusted = target_index - 1 if target_index > src_index else target_index
         self._stack.reorder(layer_id, adjusted)
 
@@ -721,18 +1180,217 @@ class LayerPanel(QFrame):  # type: ignore[misc]
         """Remove this layer. The cache invalidates the layer's
         master range via ``layers_changed`` and the app's
         ``_refresh_after_stack_change`` re-displays whatever's
-        underneath (or black if nothing covers the playhead)."""
+        underneath (or black if nothing covers the playhead).
+
+        Multi-select cascade: pressing Delete on any selected row
+        removes the entire group (Premiere / Resolve convention).
+        Wrapped in a single batch so the cache wipe + rebuild only
+        fires once.
+        """
+        if (
+            layer_id in self._selected_ids
+            and len(self._selected_ids) > 1
+        ):
+            ids_to_remove = list(self._selected_ids)
+            with self._stack.batch():
+                for sid in ids_to_remove:
+                    if self._stack.find(sid) is not None:
+                        self._stack.remove(sid)
+            return
         self._stack.remove(layer_id)
 
     # --- Drag commits from LayerBar ----------------------------------
 
     def _on_row_transparency_toggled(self, layer_id: str, on: bool) -> None:
+        # Multi-select cascade: align every selected layer's
+        # ``alpha_composite`` to the new value of the source row.
+        # Same uniform-state rule as the visibility cascade.
+        if (
+            layer_id in self._selected_ids
+            and len(self._selected_ids) > 1
+        ):
+            with self._stack.batch():
+                for sid in self._selected_ids:
+                    if self._stack.find(sid) is not None:
+                        self._stack.update(sid, alpha_composite=bool(on))
+            return
         self._stack.update(layer_id, alpha_composite=bool(on))
 
     def _on_row_alpha_straight_toggled(self, layer_id: str, on: bool) -> None:
+        # Same cascade pattern as transparency.
+        if (
+            layer_id in self._selected_ids
+            and len(self._selected_ids) > 1
+        ):
+            with self._stack.batch():
+                for sid in self._selected_ids:
+                    if self._stack.find(sid) is not None:
+                        self._stack.update(sid, alpha_is_straight=bool(on))
+            return
         self._stack.update(layer_id, alpha_is_straight=bool(on))
 
+    def compose_reorder_drag_pixmap(
+        self, source_id: str,
+    ) -> tuple[QPixmap, int] | None:
+        """Build a vertically-stacked snapshot of every selected row.
+
+        Returns ``(pixmap, source_y_offset)`` where ``source_y_offset``
+        is the y coordinate where the source row's snapshot starts
+        within the composite — the row uses it to position its drag
+        hotspot so the cursor stays anchored at the same point inside
+        the source row regardless of how many other rows sit above it.
+
+        ``None`` when the source row isn't part of a multi-select
+        group (= the row should fall back to its single-row snapshot).
+        That's the cleaner contract than always returning a pixmap:
+        the row knows it can use the simpler ``self.grab()`` path
+        without the composite plumbing.
+        """
+        # Selection of size 1 (= just the source row, which my
+        # ``_on_focus_changed`` keeps in the selection) means
+        # nothing visible to compose — let the row fall back.
+        if len(self._selected_ids) <= 1 or source_id not in self._selected_ids:
+            return None
+        # Layers in CURRENT stack order (top→bottom) so the composite
+        # matches what the user sees in the panel.
+        ordered_selected = [
+            l for l in self._stack.layers() if l.id in self._selected_ids
+        ]
+        snapshots = []
+        source_y = 0
+        total_h = 0
+        max_w = 0
+        for layer in ordered_selected:
+            row = self._rows.get(layer.id)
+            if row is None:
+                continue
+            snap = row.grab()
+            if layer.id == source_id:
+                source_y = total_h
+            snapshots.append(snap)
+            total_h += snap.height()
+            max_w = max(max_w, snap.width())
+        if not snapshots:
+            return None
+        # Compose vertically. Transparent background so non-overlapping
+        # stack edges don't show a black or platform-default fill on
+        # high-DPI / dark themes. The 50 % painter opacity is what
+        # makes the floating drag visual actually let the user SEE
+        # the panel + drop indicator underneath — without it, the
+        # composite block is fully opaque and obscures exactly the
+        # spot the user is trying to read (the drop target).
+        composite = QPixmap(max_w, total_h)
+        composite.fill(QColor(0, 0, 0, 0))
+        painter = QPainter(composite)
+        try:
+            painter.setOpacity(0.5)
+            y = 0
+            for snap in snapshots:
+                painter.drawPixmap(0, y, snap)
+                y += snap.height()
+        finally:
+            painter.end()
+        return composite, source_y
+
+    def _on_row_reorder_drag_started(self, source_id: str) -> None:
+        """Ghost every selected row for the duration of the drag.
+
+        ``source_id`` is the row that initiated the drag — we ghost
+        it too (the floating pixmap follows the cursor; the ghosted
+        row stays at its position so the user sees both: where the
+        layer is leaving from + where it's heading to). Rows outside
+        the selection stay at full opacity.
+        """
+        targets = self._selected_ids
+        if source_id not in targets:
+            # Drag started on a non-selected layer — only ghost the
+            # source itself. The cascade in ``_on_row_dropped`` won't
+            # apply to peers either, so the visual matches the
+            # data path.
+            targets = {source_id}
+        for sid in targets:
+            row = self._rows.get(sid)
+            if row is not None:
+                row.set_ghost(True)
+
+    def _on_row_reorder_drag_ended(self, source_id: str) -> None:
+        """Restore full opacity on every row. Called whether the
+        drag dropped, was canceled, or hit an invalid target.
+
+        We restore on EVERY row (not just the previously-ghosted
+        ones) — defensive against a stale ghost surviving a panel
+        rebuild that happened mid-drag. ``set_ghost(False)`` on a
+        row that wasn't ghosted is a cheap no-op.
+        """
+        del source_id  # used only for symmetry with started
+        for row in self._rows.values():
+            row.set_ghost(False)
+
+    def _on_row_offset_preview_changed(
+        self, layer_id: str, new_offset: int,
+    ) -> None:
+        """Live preview from a body drag — slide every peer bar in
+        the multi-select group by the same delta. The dragged bar
+        paints itself from its own ``_drag_preview_offset``; peers
+        get their preview pushed via ``set_external_preview_offset``.
+
+        No mutation of the LayerStack happens here — we just
+        propagate visual hints. The actual model update fires on
+        commit (``offset_changed``).
+        """
+        if (
+            layer_id not in self._selected_ids
+            or len(self._selected_ids) <= 1
+        ):
+            return
+        source = self._stack.find(layer_id)
+        if source is None:
+            return
+        delta = new_offset - source.offset
+        for sid in self._selected_ids:
+            if sid == layer_id:
+                continue
+            peer_layer = self._stack.find(sid)
+            peer_row = self._rows.get(sid)
+            if peer_layer is None or peer_row is None:
+                continue
+            peer_row.set_bar_external_preview_offset(
+                peer_layer.offset + delta,
+            )
+
+    def _on_row_offset_preview_cleared(self, layer_id: str) -> None:
+        """Source bar has released (or canceled) — clear every peer's
+        external preview so they paint from their committed offset
+        again. Idempotent; setting None when already None is a
+        no-op repaint dodge."""
+        for sid, row in self._rows.items():
+            if sid == layer_id:
+                continue
+            row.set_bar_external_preview_offset(None)
+
     def _on_row_offset_changed(self, layer_id: str, new_offset: int) -> None:
+        # Multi-select cascade: when the user dragged a layer that's
+        # part of the group, apply the SAME delta to every other
+        # selected layer. We compute the delta from the source
+        # layer's current (pre-update) offset since that's what the
+        # bar has been previewing relative to.
+        if (
+            layer_id in self._selected_ids
+            and len(self._selected_ids) > 1
+        ):
+            source = self._stack.find(layer_id)
+            if source is None:
+                return
+            delta = new_offset - source.offset
+            if delta == 0:
+                return
+            with self._stack.batch():
+                for sid in self._selected_ids:
+                    s = self._stack.find(sid)
+                    if s is None:
+                        continue
+                    self._stack.update(sid, offset=s.offset + delta)
+            return
         self._stack.update(layer_id, offset=new_offset)
 
     def _on_row_trim_in_changed(
@@ -852,7 +1510,7 @@ class MasterTimelinePanel(QFrame):  # type: ignore[misc]
     # top layer to the stack. The semantically opposite gesture of
     # ``ViewerWidget.replace_requested``; route accordingly in the
     # main window.
-    add_layer_requested = Signal(Path)
+    add_layer_requested = Signal(list)
     """Composite that owns the master timeline + the layer panel.
 
     Why this exists: the timeline and the layer rows used to be two
@@ -943,7 +1601,7 @@ class MasterTimelinePanel(QFrame):  # type: ignore[misc]
         )
         install_file_drop_zone(
             self, self._drop_overlay,
-            lambda path: self.add_layer_requested.emit(path),
+            lambda paths: self.add_layer_requested.emit(paths),
         )
 
     @property

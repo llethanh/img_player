@@ -1,154 +1,305 @@
-"""Modal dialog: pick one sequence among several found in a folder.
+"""Modal dialog: pick one or more sequences out of a multi-source drop.
 
-Shown when the user drops (or opens) a directory that contains more
-than one image sequence. Without the dialog, the scanner silently
-falls back to "the largest sequence in the folder", which is wrong
-when an artist drops a mixed bag (renders + ref images, multiple AOV
-passes split into siblings, etc.).
+Two flavours
+------------
 
-Layout — kept deliberately simple, one row per sequence:
+* **Single-source legacy** — :meth:`SequencePickerDialog.pick` keeps
+  the v1.0 behaviour: a flat list, single selection, returns one
+  :class:`SequenceInfo` or ``None``. Used by the multi-sequence
+  resolver for a single dropped folder so callers that don't yet
+  know about groups keep working.
 
-    ┌── Pick a sequence ──────────────────────────────────────┐
-    │                                                         │
-    │   beauty.####.exr            1001-1240   (240 frames)   │
-    │   diffuse.####.exr           1001-1240   (240 frames)   │
-    │   plate.####.dpx             1001-1240   (240 frames)   │
-    │   thumb.####.jpg             1-12        (12 frames)    │
-    │                                                         │
-    │                              [ Cancel ]  [ Open ]       │
-    └─────────────────────────────────────────────────────────┘
+* **Multi-source grouped** — :meth:`SequencePickerDialog.pick_grouped`
+  takes a list of :class:`FolderGroup` (one per dropped folder, plus
+  an optional "loose files" group for raw files), shows them under
+  bold non-selectable folder headers with checkboxes on the
+  sequence rows, and returns the user's selection as a list. Empty
+  folders show a greyed "[no sequence found]" entry so a misfired
+  drop doesn't disappear silently.
 
-Double-click on a row = accept (= the same as picking + Open). Up /
-Down arrows + Enter also work. Cancel returns ``None`` from
-:meth:`pick`, the caller skips the load.
+Default check state
+-------------------
+* If the entire drop resolves to exactly one sequence, that sequence
+  is pre-checked (= one click on Load and you're done).
+* Otherwise nothing is pre-checked — the user opts into each
+  sequence rather than discovering 30 layers loaded at once.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
+
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
+    QHBoxLayout,
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QPushButton,
     QVBoxLayout,
     QWidget,
 )
 
 from img_player.sequence.models import SequenceInfo
+from img_player.sequence.scanner import FolderGroup
 from img_player.ui.theme import F, H, S
 
 
+# Custom item-data role to track which list rows hold a sequence
+# (carries the SequenceInfo) versus a header / placeholder (carries
+# ``None``). Drives ``selected_sequences()`` and the per-row check
+# semantics — headers are non-selectable and ignore checks.
+_ROLE_SEQ = Qt.ItemDataRole.UserRole + 1
+
+
 class SequencePickerDialog(QDialog):  # type: ignore[misc]
-    """Modal sequence chooser. Use :meth:`pick` for the convenience API."""
+    """Modal sequence chooser. See module docstring for the two APIs."""
 
     def __init__(
         self,
-        sequences: list[SequenceInfo],
+        sequences: list[SequenceInfo] | None = None,
+        groups: list[FolderGroup] | None = None,
+        *,
         parent: QWidget | None = None,
+        multi: bool = False,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Pick a sequence")
         self.setModal(True)
-        self.setMinimumWidth(520)
-        self._sequences = sequences
+        self.setMinimumWidth(560)
+        self._multi = multi
+        # Either a flat sequence list or a grouped list — never both.
+        self._sequences: list[SequenceInfo] = list(sequences) if sequences else []
+        self._groups: list[FolderGroup] = list(groups) if groups else []
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(S.LG, S.LG, S.LG, S.LG)
         outer.setSpacing(S.MD)
 
-        header = QLabel(
-            f"This folder contains {len(sequences)} sequences. "
-            f"Pick one to load:"
-        )
+        if multi:
+            total = sum(len(g.sequences) for g in self._groups)
+            if total <= 1:
+                header_text = (
+                    "One sequence detected in the dropped sources. "
+                    "Confirm to load:"
+                )
+            else:
+                header_text = (
+                    f"{total} sequences detected in the dropped sources. "
+                    f"Tick the ones you want to load:"
+                )
+        else:
+            header_text = (
+                f"This folder contains {len(self._sequences)} sequences. "
+                f"Pick one to load:"
+            )
+        header = QLabel(header_text)
         header.setWordWrap(True)
         outer.addWidget(header)
 
         self._list = QListWidget()
-        # Mono font on the list so frame ranges line up vertically —
-        # easier to scan when several sequences share a base name and
-        # only the range differs.
         self._list.setFont(F.mono(F.SIZE_SM))
-        self._list.setMinimumHeight(160)
-        # Stronger selection highlight than the global QSS default.
-        # That default uses ACCENT_DIM (a muted orange) which gets
-        # lost against the dark list background — users couldn't
-        # tell which row was picked. Override with the bright accent
-        # for the row + a clear text contrast, and keep a subtle
-        # hover so keyboard / mouse users both get visual feedback.
-        # Also a comfortable per-row padding so text doesn't hug the
-        # edges in a font-mono list.
-        self._list.setStyleSheet(
-            f"""
-            QListWidget {{
-                background: #14161A;
-                border: 1px solid #2A2D33;
-                border-radius: 4px;
-                outline: 0;
-            }}
-            QListWidget::item {{
-                padding: 6px 10px;
-                color: #D8D8D8;
-            }}
-            QListWidget::item:hover {{
-                background: #1F2228;
-            }}
-            QListWidget::item:selected {{
-                background: {H.ACCENT};
-                color: #0A0A0A;
-            }}
-            QListWidget::item:selected:!active {{
-                /* Same vivid colour even when the dialog loses focus
-                   (clicking Open via mouse blurs the list briefly). */
-                background: {H.ACCENT};
-                color: #0A0A0A;
-            }}
-            """
-        )
-        for seq in sequences:
-            item = QListWidgetItem(self._format_row(seq))
-            item.setToolTip(str(seq.directory / seq.display_pattern()))
-            self._list.addItem(item)
-        # Pre-select the first row (= largest sequence — scan_all
-        # returns largest first). Keyboard arrows work out of the box.
-        if sequences:
-            self._list.setCurrentRow(0)
-        # Double-click is the universal "accept this row" gesture.
-        self._list.itemDoubleClicked.connect(lambda _item: self.accept())
+        self._list.setMinimumHeight(220)
+        self._list.setStyleSheet(_LIST_QSS.format(accent=H.ACCENT))
+        if multi:
+            # Checkboxes are the entire selection model — row
+            # highlight on top of them adds noise without information,
+            # so disable selection in multi mode.
+            self._list.setSelectionMode(
+                QListWidget.SelectionMode.NoSelection,
+            )
+            # Click-anywhere-on-the-row toggles the checkbox: a small
+            # affordance that makes the picker feel native (Qt's
+            # default requires a precise hit on the indicator
+            # rectangle, which is fiddly for fast users).
+            self._list.itemClicked.connect(self._toggle_item_check)
         outer.addWidget(self._list, 1)
 
-        # Standard button row — Cancel left, Open right (Qt auto-orders
-        # for the platform). Open is the default so Enter accepts.
-        buttons = QDialogButtonBox(
+        if multi:
+            self._populate_groups()
+        else:
+            self._populate_flat()
+
+        # --- Buttons row ----------------------------------------------
+        btn_row = QHBoxLayout()
+        if multi:
+            self._select_all_btn = QPushButton("Select all")
+            self._deselect_all_btn = QPushButton("Deselect all")
+            self._select_all_btn.clicked.connect(
+                lambda: self._set_all_checked(True),
+            )
+            self._deselect_all_btn.clicked.connect(
+                lambda: self._set_all_checked(False),
+            )
+            btn_row.addWidget(self._select_all_btn)
+            btn_row.addWidget(self._deselect_all_btn)
+        btn_row.addStretch(1)
+
+        std = (
             QDialogButtonBox.StandardButton.Cancel
-            | QDialogButtonBox.StandardButton.Open,
-            parent=self,
+            | (
+                QDialogButtonBox.StandardButton.Ok if multi
+                else QDialogButtonBox.StandardButton.Open
+            )
         )
-        open_btn = buttons.button(QDialogButtonBox.StandardButton.Open)
-        if open_btn is not None:
-            open_btn.setDefault(True)
-            open_btn.setAutoDefault(True)
+        buttons = QDialogButtonBox(std, parent=self)
+        ok_btn = buttons.button(
+            QDialogButtonBox.StandardButton.Ok if multi
+            else QDialogButtonBox.StandardButton.Open
+        )
+        if ok_btn is not None:
+            if multi:
+                ok_btn.setText("Load selected")
+            ok_btn.setDefault(True)
+            ok_btn.setAutoDefault(True)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
-        outer.addWidget(buttons)
+        btn_row.addWidget(buttons)
+        outer.addLayout(btn_row)
+
+        # In flat mode, double-click = pick + accept (legacy behaviour).
+        if not multi:
+            self._list.itemDoubleClicked.connect(lambda _i: self.accept())
+            if self._sequences:
+                self._list.setCurrentRow(0)
+
+    # ------------------------------------------------------------------ Population
+
+    def _populate_flat(self) -> None:
+        for seq in self._sequences:
+            item = QListWidgetItem(_format_seq_row(seq))
+            item.setToolTip(str(seq.directory / seq.display_pattern()))
+            item.setData(_ROLE_SEQ, seq)
+            self._list.addItem(item)
+
+    def _populate_groups(self) -> None:
+        total = sum(len(g.sequences) for g in self._groups)
+        default_checked = (total == 1)
+        first_group = True
+        for group in self._groups:
+            if not first_group:
+                # Thin horizontal divider — replaces the old empty
+                # spacer row. Reads as a clear visual break without
+                # eating vertical space the way a blank line did.
+                self._add_separator()
+            first_group = False
+            if group.folder is not None:
+                self._add_header(group.folder.name)
+            if group.empty:
+                self._add_empty_marker()
+                continue
+            for seq in group.sequences:
+                self._add_seq_item(seq, checked=default_checked)
+
+    def _add_header(self, text: str) -> None:
+        item = QListWidgetItem(text)
+        item.setData(_ROLE_SEQ, None)
+        flags = item.flags()
+        flags &= ~Qt.ItemFlag.ItemIsSelectable
+        flags &= ~Qt.ItemFlag.ItemIsUserCheckable
+        item.setFlags(flags)
+        item.setFont(F.ui(F.SIZE_MD, bold=True))
+        item.setForeground(QBrush(QColor("#E8E8E8")))
+        self._list.addItem(item)
+
+    def _add_empty_marker(self) -> None:
+        item = QListWidgetItem("    [no sequence found]")
+        item.setData(_ROLE_SEQ, None)
+        flags = item.flags()
+        flags &= ~Qt.ItemFlag.ItemIsSelectable
+        flags &= ~Qt.ItemFlag.ItemIsUserCheckable
+        item.setFlags(flags)
+        item.setForeground(QBrush(QColor("#6B6E74")))
+        self._list.addItem(item)
+
+    def _add_separator(self) -> None:
+        """Tiny non-interactive row drawn as a horizontal rule.
+
+        Uses Unicode box-drawing dashes (``─``) — they tile into a
+        continuous line at any DPI without needing a custom item
+        delegate. The row is short (4 px padding + the line itself)
+        so groups sit close to each other while staying visually
+        distinct.
+        """
+        from PySide6.QtCore import QSize
+        item = QListWidgetItem("─" * 200)
+        item.setData(_ROLE_SEQ, None)
+        flags = item.flags()
+        flags &= ~Qt.ItemFlag.ItemIsSelectable
+        flags &= ~Qt.ItemFlag.ItemIsUserCheckable
+        flags &= ~Qt.ItemFlag.ItemIsEnabled
+        item.setFlags(flags)
+        item.setForeground(QBrush(QColor("#3A3D43")))
+        # Force a thin row height. The default would inherit the
+        # mono font's full line — way too tall for a separator.
+        item.setSizeHint(QSize(0, 6))
+        self._list.addItem(item)
+
+    def _add_seq_item(self, seq: SequenceInfo, *, checked: bool) -> None:
+        item = QListWidgetItem("    " + _format_seq_row(seq))
+        item.setData(_ROLE_SEQ, seq)
+        item.setToolTip(str(seq.directory / seq.display_pattern()))
+        flags = item.flags()
+        flags |= Qt.ItemFlag.ItemIsUserCheckable
+        item.setFlags(flags)
+        item.setCheckState(
+            Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked,
+        )
+        self._list.addItem(item)
 
     # ------------------------------------------------------------------ Helpers
 
-    @staticmethod
-    def _format_row(seq: SequenceInfo) -> str:
-        """One-line summary: pattern + range + count, padded for alignment."""
-        pattern = seq.display_pattern()
-        rng = f"{seq.first_frame}-{seq.last_frame}"
-        count = f"({seq.frame_count} frames)"
-        # Hand-tuned column widths — the dialog is wide enough.
-        return f"{pattern:<32}  {rng:<14}  {count}"
+    def _toggle_item_check(self, item: QListWidgetItem) -> None:
+        """Click anywhere on a sequence row → toggle its check state.
+
+        Headers / separators / empty markers all carry ``None`` in
+        ``_ROLE_SEQ`` and are silently ignored.
+        """
+        seq = item.data(_ROLE_SEQ)
+        if seq is None:
+            return
+        new = (
+            Qt.CheckState.Unchecked
+            if item.checkState() == Qt.CheckState.Checked
+            else Qt.CheckState.Checked
+        )
+        item.setCheckState(new)
+
+    def _set_all_checked(self, checked: bool) -> None:
+        state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+        for i in range(self._list.count()):
+            item = self._list.item(i)
+            if item is None:
+                continue
+            seq = item.data(_ROLE_SEQ)
+            if seq is None:
+                continue
+            item.setCheckState(state)
 
     def selected_sequence(self) -> SequenceInfo | None:
-        """Return the currently highlighted row's sequence, ``None`` if none."""
+        """Legacy single-select API — returns the highlighted row's seq."""
         row = self._list.currentRow()
-        if 0 <= row < len(self._sequences):
-            return self._sequences[row]
-        return None
+        item = self._list.item(row) if row >= 0 else None
+        if item is None:
+            return None
+        return item.data(_ROLE_SEQ)
+
+    def selected_sequences(self) -> list[SequenceInfo]:
+        """Multi-select API — returns every checked sequence in display order."""
+        out: list[SequenceInfo] = []
+        for i in range(self._list.count()):
+            item = self._list.item(i)
+            if item is None:
+                continue
+            seq = item.data(_ROLE_SEQ)
+            if seq is None:
+                continue
+            if item.checkState() == Qt.CheckState.Checked:
+                out.append(seq)
+        return out
 
     # ------------------------------------------------------------------ Convenience
 
@@ -158,12 +309,86 @@ class SequencePickerDialog(QDialog):  # type: ignore[misc]
         sequences: list[SequenceInfo],
         parent: QWidget | None = None,
     ) -> SequenceInfo | None:
-        """Show the dialog and return the user's pick (or ``None`` on cancel).
-
-        Pure convenience wrapper around the QDialog dance — most call
-        sites only need the chosen sequence, not the dialog instance.
-        """
-        dlg = cls(sequences, parent=parent)
+        """Single-select flow (legacy). Returns the chosen seq or ``None``."""
+        dlg = cls(sequences=sequences, parent=parent, multi=False)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return None
         return dlg.selected_sequence()
+
+    @classmethod
+    def pick_grouped(
+        cls,
+        groups: list[FolderGroup],
+        parent: QWidget | None = None,
+    ) -> list[SequenceInfo]:
+        """Multi-select flow. Returns every checked seq, ``[]`` on cancel."""
+        dlg = cls(groups=groups, parent=parent, multi=True)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return []
+        return dlg.selected_sequences()
+
+
+# ---------------------------------------------------------------- Formatting
+
+def _format_seq_row(seq: SequenceInfo) -> str:
+    """One-line summary: pattern + range + resolution."""
+    pattern = seq.display_pattern()
+    rng = f"[{seq.first_frame}-{seq.last_frame}]"
+    if seq.width and seq.height:
+        res = f"{seq.width}×{seq.height}"
+    else:
+        res = f"{seq.frame_count}f"
+    return f"{pattern:<32}  {rng:<14}  {res}"
+
+
+_LIST_QSS = """
+QListWidget {{
+    background: #14161A;
+    border: 1px solid #2A2D33;
+    border-radius: 4px;
+    outline: 0;
+}}
+QListWidget::item {{
+    padding: 4px 10px;
+    color: #D8D8D8;
+}}
+QListWidget::item:hover {{
+    background: #1F2228;
+}}
+QListWidget::item:selected {{
+    background: {accent};
+    color: #0A0A0A;
+}}
+QListWidget::item:selected:!active {{
+    background: {accent};
+    color: #0A0A0A;
+}}
+/* Custom check indicator. Qt's default 13 px square gets lost next
+   to a 14 px mono font and looks half-disabled — bump the box to
+   18 px and give it loud two-state styling.
+
+   The check glyph itself is drawn as an inline SVG data URI so the
+   dialog stays self-contained (no extra resource file to keep in
+   sync). %23 is the URL-encoded ``#`` so we can write the colour
+   inline. */
+QListWidget::indicator {{
+    width: 18px;
+    height: 18px;
+    margin-right: 6px;
+}}
+QListWidget::indicator:unchecked {{
+    border: 2px solid #6B7079;
+    background: #14161A;
+    border-radius: 3px;
+}}
+QListWidget::indicator:unchecked:hover {{
+    border-color: {accent};
+    background: #1A1D22;
+}}
+QListWidget::indicator:checked {{
+    background: {accent};
+    border: 2px solid {accent};
+    border-radius: 3px;
+    image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M3 8.5 L6.5 12 L13 4.5' fill='none' stroke='%23000000' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+}}
+"""

@@ -7,9 +7,11 @@ from pathlib import Path
 import pytest
 
 from img_player.sequence.scanner import (
+    FolderGroup,
     SequenceNotFoundError,
     scan,
     scan_all,
+    scan_paths,
 )
 
 
@@ -79,3 +81,66 @@ def test_scan_empty_directory_raises(tmp_path: Path) -> None:
 def test_display_pattern(sequence_dir: Path) -> None:
     seq = scan(sequence_dir)
     assert seq.display_pattern() == "render.####.png"
+
+
+# ---------------------------------------------------------------------------
+# scan_paths — multi-source aggregation for the grouped picker
+# ---------------------------------------------------------------------------
+
+
+def test_scan_paths_groups_per_folder(
+    sequence_dir: Path, mixed_sequences_dir: Path,
+) -> None:
+    groups = scan_paths([sequence_dir, mixed_sequences_dir])
+    # One group per folder, no loose group, sorted alphabetically by name.
+    assert all(isinstance(g, FolderGroup) for g in groups)
+    assert all(g.folder is not None for g in groups)
+    folders = [g.folder.name for g in groups]
+    assert folders == sorted(folders, key=str.lower)
+    # Mixed folder yields its 2 sequences (big + small); seq_dir yields 1.
+    counts = {g.folder.name: len(g.sequences) for g in groups}
+    assert counts[mixed_sequences_dir.name] == 2
+    assert counts[sequence_dir.name] == 1
+
+
+def test_scan_paths_loose_files_at_root(sequence_dir: Path) -> None:
+    a_frame = sequence_dir / "render.0005.png"
+    groups = scan_paths([a_frame])
+    assert len(groups) == 1
+    # Loose group: folder=None, single resolved sequence.
+    assert groups[0].folder is None
+    assert len(groups[0].sequences) == 1
+    assert groups[0].sequences[0].frame_count == 10
+
+
+def test_scan_paths_empty_folder_marked(tmp_path: Path) -> None:
+    empty = tmp_path / "empty_folder"
+    empty.mkdir()
+    groups = scan_paths([empty])
+    assert len(groups) == 1
+    assert groups[0].folder == empty
+    assert groups[0].empty is True
+    assert groups[0].sequences == ()
+
+
+def test_scan_paths_dedups_loose_pointing_to_same_seq(sequence_dir: Path) -> None:
+    a = sequence_dir / "render.0001.png"
+    b = sequence_dir / "render.0002.png"
+    groups = scan_paths([a, b])
+    # Both files belong to the same sequence — should produce ONE
+    # entry under the loose group, not two.
+    assert len(groups) == 1
+    assert groups[0].folder is None
+    assert len(groups[0].sequences) == 1
+
+
+def test_scan_paths_mixed_loose_and_folder(
+    sequence_dir: Path, mixed_sequences_dir: Path,
+) -> None:
+    # Drop a raw file from sequence_dir + the mixed_sequences_dir folder.
+    raw = sequence_dir / "render.0001.png"
+    groups = scan_paths([raw, mixed_sequences_dir])
+    # Loose group always comes first, folder group(s) follow.
+    assert groups[0].folder is None
+    assert all(g.folder is not None for g in groups[1:])
+    assert len(groups[0].sequences) == 1

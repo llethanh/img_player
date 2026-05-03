@@ -46,8 +46,12 @@ from img_player.sequence.scanner import scan
 
 log = logging.getLogger(__name__)
 
-SESSION_VERSION = 1
+SESSION_VERSION = 2
 SESSION_EXTENSION = ".session"
+
+# Versions we know how to read. v1 lacks the top-level ``color_state``
+# block; we accept it and just leave the panel state untouched on load.
+_READABLE_VERSIONS = {1, 2}
 
 
 # ----------------------------------------------------------------- Schema
@@ -87,14 +91,51 @@ class _SessionLayer:
     alpha_is_straight: bool = False
 
 
+# ----------------------------------------------------------------- Color state
+
+
+@dataclass
+class ColorState:
+    """Snapshot of the global Color panel (OCIO triple + viewing tweaks).
+
+    Stored at the session level rather than per-layer because these
+    are *viewing* parameters: they describe how the user wants the
+    composited image to look on their monitor, independent of which
+    layer is focused. Saving them in the session lets a re-open
+    restore the look the user shipped with — without it the player
+    keeps whatever display/view the last sequence used, which is
+    often wrong (e.g. user reviewed a Rec709 deliverable, then
+    opens an ACEScg WIP session and sees it through Rec709).
+
+    All fields default to ``None`` / ``0`` so the loader can always
+    instantiate a "do nothing" ColorState when the JSON predates
+    this feature (session v1).
+    """
+
+    source_colorspace: str | None = None
+    display: str | None = None
+    view: str | None = None
+    exposure: float = 0.0
+    gamma: float = 1.0
+
+
 # ----------------------------------------------------------------- Save
 
 
-def save_session(stack: LayerStack, path: Path) -> None:
+def save_session(
+    stack: LayerStack, path: Path, *,
+    color_state: ColorState | None = None,
+) -> None:
     """Serialise ``stack`` to ``path`` as JSON.
 
     Overwrites any existing file at the path. The ``.session``
     extension is added if missing.
+
+    ``color_state`` captures the global Color panel triple
+    (source / display / view + exposure + gamma) so opening the
+    session restores the same viewing look. Pass ``None`` to omit
+    the block — the loader treats a missing block as "leave the
+    panel as is" (v1 backward-compat).
     """
     if path.suffix != SESSION_EXTENSION:
         path = path.with_suffix(SESSION_EXTENSION)
@@ -126,11 +167,13 @@ def save_session(stack: LayerStack, path: Path) -> None:
             sl.channel_tile_labels = [g.label for g in sel.tiles]
             sl.channel_tile_channels = [list(g.channels) for g in sel.tiles]
         layers_payload.append(asdict(sl))
-    payload = {
+    payload: dict[str, Any] = {
         "version": SESSION_VERSION,
         "focused_id": stack.focused_id,
         "layers": layers_payload,
     }
+    if color_state is not None:
+        payload["color_state"] = asdict(color_state)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, ensure_ascii=False)
@@ -147,6 +190,10 @@ class LoadResult:
     loaded: int = 0
     skipped: int = 0
     errors: list[str] = field(default_factory=list)
+    # Color panel snapshot the session shipped with (v2+). ``None``
+    # for v1 sessions / sessions saved without a color_state — the
+    # caller leaves the panel state untouched in that case.
+    color_state: "ColorState | None" = None
 
 
 def load_session(stack: LayerStack, path: Path) -> LoadResult:
@@ -162,12 +209,24 @@ def load_session(stack: LayerStack, path: Path) -> LoadResult:
     result = LoadResult()
     with path.open("r", encoding="utf-8") as f:
         payload = json.load(f)
-    if payload.get("version") != SESSION_VERSION:
+    payload_version = payload.get("version")
+    if payload_version not in _READABLE_VERSIONS:
         result.errors.append(
-            f"Unknown session version {payload.get('version')!r}; "
-            f"expected {SESSION_VERSION}"
+            f"Unknown session version {payload_version!r}; "
+            f"expected one of {sorted(_READABLE_VERSIONS)}"
         )
         return result
+    # Color state — only present from v2 onwards. v1 sessions get a
+    # ``None`` color_state and the caller leaves the panel alone.
+    color_payload = payload.get("color_state")
+    if color_payload is not None:
+        result.color_state = ColorState(
+            source_colorspace=color_payload.get("source_colorspace"),
+            display=color_payload.get("display"),
+            view=color_payload.get("view"),
+            exposure=float(color_payload.get("exposure", 0.0)),
+            gamma=float(color_payload.get("gamma", 1.0)),
+        )
     layer_entries = payload.get("layers", [])
     rebuilt_focused: str | None = None
     saved_focused = payload.get("focused_id", "")

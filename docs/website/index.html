@@ -870,6 +870,82 @@ section .lede {
 }
 .kbd-row .desc { font-size: 13px; color: var(--text-secondary); }
 
+/* Changelog */
+.changelog {
+  display: flex; flex-direction: column;
+  gap: var(--s-lg);
+  margin-top: var(--s-lg);
+}
+.release {
+  display: grid;
+  grid-template-columns: 180px 1fr;
+  gap: var(--s-lg);
+  padding: var(--s-md) var(--s-lg);
+  background: var(--bg-raised);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+}
+.release-meta {
+  display: flex; flex-direction: column;
+  gap: 4px;
+  padding-top: 2px;
+}
+.release-meta .ver {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--accent);
+}
+.release-meta .date {
+  font-size: 12px;
+  color: var(--text-disabled);
+}
+.release-meta .tagline {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-top: var(--s-sm);
+  font-style: italic;
+}
+.release-body { font-size: 14px; color: var(--text-secondary); }
+.release-body h4 {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-disabled);
+  margin: 0 0 var(--s-sm) 0;
+}
+.release-body h4:not(:first-child) { margin-top: var(--s-md); }
+.release-body ul {
+  list-style: none;
+  padding: 0; margin: 0;
+  display: flex; flex-direction: column;
+  gap: 6px;
+}
+.release-body li {
+  position: relative;
+  padding-left: 18px;
+  line-height: 1.5;
+}
+.release-body li::before {
+  content: ""; position: absolute;
+  left: 4px; top: 9px;
+  width: 5px; height: 5px;
+  background: var(--accent);
+  border-radius: 50%;
+}
+.release-body li.fix::before { background: #5DC9D2; }
+.release-body code {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 12px;
+  padding: 1px 5px;
+  background: var(--bg-deep);
+  border: 1px solid var(--border-subtle);
+  border-radius: 3px;
+  color: var(--text-primary);
+}
+
 /* Footer */
 footer {
   margin-top: var(--s-2xl);
@@ -887,6 +963,7 @@ footer a:hover { color: var(--accent); }
   .feature-detail { grid-template-columns: 1fr; gap: var(--s-md); }
   .feature-detail.reverse { direction: ltr; }
   .kbd-table { grid-template-columns: 1fr; }
+  .release { grid-template-columns: 1fr; gap: var(--s-md); }
   header nav { display: none; }
 }
 </style>
@@ -912,6 +989,7 @@ footer a:hover { color: var(--accent); }
     <a href="#comments">Comments</a>
     <a href="#export">Export</a>
     <a href="#shortcuts">Shortcuts</a>
+    <a href="#changelog">Changelog</a>
   </nav>
 </header>
 
@@ -1592,6 +1670,80 @@ footer a:hover { color: var(--accent); }
     <div class="kbd-row"><span><span class="kbd">Ctrl</span> + <span class="kbd">Shift</span> + <span class="kbd">E</span></span><span class="desc">Open export dialog</span></div>
     <div class="kbd-row"><span><span class="kbd">+</span> / <span class="kbd">-</span></span><span class="desc">Nudge exposure ± 0.25 stops</span></div>
     <div class="kbd-row"><span><span class="kbd">F</span></span><span class="desc">Fullscreen</span></div>
+  </div>
+</section>
+
+<!-- ============================================================ Changelog -->
+<section id="changelog">
+  <h2>What's <span class="accent">new</span>.</h2>
+  <p class="lede">
+    Every public release, what changed, why it changed. Links go to the
+    matching tag on GitHub.
+  </p>
+
+  <div class="changelog">
+
+    <article class="release">
+      <div class="release-meta">
+        <span class="ver">
+          <a href="https://github.com/llethanh/img_player/releases/tag/v1.0.2" style="color: inherit; text-decoration: none;">v1.0.2</a>
+        </span>
+        <span class="date">2026-04-30</span>
+        <span class="tagline">Trim-past gaps cleanup.</span>
+      </div>
+      <div class="release-body">
+        <h4>Fixes</h4>
+        <ul>
+          <li class="fix">Trim past the last layer's OUT now shows <strong>plain black</strong> in the viewport instead of the rich <code>MISSING FRAME</code> placeholder. The placeholder is reserved for its original semantic — a covering layer's source file failed to decode.</li>
+          <li class="fix">Same trim-past frames now paint <strong>grey on the timeline cache bar</strong>, matching the inter-layer gap color so "no layer covers this frame" reads as one consistent state regardless of where the gap sits.</li>
+        </ul>
+      </div>
+    </article>
+
+    <article class="release">
+      <div class="release-meta">
+        <span class="ver">
+          <a href="https://github.com/llethanh/img_player/releases/tag/v1.0.1" style="color: inherit; text-decoration: none;">v1.0.1</a>
+        </span>
+        <span class="date">2026-04-30</span>
+        <span class="tagline">Session-load playhead alignment.</span>
+      </div>
+      <div class="release-body">
+        <h4>Fixes</h4>
+        <ul>
+          <li class="fix">Loading a <code>.session</code> with multiple layers no longer leaves the timeline cursor desynced from the layer-bar cursor. The timeline now picks up the broad master range right after restore (= union of every layer's reach), so both scrubbers paint at the same scale.</li>
+        </ul>
+      </div>
+    </article>
+
+    <article class="release">
+      <div class="release-meta">
+        <span class="ver">
+          <a href="https://github.com/llethanh/img_player/releases/tag/v1.0.0" style="color: inherit; text-decoration: none;">v1.0.0</a>
+        </span>
+        <span class="date">2026-04-29</span>
+        <span class="tagline">First public release. Multi-layer.</span>
+      </div>
+      <div class="release-body">
+        <h4>New</h4>
+        <ul>
+          <li><strong>Multi-layer stack</strong> — drop multiple sequences on top of each other, reorder, toggle visibility per layer. Topmost-visible wins for each master frame; <code>αS</code> turns on alpha compositing per layer.</li>
+          <li><strong>Layer panel under the timeline</strong> — one row per layer with eye / T / αS toggles, drag to reorder, drag the bar to nudge offset, drag the handles to trim IN / OUT.</li>
+          <li><strong>Per-layer channel selection</strong> — each layer remembers its own RGB / RGBA / Y / N.X choice; switching focus repopulates the channel menu without invalidating other layers' caches.</li>
+          <li><strong>Sessions</strong> — File → Save / Open session writes the whole stack (paths, offsets, trims, channels, αS, visibility) to a <code>.session</code> JSON. Reopen later, get the same review setup back.</li>
+          <li><strong>Drop modes</strong> — drag-and-drop now prompts: replace the focused layer, add as a new top layer, or open in place.</li>
+          <li><strong>Per-row delete</strong> on every <code>LayerRow</code>; full undo/redo coverage on layer add / remove / reorder / drag.</li>
+        </ul>
+        <h4>Fixes</h4>
+        <ul>
+          <li class="fix">Viewport stays black on first sequence load until you scrub — fixed; the first frame now renders as soon as the cache lands.</li>
+          <li class="fix">OUT trim was getting reset to the drag-start position by the snap formula — fixed.</li>
+          <li class="fix">Trim handles now actually trim visibly (the drag was being absorbed by the bar).</li>
+          <li class="fix">Cache invalidation on <code>layer_modified</code> now covers the union of old + new master ranges so shrinking a layer can't leave stale pixels in the gap.</li>
+        </ul>
+      </div>
+    </article>
+
   </div>
 </section>
 

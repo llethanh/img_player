@@ -65,6 +65,10 @@ _SECTIONS: list[tuple[str, list[tuple[str, str]]]] = [
         [
             ("Ctrl + N", "New — clear the loaded sequence"),
             ("Ctrl + O", "Open a file or sequence"),
+            ("Ctrl + Shift + O", "Add a layer to the current stack"),
+            ("Ctrl + L", "Open session (load a saved .session file)"),
+            ("Ctrl + S", "Save session — overwrite the current .session file"),
+            ("Ctrl + Shift + S", "Save session as… (pick a new path)"),
             ("Ctrl + R", "Reload — re-scan the source folder"),
             ("Ctrl + Shift + E", "Export sequence (image seq or video)"),
             ("Ctrl + Q", "Quit img_player"),

@@ -90,13 +90,14 @@ class ImgPlayerApp:
         num_workers: int = DEFAULT_NUM_WORKERS,
         oiio_threads: int | None = DEFAULT_OIIO_THREADS,
         cli_args: argparse.Namespace | None = None,
+        boot_tune: PerformanceTune | None = None,
     ) -> None:
         # Construction is split into phases so each block stays small
         # enough to scan. Phase order is load-bearing — Qt objects
         # need a live QApplication, the window needs the OCIO/cache
         # backbones, the annotation overlays need the window's GL
         # viewport. Don't reorder without checking the deps.
-        self._init_plain_state(cli_args, oiio_threads)
+        self._init_plain_state(cli_args, oiio_threads, boot_tune)
         self._build_qt_runtime(argv, oiio_threads)
         self._build_models(cache_budget_bytes, num_workers)
         self._build_window_and_overlays()
@@ -119,6 +120,7 @@ class ImgPlayerApp:
         self,
         cli_args: argparse.Namespace | None,
         oiio_threads: int | None,
+        boot_tune: PerformanceTune | None = None,
     ) -> None:
         """Pre-Qt attribute setup. No Qt objects are constructed here."""
         # ``cli_args`` is the Namespace from ``__main__.py``'s parser.
@@ -147,6 +149,16 @@ class ImgPlayerApp:
         # memory.
         self._desired_hw: HardwareProfile | None = None
         self._desired_tune: PerformanceTune | None = None
+        # Pre-runtime-constraint tune resolved at boot. Used by
+        # ``_retune_for_current_ram`` as the ceiling for the per-session
+        # cache budget recompute: closing other apps between Flick
+        # launch and a project open lets the next project enjoy a
+        # bigger cache without restart, but never beyond what
+        # ``compute_tune`` would have asked for if the boot had had
+        # the same RAM available. Falls back to ``_desired_tune`` once
+        # the late-bind GPU re-tune fires (= more accurate ceiling
+        # because the real GPU is known at that point).
+        self._boot_tune: PerformanceTune | None = boot_tune
 
         # Path of the sidecar for the currently-open sequence — set
         # by ``_open_path`` when a sequence is loaded, used by
@@ -274,6 +286,7 @@ class ImgPlayerApp:
             initial_mode=toolbar_mode,
             initial_floating_pos=self._prefs.annotation_toolbar_pos,
             initial_ephemeral_preset=self._prefs.ephemeral_duration_preset,
+            initial_stabilizer_level=self._prefs.pen_stabilizer_level,
             parent=self._window,
         )
         # Toolbar starts hidden by default. The user opens it with D
@@ -746,6 +759,18 @@ class ImgPlayerApp:
         # left off.
         tb.ephemeral_mode_changed.connect(self._on_ephemeral_mode_changed)
         tb.ephemeral_duration_changed.connect(self._on_ephemeral_duration_changed)
+        # Pen stabilizer (Lazy Mouse) — toolbar slider drives the
+        # overlay's smoothing factor, and the level is persisted so
+        # the next launch starts with the same setting.
+        tb.pen_stabilizer_level_changed.connect(
+            self._on_pen_stabilizer_level_changed,
+        )
+        # Push the initial factor to the overlay so a non-zero
+        # restored level takes effect immediately, not only after the
+        # user touches the slider.
+        self._annotation_overlay.set_pen_stabilizer_factor(
+            tb.pen_stabilizer_factor(),
+        )
         # Restore the saved ghost state. Fire through the toolbar's
         # public setter so the overlay routing, glyph swap, eraser
         # disabling and border tint all resync via the wired signal.
@@ -960,12 +985,17 @@ class ImgPlayerApp:
         if self._controller.sequence is None:
             return
         cur = self._controller.state.current_frame
-        # Re-issue prefetch around the playhead — the cache cleared
-        # the affected range, so without this nothing decodes.
-        self._cache.request_range(
-            cur - 5, cur + 30,
-            direction=self._controller.state.direction,
-        )
+        # Re-plan prefetch over the FULL navigable range (not just the
+        # close window). The MasterFrameCache wiped everything on the
+        # ``layers_changed`` signal, so a 35-frame window would leave
+        # every frame outside it grey on the cache bar until playback
+        # rolls the playhead through them — exactly the "des zones qui
+        # ne sont pas mis en cache" symptom users hit after add-layer
+        # or session-load. ``replan_prefetch`` issues a priority-ranked
+        # submit for every frame in the nav range; ``request`` dedups
+        # against already-cached / already-pending so the call is cheap
+        # and idempotent across repeated stack mutations.
+        self._controller.replan_prefetch()
         # If no layer covers the current master frame anymore (=
         # user just hid the only visible coverage), wipe the viewport
         # so the stale image doesn't linger. Phase 4 will replace
@@ -1441,6 +1471,15 @@ class ImgPlayerApp:
             self._annotation_toolbar.ephemeral_preset_index()
         )
 
+    def _on_pen_stabilizer_level_changed(self, level: int) -> None:
+        """Toolbar's stabilizer slider moved. Apply the matching EMA
+        factor to the overlay and persist the level for next session.
+        """
+        self._annotation_overlay.set_pen_stabilizer_factor(
+            self._annotation_toolbar.pen_stabilizer_factor(),
+        )
+        self._prefs.pen_stabilizer_level = level
+
     def _toggle_ephemeral_mode(self) -> None:
         """``G`` keyboard shortcut — flip the toolbar toggle.
 
@@ -1719,6 +1758,11 @@ class ImgPlayerApp:
         # Stop any ongoing playback first; ticking a detached cache
         # would just spin no-ops.
         self._controller.pause()
+        # File → New is a project-load entry point too — re-tune the
+        # cache budget so the next project opened from this empty
+        # state benefits from any RAM the user has freed in the
+        # meantime.
+        self._retune_for_current_ram()
         self._controller._sequence = None  # noqa: SLF001 — there's no public detach
         # ``cache.detach()`` empties the LayerStack which cascades
         # via signals to the cache's clear() and the LayerPanel
@@ -1756,7 +1800,10 @@ class ImgPlayerApp:
             self._window._reload_act.setEnabled(False)  # noqa: SLF001
         self._window.transport.set_export_enabled(False)
         self._window.transport.set_reload_enabled(False)
-        self._window.setWindowTitle("Flick Player")
+        # Reset the current-session pointer + title bar.
+        # ``set_current_session_path(None)`` rewrites the title to
+        # the bare "Flick Player" baseline.
+        self._window.set_current_session_path(None)
         self._window.set_status("No sequence loaded — File → Open to load one.")
 
     def _on_reload_sequence(self) -> None:
@@ -1893,8 +1940,66 @@ class ImgPlayerApp:
             frame = in_f
         self._controller.set_in_out(in_f, frame)
 
-    def _open_path(self, path: Path) -> None:
-        """Scan ``path`` off the main thread so the UI stays responsive.
+    def _retune_for_current_ram(self) -> None:
+        """Re-apply runtime constraints against the live RuntimeState.
+
+        Called at every project-load entry point so a user who freed
+        memory between Flick launch and project open gets the updated
+        cache budget without restarting. Symmetrically, if the user
+        has loaded other apps that ate RAM, the new project starts
+        with a smaller, safer budget — eviction kicks in once and the
+        playback that follows is honest about what fits.
+
+        The "ceiling" is the pre-runtime-constraint tune the user
+        actually asked for at boot (CLI + profile + heuristics). We
+        prefer ``_desired_tune`` (set by the late-bind GPU re-tune,
+        so it reflects the real renderer) over ``_boot_tune`` (= the
+        boot-time tune resolved before the GL context exists).
+
+        No-op when the new budget is within ~100 MB of the current
+        one — avoids spurious status messages on tiny RAM jitter.
+        """
+        if not hasattr(self._cache, "set_budget"):
+            return
+        ceiling = self._desired_tune or self._boot_tune
+        if ceiling is None:
+            return
+        from img_player.perf.runtime_state import (
+            RuntimeState, apply_runtime_constraints,
+        )
+        state = RuntimeState.snapshot()
+        retuned = apply_runtime_constraints(ceiling, state)
+        new_budget = int(retuned.cache_gb * 1024**3)
+        old_budget = self._cache._budget  # noqa: SLF001 — internal int read
+        # Threshold: 100 MB diff to avoid noise on small RAM swings.
+        if abs(new_budget - old_budget) < 100 * 1024**2:
+            return
+        self._cache.set_budget(new_budget)
+        old_gb = old_budget / 1024**3
+        new_gb = new_budget / 1024**3
+        if new_gb > old_gb:
+            log.info(
+                "[retune] cache budget grown: %.1f → %.1f GB "
+                "(RAM dispo : %.1f GB)",
+                old_gb, new_gb, state.available_ram_gb,
+            )
+            self._window.set_status(
+                f"Cache élargi à {new_gb:.1f} GB "
+                f"(RAM dispo : {state.available_ram_gb:.1f} GB)."
+            )
+        else:
+            log.info(
+                "[retune] cache budget reduced: %.1f → %.1f GB "
+                "(RAM dispo : %.1f GB)",
+                old_gb, new_gb, state.available_ram_gb,
+            )
+            self._window.set_status(
+                f"Cache réduit à {new_gb:.1f} GB "
+                f"(mémoire système plus tendue)."
+            )
+
+    def _open_path(self, paths: list[Path] | Path) -> None:
+        """Scan one or more ``paths`` off the main thread.
 
         Always replaces the current sequence. The "add layer"
         semantic is handled by a separate signal
@@ -1903,22 +2008,171 @@ class ImgPlayerApp:
         add-layer one. No more modal Add / Replace / Cancel dialog;
         the spatial disambiguation does the same job without an
         interruption.
-        """
-        from img_player.scan_handler import open_path
-        open_path(self, path)
 
-    def _on_add_layer_requested(self, path: Path) -> None:
-        """File → Add layer… handler — appends a new layer to the
-        stack without replacing the existing sequence."""
-        from img_player.scan_handler import add_layer
-        add_layer(self, path)
+        Multi-source drops: when more than one folder / file is
+        provided, the picker is shown with a hierarchical tree (one
+        bold header per folder, sequences listed below) so the user
+        can tick exactly which sequences to load. The first ticked
+        sequence becomes the active sequence (replaces the
+        controller's binding) and the remainder are appended as
+        layers in pick order.
+
+        Confirmation: when a sequence is already loaded (or layers
+        exist in the stack), prompt before wiping the current state.
+        """
+        path_list = [paths] if isinstance(paths, Path) else list(paths)
+        if not path_list:
+            return
+        primary = path_list[0]
+
+        # Project file? A ``.session`` drop is a "load this whole
+        # project" gesture, not a sequence open. Route to the session
+        # loader so the LayerStack, Color panel and recent-sessions
+        # list all update. If the drop also contains other paths we
+        # ignore them — mixing a session with loose sequences in one
+        # drop has no sane semantic. Same destructive-replace
+        # confirmation as a regular sequence drop, since loading a
+        # session also wipes the current stack.
+        session_paths = [p for p in path_list if p.suffix.lower() == ".session"]
+        if session_paths:
+            session_path = session_paths[0]
+            if self._is_replace_destructive():
+                if not self._confirm_replace(session_path):
+                    self._window.set_status("Replace annulé.")
+                    return
+            if len(path_list) > 1:
+                self._window.set_status(
+                    f"Loading session {session_path.name} "
+                    f"(other dropped items ignored)."
+                )
+            self._on_open_session_requested(session_path)
+            return
+
+        if self._is_replace_destructive():
+            if not self._confirm_replace(primary):
+                self._window.set_status("Replace annulé.")
+                return
+        # Re-snapshot ambient RAM and resize the cache before the
+        # scan starts. If the user closed Chrome / Premiere between
+        # Flick launch and now, the new project enjoys a roomier
+        # cache; if they opened more apps, the budget shrinks safely
+        # before we load fresh frames into it.
+        self._retune_for_current_ram()
+        from img_player.scan_handler import open_path, open_paths
+        if len(path_list) == 1:
+            open_path(self, primary)
+        else:
+            open_paths(self, path_list)
+
+    def _is_replace_destructive(self) -> bool:
+        """True when a Replace would wipe state the user might want
+        to keep — a loaded sequence and/or layers in the stack."""
+        if self._controller.sequence is not None:
+            return True
+        if self._layer_stack and len(self._layer_stack) > 0:
+            return True
+        return False
+
+    def _confirm_replace(self, path: Path) -> bool:
+        """Modal Yes/Cancel — returns True iff the user confirms.
+
+        Inventory of what's about to be lost is built dynamically:
+        layer count, sequence name, dirty annotation badge. The user
+        sees what they'd discard before deciding.
+        """
+        layer_count = (
+            len(self._layer_stack) if self._layer_stack is not None else 0
+        )
+        seq = self._controller.sequence
+        seq_name = seq.display_pattern() if seq is not None else None
+
+        bullets: list[str] = []
+        if layer_count > 0:
+            bullets.append(
+                f"• {layer_count} layer"
+                f"{'s' if layer_count > 1 else ''} "
+                f"(offsets, trims, sélection de canaux)"
+            )
+        elif seq_name is not None:
+            bullets.append(f"• La séquence courante : {seq_name}")
+        if self._annotation_store.is_dirty():
+            bullets.append("• Les annotations non sauvegardées")
+        inventory = "\n".join(bullets) if bullets else (
+            "• L'état courant du player"
+        )
+
+        box = QMessageBox(self._window)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Remplacer la séquence ?")
+        box.setText(
+            f"Charger <b>{path.name}</b> va remplacer ce qui est "
+            f"actuellement ouvert."
+        )
+        box.setInformativeText(
+            "Ce remplacement va supprimer :\n\n"
+            f"{inventory}\n\n"
+            "Pour ajouter sans remplacer, drop sur le panel des layers "
+            "(zone teal) au lieu du viewport (zone orange)."
+        )
+        replace_btn = box.addButton(
+            "Remplacer", QMessageBox.ButtonRole.DestructiveRole,
+        )
+        cancel_btn = box.addButton(
+            "Annuler", QMessageBox.ButtonRole.RejectRole,
+        )
+        box.setDefaultButton(cancel_btn)
+        box.exec()
+        return box.clickedButton() is replace_btn
+
+    def _on_add_layer_requested(self, paths: list[Path] | Path) -> None:
+        """File → Add layer… handler — appends one or more layers to
+        the stack without replacing the existing sequence.
+
+        Single-path call (file menu, programmatic) loads directly via
+        the legacy ``add_layer`` helper; multi-source drops route
+        through ``add_layers`` which shows the grouped picker first.
+        """
+        path_list = [paths] if isinstance(paths, Path) else list(paths)
+        if not path_list:
+            return
+        # Sessions describe an entire LayerStack, not a single layer.
+        # Dropping one on the layer panel has no useful semantic —
+        # surface a status hint and ignore. The user can still drop
+        # the same file on the viewer to load it as a project.
+        if any(p.suffix.lower() == ".session" for p in path_list):
+            self._window.set_status(
+                "Session files can't be added as a layer — drop on the "
+                "viewer to load the project."
+            )
+            return
+        from img_player.scan_handler import add_layer, add_layers
+        if len(path_list) == 1:
+            add_layer(self, path_list[0])
+        else:
+            add_layers(self, path_list)
 
     def _on_save_session_requested(self, path: Path) -> None:
         """File → Save session… — write the full LayerStack to a
         ``.session`` JSON file."""
-        from img_player.layers.session import save_session
+        from img_player.layers.session import ColorState, save_session
+        # Snapshot the global Color panel — the OCIO triple + viewing
+        # tweaks travel with the session so a re-open restores the
+        # exact look the user shipped with. Without this, opening a
+        # saved Rec709-deliverable session would inherit whatever
+        # display/view the player is currently set to (e.g. ACEScg
+        # left from a prior project).
+        src, display, view, exposure, gamma = (
+            self._window.color_panel.current_params()
+        )
+        color_state = ColorState(
+            source_colorspace=src or None,
+            display=display or None,
+            view=view or None,
+            exposure=float(exposure),
+            gamma=float(gamma),
+        )
         try:
-            save_session(self._layer_stack, path)
+            save_session(self._layer_stack, path, color_state=color_state)
         except Exception as err:
             log.exception("[session] save failed for %s", path)
             self._window.set_status(f"Save session failed: {err}")
@@ -1927,10 +2181,79 @@ class ImgPlayerApp:
         # Track this session in the Open Recent Session list — the
         # user just declared interest in coming back to it.
         self._prefs.push_recent_session(path)
+        # Tell the window this is now the "current" session — the
+        # next Ctrl+S overwrites this file silently instead of
+        # popping the file picker. Updates the title bar too.
+        self._window.set_current_session_path(path)
+
+    def _apply_session_color_state(self, color_state) -> None:  # type: ignore[no-untyped-def]
+        """Push a saved ColorState onto the live Color panel.
+
+        Each combo is set with a "if available" guard — the OCIO
+        config on the loading machine may not expose the same display
+        / view names the saving machine had. When a combo entry is
+        missing we keep the current value silently and log a warning,
+        which is friendlier than refusing to load the session.
+
+        The exposure / gamma spinboxes accept any float, so they're
+        always restored.
+
+        Setting via ``setCurrentText`` triggers the panel's standard
+        change signals → re-emits ``color_params_changed`` →
+        rebuilds the OCIO shader, exactly as if the user had clicked
+        the combos manually.
+        """
+        from img_player.ui.color_panel import ColorPanel  # noqa: F401 — type hint
+        panel = self._window.color_panel
+        cs = color_state
+        if cs.source_colorspace:
+            if cs.source_colorspace in [
+                panel._src_combo.itemText(i)  # noqa: SLF001
+                for i in range(panel._src_combo.count())  # noqa: SLF001
+            ]:
+                panel._src_combo.setCurrentText(cs.source_colorspace)  # noqa: SLF001
+            else:
+                log.warning(
+                    "[session] saved source colorspace %r not in current OCIO "
+                    "config — keeping %r",
+                    cs.source_colorspace,
+                    panel._src_combo.currentText(),  # noqa: SLF001
+                )
+        if cs.display:
+            if cs.display in [
+                panel._display_combo.itemText(i)  # noqa: SLF001
+                for i in range(panel._display_combo.count())  # noqa: SLF001
+            ]:
+                panel._display_combo.setCurrentText(cs.display)  # noqa: SLF001
+                # ``setCurrentText`` fires ``_on_display_changed`` which
+                # rebuilds the view list, so the next ``view`` set lands
+                # in the freshly populated combo.
+            else:
+                log.warning(
+                    "[session] saved display %r not available — keeping %r",
+                    cs.display,
+                    panel._display_combo.currentText(),  # noqa: SLF001
+                )
+        if cs.view:
+            if cs.view in [
+                panel._view_combo.itemText(i)  # noqa: SLF001
+                for i in range(panel._view_combo.count())  # noqa: SLF001
+            ]:
+                panel._view_combo.setCurrentText(cs.view)  # noqa: SLF001
+            else:
+                log.warning(
+                    "[session] saved view %r not available for display — keeping %r",
+                    cs.view,
+                    panel._view_combo.currentText(),  # noqa: SLF001
+                )
+        panel._exposure_spin.setValue(cs.exposure)  # noqa: SLF001
+        panel._gamma_spin.setValue(cs.gamma)  # noqa: SLF001
 
     def _on_open_session_requested(self, path: Path) -> None:
         """File → Open session… — replace the LayerStack from a
         previously saved ``.session`` file."""
+        # Same per-session cache re-tune as the regular Open path.
+        self._retune_for_current_ram()
         from img_player.layers.session import load_session
         try:
             result = load_session(self._layer_stack, path)
@@ -1942,10 +2265,19 @@ class ImgPlayerApp:
         if result.skipped:
             msg += f" ({result.skipped} skipped)"
         self._window.set_status(msg)
+        # Restore the global Color panel state if the session shipped
+        # one (v2+). v1 sessions and sessions saved without a color
+        # block leave the panel as-is — same legacy behaviour.
+        if result.color_state is not None:
+            self._apply_session_color_state(result.color_state)
         # Track in Open Recent Session — same trigger as a save: the
         # user just used the file, so it deserves a slot in the list.
         if result.loaded > 0:
             self._prefs.push_recent_session(path)
+            # This is now the "current" session: subsequent Ctrl+S
+            # overwrites it in place. Updates the title bar so the
+            # user always knows which session they're working in.
+            self._window.set_current_session_path(path)
         # Point the controller at the focused layer's sequence so
         # the timeline range + scrubbing have a target. We bypass
         # ``controller.load_sequence`` here on purpose: that call
@@ -2248,6 +2580,7 @@ def run_gui(
     num_workers: int = DEFAULT_NUM_WORKERS,
     oiio_threads: int | None = DEFAULT_OIIO_THREADS,
     cli_args: argparse.Namespace | None = None,
+    boot_tune: PerformanceTune | None = None,
 ) -> int:
     """Public entry point used by ``python -m img_player``.
 
@@ -2256,6 +2589,13 @@ def run_gui(
     user overrides at the same precedence as the boot pipeline. Older
     callers that don't pass it fall through to plain auto-tune, which
     is also fine.
+
+    ``boot_tune`` is the *pre-runtime-constraint* tune resolved at boot
+    (compute_tune → profile → CLI overrides). Stored on the app so the
+    per-session re-tune (``app._retune_for_current_ram``) can recompute
+    the cache budget against the live ``RuntimeState`` whenever the
+    user opens a new project — letting them benefit from freed RAM
+    without restarting Flick.
     """
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
@@ -2266,5 +2606,6 @@ def run_gui(
         num_workers=num_workers,
         oiio_threads=oiio_threads,
         cli_args=cli_args,
+        boot_tune=boot_tune,
     )
     return app.run(initial_path=initial_path)

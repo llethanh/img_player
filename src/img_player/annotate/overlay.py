@@ -26,7 +26,7 @@ from __future__ import annotations
 import math
 from enum import Enum
 
-from PySide6.QtCore import QCoreApplication, QEvent, QObject, Qt
+from PySide6.QtCore import QCoreApplication, QEvent, QObject, Qt, QTimer
 from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QWidget
 
@@ -242,6 +242,23 @@ class AnnotationOverlay(QWidget):
         # press is up for grabs.
         self._passthrough_button: Qt.MouseButton | None = None
 
+        # Pen stabilizer (Lazy Mouse) — when ``_stabilizer_factor`` is
+        # non-zero, mouse_move events update a *target* position; a
+        # 60 Hz catch-up timer pulls the *smoothed* position toward
+        # the target by ``(1 - factor)`` each tick. Stroke samples
+        # are appended from the smoothed position, not the raw cursor.
+        # Result: hand tremor is filtered, the line trails behind the
+        # cursor with a strength proportional to ``factor``. When
+        # ``factor == 0`` the smoothed position snaps to the target
+        # every tick (= no smoothing, behaviour identical to the
+        # legacy direct-capture path).
+        self._stabilizer_factor: float = 0.0
+        self._stab_target: tuple[float, float] | None = None
+        self._stab_smoothed: tuple[float, float] | None = None
+        self._stab_timer = QTimer(self)
+        self._stab_timer.setInterval(16)  # ~60 Hz catch-up cadence
+        self._stab_timer.timeout.connect(self._on_stabilizer_tick)
+
         # Mirror the viewport's geometry. We follow resizes via an
         # event filter installed on the parent.
         self.setGeometry(gl_viewport.rect())
@@ -288,6 +305,19 @@ class AnnotationOverlay(QWidget):
 
     def set_size(self, size: float) -> None:
         self._size = max(1.0, float(size))
+
+    def set_pen_stabilizer_factor(self, factor: float) -> None:
+        """Set the Lazy Mouse strength (0.0 to ~0.95).
+
+        ``factor=0`` disables smoothing (raw cursor capture). Higher
+        values make the line trail behind the cursor — the catch-up
+        timer pulls the smoothed point ``(1 - factor)`` of the way to
+        the cursor each frame, so a value of 0.85 means each frame
+        traverses 15 % of the remaining distance (~500 ms perceived
+        trail). Values above 0.95 stop progressing meaningfully and
+        produce a stuck cursor — the toolbar caps at 0.85 by design.
+        """
+        self._stabilizer_factor = max(0.0, min(0.95, float(factor)))
 
     def set_current_frame(self, frame: int) -> None:
         """Update the frame whose strokes should render. Triggers repaint."""
@@ -422,6 +452,13 @@ class AnnotationOverlay(QWidget):
             self._current_stroke_is_ephemeral = (
                 True if self._contact_sheet_active else self._ephemeral_mode
             )
+            # Lazy Mouse: when active, kick off the catch-up timer.
+            # Smoothed and target both start at the press point, so
+            # there's no initial "jump" visible.
+            if self._stabilizer_factor > 0.0:
+                self._stab_target = cursor_image
+                self._stab_smoothed = cursor_image
+                self._stab_timer.start()
             self.update()
             event.accept()
         elif self._tool == ToolKind.ERASER:
@@ -452,6 +489,17 @@ class AnnotationOverlay(QWidget):
         cursor_image = self._cursor_in_image_space(event)
         if cursor_image is None:
             return
+        # Lazy Mouse path: just update the target. The 60 Hz catch-up
+        # timer pulls the smoothed point toward it and appends to the
+        # stroke. Mouse-event sampling rate (60-125 Hz on Windows) is
+        # plenty for tracking; the visible smoothness comes from the
+        # EMA in ``_on_stabilizer_tick``.
+        if self._stab_timer.isActive():
+            self._stab_target = cursor_image
+            event.accept()
+            return
+        # Legacy direct-capture path (factor == 0 or stabilizer never
+        # started for this stroke).
         last = self._current_stroke_points[-1]
         if math.hypot(
             cursor_image[0] - last[0], cursor_image[1] - last[1]
@@ -459,6 +507,39 @@ class AnnotationOverlay(QWidget):
             self._current_stroke_points.append(cursor_image)
             self.update()
         event.accept()
+
+    def _on_stabilizer_tick(self) -> None:
+        """60 Hz catch-up step for Lazy Mouse.
+
+        Pulls the smoothed point a fraction ``(1 - factor)`` of the
+        way to the target each tick. When the smoothed point has
+        moved enough since the last sample, the new position is
+        appended to the in-progress stroke. This produces the
+        "trailing line" effect that filters hand tremor.
+
+        When factor is 0 (level=Off) the timer isn't running, so
+        this code path is dormant.
+        """
+        if (
+            self._current_stroke_points is None
+            or self._stab_target is None
+            or self._stab_smoothed is None
+        ):
+            return
+        alpha = 1.0 - self._stabilizer_factor
+        sx, sy = self._stab_smoothed
+        tx, ty = self._stab_target
+        new_x = sx + (tx - sx) * alpha
+        new_y = sy + (ty - sy) * alpha
+        self._stab_smoothed = (new_x, new_y)
+        # Filter on movement vs the LAST APPENDED point, not the
+        # previous smoothed pos. Otherwise high stabilizer values
+        # would never advance the stroke (per-tick movement may stay
+        # below the threshold for several ticks at once).
+        last_x, last_y = self._current_stroke_points[-1]
+        if math.hypot(new_x - last_x, new_y - last_y) >= _MIN_MOVE_IMAGE_PX:
+            self._current_stroke_points.append((new_x, new_y))
+            self.update()
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         # Closing the non-left passthrough — forward the release and
@@ -476,6 +557,24 @@ class AnnotationOverlay(QWidget):
         ):
             super().mouseReleaseEvent(event)
             return
+        # Lazy Mouse: stop the catch-up timer and force the stroke to
+        # END at the release position, regardless of how far behind
+        # the smoothed point still was. Without this, releasing while
+        # the line is still trailing would leave a visible gap
+        # between the line end and where the user lifted — feels
+        # broken. Appending the cursor position itself snaps the
+        # final visual to the user's actual release point.
+        if self._stab_timer.isActive():
+            self._stab_timer.stop()
+            release_pos = self._cursor_in_image_space(event)
+            if release_pos is not None and self._current_stroke_points:
+                last_x, last_y = self._current_stroke_points[-1]
+                if math.hypot(
+                    release_pos[0] - last_x, release_pos[1] - last_y,
+                ) >= _MIN_MOVE_IMAGE_PX:
+                    self._current_stroke_points.append(release_pos)
+        self._stab_target = None
+        self._stab_smoothed = None
         points = tuple(self._current_stroke_points)
         is_ephemeral = self._current_stroke_is_ephemeral
         self._current_stroke_points = None

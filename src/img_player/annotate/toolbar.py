@@ -88,6 +88,22 @@ MAX_SIZE = 30.0
 # here so a renaming or tuning round only touches one place.
 EPHEMERAL_PRESETS_S: tuple[float, ...] = (2.0, 5.0, 10.0)
 DEFAULT_EPHEMERAL_PRESET_INDEX = 1
+
+# Pen stabilizer (Lazy Mouse) — 3 discrete strength levels mapped to
+# an EMA factor in 0..1. ``factor=0`` = no smoothing (line follows
+# cursor exactly). Higher factor = the smoothed cursor position
+# catches up more slowly, producing the "trailing line" effect that
+# filters hand tremor. The mapping lives here so tuning the strengths
+# only touches one constant.
+#
+# Each tick of the 60 Hz catch-up timer pulls the smoothed point a
+# fraction (1 - factor) of the way to the live cursor. So:
+#   - level 0: alpha=1.0  → instant catch-up      (no trail)
+#   - level 1: alpha=0.5  → half-distance / frame (subtle, ~80 ms trail)
+#   - level 2: alpha=0.15 → strong drag           (~500 ms trail, very clean)
+PEN_STABILIZER_FACTORS: tuple[float, ...] = (0.0, 0.5, 0.85)
+PEN_STABILIZER_LABELS: tuple[str, ...] = ("Off", "Med", "Strong")
+DEFAULT_PEN_STABILIZER_LEVEL = 0
 # Cyan accent used for the toolbar's outer border when ephemeral
 # mode is active — same value as the "blue note" swatch in PALETTE
 # so the visual language stays internally consistent.
@@ -293,6 +309,13 @@ class AnnotationToolbar(QWidget):
     in :data:`EPHEMERAL_PRESETS_S`) when the user clicks one of the
     three preset dots. App.py routes to ``manager.set_duration``."""
 
+    # ------------------------------------------------------------------ Pen stabilizer (Lazy Mouse)
+
+    pen_stabilizer_level_changed = Signal(int)
+    """Emits the new stabilizer level (0/1/2) when the user moves the
+    Stabilizer slider. App.py routes to
+    ``overlay.set_pen_stabilizer_factor`` and persists to prefs."""
+
     # ------------------------------------------------------------------ Lifecycle
 
     def __init__(
@@ -303,6 +326,7 @@ class AnnotationToolbar(QWidget):
         initial_mode: ToolbarMode = ToolbarMode.FLOAT,
         initial_floating_pos: tuple[int, int] = (12, 12),
         initial_ephemeral_preset: int = DEFAULT_EPHEMERAL_PRESET_INDEX,
+        initial_stabilizer_level: int = DEFAULT_PEN_STABILIZER_LEVEL,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -323,6 +347,12 @@ class AnnotationToolbar(QWidget):
         if initial_ephemeral_preset not in (0, 1, 2):
             initial_ephemeral_preset = DEFAULT_EPHEMERAL_PRESET_INDEX
         self._ephemeral_preset_index: int = initial_ephemeral_preset
+
+        # Pen stabilizer (Lazy Mouse) — initially off (level 0). The
+        # value is restored from prefs on construction.
+        if initial_stabilizer_level not in (0, 1, 2):
+            initial_stabilizer_level = DEFAULT_PEN_STABILIZER_LEVEL
+        self._stabilizer_level: int = initial_stabilizer_level
 
         # Drag state for moving the toolbar in float mode (we own the
         # title-bar drag because no QWidget gives this for free outside
@@ -359,6 +389,35 @@ class AnnotationToolbar(QWidget):
 
     def ephemeral_duration_seconds(self) -> float:
         return EPHEMERAL_PRESETS_S[self._ephemeral_preset_index]
+
+    # ------------------------------------------------------------------ Pen stabilizer public API
+
+    def pen_stabilizer_level(self) -> int:
+        """Active stabilizer level: 0 (off), 1 (medium), 2 (strong)."""
+        return self._stabilizer_level
+
+    def pen_stabilizer_factor(self) -> float:
+        """EMA factor matching the active level — what
+        ``overlay.set_pen_stabilizer_factor`` consumes."""
+        return PEN_STABILIZER_FACTORS[self._stabilizer_level]
+
+    def set_pen_stabilizer_level(self, level: int, *, emit: bool = True) -> None:
+        """Set the stabilizer level (0/1/2) and update the slider UI.
+
+        Silent reject for out-of-range values. ``emit=False`` skips
+        the signal — used by the ``__init__``-driven restore from
+        prefs so we don't fire a no-op signal at boot.
+        """
+        if level not in (0, 1, 2) or level == self._stabilizer_level:
+            return
+        self._stabilizer_level = level
+        if hasattr(self, "_stabilizer_slider"):
+            self._stabilizer_slider.blockSignals(True)
+            self._stabilizer_slider.setValue(level)
+            self._stabilizer_slider.blockSignals(False)
+            self._stabilizer_label.setText(PEN_STABILIZER_LABELS[level])
+        if emit:
+            self.pen_stabilizer_level_changed.emit(level)
 
     def set_ephemeral_mode(self, on: bool, *, emit: bool = True) -> None:
         """Toggle ephemeral mode (the ``👻`` button checked state).
@@ -635,6 +694,40 @@ class AnnotationToolbar(QWidget):
         self._size_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._size_label.setStyleSheet("color: #8A8A8E; font-size: 10px;")
         layout.addWidget(self._size_label)
+        layout.addWidget(self._separator())
+
+        # --- Pen stabilizer (Lazy Mouse) ----------------------------
+        # 3-position discrete slider mirroring the Size pattern: title
+        # caption + horizontal slider + dynamic value label below. The
+        # slider snaps to integer steps so the user always lands on
+        # one of the three configured strengths (Off / Med / Strong).
+        # We use a slider rather than 3 dots so the UI doesn't read
+        # as a duplicate of the ephemeral fade preset row.
+        stab_caption = QLabel("Stabilizer", self)
+        stab_caption.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        stab_caption.setStyleSheet(
+            "color: #E4E4E6; font-size: 11px; font-weight: 500;"
+        )
+        layout.addWidget(stab_caption)
+
+        self._stabilizer_slider = QSlider(Qt.Orientation.Horizontal, self)
+        self._stabilizer_slider.setRange(0, 2)
+        self._stabilizer_slider.setSingleStep(1)
+        self._stabilizer_slider.setPageStep(1)
+        self._stabilizer_slider.setTickInterval(1)
+        self._stabilizer_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self._stabilizer_slider.setValue(self._stabilizer_level)
+        self._stabilizer_slider.valueChanged.connect(self._on_stabilizer_slider)
+        layout.addWidget(self._stabilizer_slider)
+
+        self._stabilizer_label = QLabel(
+            PEN_STABILIZER_LABELS[self._stabilizer_level], self,
+        )
+        self._stabilizer_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._stabilizer_label.setStyleSheet(
+            "color: #8A8A8E; font-size: 10px;"
+        )
+        layout.addWidget(self._stabilizer_label)
         layout.addWidget(self._separator())
 
         # --- Color palette: 7 swatches in a 2-column grid (4 rows, the
@@ -936,6 +1029,14 @@ class AnnotationToolbar(QWidget):
 
     def _on_size_slider(self, value: int) -> None:
         self.set_current_size(float(value))
+
+    def _on_stabilizer_slider(self, value: int) -> None:
+        # The slider is range 0..2, single-step 1, so ``value`` is
+        # already a valid level. ``set_pen_stabilizer_level`` updates
+        # the label and emits ``pen_stabilizer_level_changed``; the
+        # blockSignals dance protects against re-entry when the
+        # setter syncs the slider back.
+        self.set_pen_stabilizer_level(value)
 
     # ------------------------------------------------------------------ Ephemeral slots (v0.4.1)
 

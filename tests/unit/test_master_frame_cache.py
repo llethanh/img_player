@@ -143,7 +143,11 @@ class TestInvalidation:
         finally:
             cache.shutdown()
 
-    def test_layers_changed_clears_everything(self, qtbot) -> None:
+    def test_layers_changed_keeps_frames_with_unchanged_chain(self, qtbot) -> None:
+        """Selective invalidation: adding a layer that doesn't cover
+        frame 25 leaves frame 25's chain unchanged → cache keeps it.
+        Replaces the legacy "nuclear clear" semantic — see the
+        ``_on_layers_changed`` docstring for the rationale."""
         stack = LayerStack()
         layer = _layer(offset=0)
         stack.add(layer)
@@ -155,10 +159,42 @@ class TestInvalidation:
             ):
                 cache.request(25)
                 cache.wait_idle(timeout=2.0)
-            assert cache.cached_frames()
-            # Adding another layer fires layers_changed → nuclear clear.
+            assert 25 in cache.cached_frames()
+            # New layer at offset=200 covers master 200..299 — frame
+            # 25's chain still resolves to the original layer alone.
             stack.add(_layer(offset=200))
-            assert cache.cached_frames() == frozenset()
+            assert 25 in cache.cached_frames(), (
+                "frame 25 should survive a stack change that doesn't "
+                "alter its contributor chain"
+            )
+        finally:
+            cache.shutdown()
+
+    def test_layers_changed_drops_frames_with_changed_chain(self, qtbot) -> None:
+        """Selective invalidation drops a frame when the layer added
+        on TOP becomes the new topmost-visible at that frame."""
+        stack = LayerStack()
+        # Layer A covers master 0..99.
+        layer_a = _layer(offset=0)
+        stack.add(layer_a)
+        cache = MasterFrameCache(stack, num_workers=1)
+        try:
+            with patch(
+                "img_player.cache.master_frame_cache.read_frame",
+                side_effect=_fake_decode,
+            ):
+                cache.request(25)
+                cache.wait_idle(timeout=2.0)
+            assert 25 in cache.cached_frames()
+            # Add Layer B on top covering master 0..99 (default add
+            # position is top of stack). B is now topmost-visible at
+            # frame 25, so the cached pixels (which came from A) are
+            # stale → must be dropped.
+            stack.add(_layer(offset=0))
+            assert 25 not in cache.cached_frames(), (
+                "frame 25 should be invalidated when a new layer "
+                "becomes the topmost-visible at that frame"
+            )
         finally:
             cache.shutdown()
 

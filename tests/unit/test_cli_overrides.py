@@ -166,7 +166,7 @@ def test_resolve_tune_no_flags_yields_unknown_safe_defaults(
     args = parser.parse_args([])
     caplog.set_level("INFO", logger="img_player.perf.hardware")
 
-    tune = _resolve_tune(args)
+    _after_cli, tune = _resolve_tune(args)
 
     assert tune.oiio_threads == 1
     assert tune.use_pbo is False
@@ -182,14 +182,14 @@ def test_resolve_tune_no_flags_yields_unknown_safe_defaults(
 def test_resolve_tune_workers_override_propagates() -> None:
     parser = _build_parser()
     args = parser.parse_args(["--workers", "4"])
-    tune = _resolve_tune(args)
+    _after_cli, tune = _resolve_tune(args)
     assert tune.num_workers == 4
 
 
 def test_resolve_tune_no_pbo_override_propagates() -> None:
     parser = _build_parser()
     args = parser.parse_args(["--no-pbo"])
-    tune = _resolve_tune(args)
+    _after_cli, tune = _resolve_tune(args)
     assert tune.use_pbo is False
 
 
@@ -198,5 +198,5 @@ def test_resolve_tune_force_pbo_override_propagates() -> None:
     auto-tune, --force-pbo must override that to True."""
     parser = _build_parser()
     args = parser.parse_args(["--force-pbo"])
-    tune = _resolve_tune(args)
+    _after_cli, tune = _resolve_tune(args)
     assert tune.use_pbo is True
