@@ -250,7 +250,25 @@ def compose(
     ready to be passed to ``GLViewport.set_frame``.
     """
     h, w = union_buffer.shape[:2]
+    buffer_channels = union_buffer.shape[2]
     layout = selection.tile_layout()[:MAX_TILES]
+
+    # Drop tiles whose channel indices exceed the buffer width.
+    # ``MasterFrameCache`` has a documented case where a frame was
+    # decoded with the reader's default channel set (RGBA = 4) before
+    # the user toggled extra tile groups: the buffer is stale relative
+    # to the new selection and a re-decode is queued, but the next
+    # paint hits the old buffer. Without this filter, indexing into
+    # the stale buffer with ``selection.union_channels()``-derived
+    # indices raises ``IndexError`` (= the user-reported channel-menu
+    # multi-tile crash). Letting the offending tiles vanish for one
+    # paint is the right trade — the next decode lands and they
+    # reappear with no further input.
+    layout = [
+        (label, channels)
+        for label, channels in layout
+        if all(c < buffer_channels for c in channels)
+    ]
 
     # Resolve the grid first — fixed modes (e.g. "2×2") may truncate
     # the displayed tiles count, which we must apply *before* the
