@@ -31,6 +31,16 @@ shader_datas = [
     (str(shader_dir / "fragment_template.glsl"), "img_player/render/shaders"),
 ]
 
+# Fonts — ``cache.missing_frame.register_bundled_font`` resolves to
+# ``src/img_player/assets/fonts/`` via Path(__file__) arithmetic. That
+# pattern survives PyInstaller as long as the ``assets/`` tree is
+# bundled to the matching destination.
+fonts_dir = PROJECT_ROOT / "src" / "img_player" / "assets" / "fonts"
+font_datas = [
+    (str(fonts_dir / f.name), "img_player/assets/fonts")
+    for f in fonts_dir.glob("*") if f.is_file()
+]
+
 # OCIO ships built-in configs *inside* the shared library (ocio://default
 # resolves to ACES 2.0 CG). No external files to bundle. But we still want
 # to grab any data files the PyOpenColorIO Python package may carry.
@@ -41,6 +51,25 @@ ocio_datas = collect_data_files("PyOpenColorIO", include_py_files=False)
 # anything tagged as "data".
 oiio_datas = collect_data_files("OpenImageIO", include_py_files=False)
 
+# sounddevice's pip wheel ships a bundled PortAudio DLL inside
+# ``_sounddevice_data/portaudio-binaries/libportaudio64bit.dll`` and
+# imports it via ``ctypes.CDLL`` at module load. PyInstaller's hooks
+# don't always relocate this folder reliably; ship it explicitly.
+sd_datas = []
+try:
+    import _sounddevice_data  # type: ignore[import-untyped]
+    sd_data_root = Path(next(iter(_sounddevice_data.__path__)))
+    for p in sd_data_root.rglob("*"):
+        if not p.is_file():
+            continue
+        rel_parent = p.relative_to(sd_data_root).parent
+        dest = "_sounddevice_data"
+        if str(rel_parent) not in ("", "."):
+            dest = f"_sounddevice_data/{rel_parent.as_posix()}"
+        sd_datas.append((str(p), dest))
+except ImportError:
+    pass
+
 
 # ----------------------------------------------------------------------- Binaries
 
@@ -50,6 +79,36 @@ oiio_datas = collect_data_files("OpenImageIO", include_py_files=False)
 # the codec backends, libOpenColorIO, expat, yaml-cpp, etc.
 oiio_bins = collect_dynamic_libs("OpenImageIO")
 ocio_bins = collect_dynamic_libs("PyOpenColorIO")
+# PyAV (conda-forge build) does NOT ship FFmpeg next to the ``av``
+# package — the DLLs live in the conda env's ``Library/bin/`` and
+# ``collect_dynamic_libs("av")`` returns nothing. We have to grab
+# them by hand. The list covers the FFmpeg core (avcodec / avformat
+# / avutil / sw{resample,scale} / avfilter / avdevice) plus every
+# codec backend conda-forge's ffmpeg pulls in: H.264 (x264, openh264),
+# H.265 (x265), AV1 (aom, dav1d), VP9 (vpx is part of ffmpeg), audio
+# (opus, vorbis/ogg, lame), and image (avif, webp).
+import sys
+av_bins = []
+conda_bin = Path(sys.prefix) / "Library" / "bin"
+if conda_bin.is_dir():
+    _dll_prefixes = (
+        "avcodec-", "avformat-", "avutil-", "avdevice-", "avfilter-",
+        "swresample-", "swscale-", "postproc-",
+        "libx264", "libx265", "openh264-",
+        "aom", "dav1d", "libvpl",
+        "opus", "ogg", "vorbis",
+        "lame", "mp3lame",
+        "avif", "libwebp",
+        "lcms2", "zimg", "vmaf",
+        "libxml2", "libxslt",
+    )
+    for f in conda_bin.glob("*.dll"):
+        name = f.name.lower()
+        if any(name.startswith(p.lower()) for p in _dll_prefixes):
+            av_bins.append((str(f), "."))
+    # Belt-and-suspenders: PyInstaller's helper sometimes finds extras
+    # tied to the ``av`` package itself (build-specific layouts).
+    av_bins += collect_dynamic_libs("av")
 
 # PySide6 has its own opinionated layout that PyInstaller's official hook
 # already handles (Qt6Core, Qt6Gui, Qt6OpenGL, qwindows platform plugin,
@@ -65,6 +124,12 @@ hidden = []
 hidden += collect_submodules("img_player")
 hidden += collect_submodules("OpenImageIO")
 hidden += collect_submodules("PyOpenColorIO")
+# PyAV is heavily Cython-based with per-codec submodules loaded at
+# decode-time. Pull the whole tree so demuxer / decoder lookups don't
+# fail with ImportError mid-playback.
+hidden += collect_submodules("av")
+# sounddevice + its CFFI shim. ``_sounddevice`` is the compiled bridge.
+hidden += ["sounddevice", "_sounddevice", "_cffi_backend", "cffi"]
 hidden += [
     "OpenGL.platform.win32",
     "OpenGL.arrays.ctypesarrays",
@@ -84,8 +149,8 @@ block_cipher = None
 a = Analysis(  # noqa: F821 — Analysis is injected by PyInstaller
     ["src/img_player/__main__.py"],
     pathex=[str(PROJECT_ROOT / "src")],
-    binaries=oiio_bins + ocio_bins,
-    datas=shader_datas + ocio_datas + oiio_datas,
+    binaries=oiio_bins + ocio_bins + av_bins,
+    datas=shader_datas + font_datas + ocio_datas + oiio_datas + sd_datas,
     hiddenimports=hidden,
     hookspath=[],
     hooksconfig={},

@@ -116,17 +116,39 @@ That's it. No admin, no install, no PATH changes. If the user wants a
 shortcut on the desktop, right-click → Send to → Desktop (create
 shortcut) on `img_player.exe`.
 
+## Optional: wrap into a Windows installer
+
+For wider distribution (Start menu shortcut, `.session` file
+association, Add/Remove Programs entry), use the Inno Setup script in
+**[`installer/flick.iss`](installer/README.md)**. Two-step build:
+
+```
+build_exe.bat                                                  # 1. produce dist\img_player\
+"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\flick.iss   # 2. wrap into installer
+```
+
+Output: `installer\Output\flick-setup-X.Y.Z.exe`. Per-user install
+(no admin required). See `installer/README.md` for code-signing,
+sharing strategy, and when to switch from raw zip → installer.
+
 ## What the spec includes
 
 `img_player.spec` is a Python file PyInstaller reads. It declares:
 
 * **Entrypoint** — `src/img_player/__main__.py`
-* **Datas** — the GLSL shader templates (`vertex.glsl`,
-  `fragment_template.glsl`) that `gpu_processor.py` reads via
-  `importlib.resources.files()`. Python `resources` can't see files
-  inside a frozen .exe unless they're explicitly added.
-* **Binaries** — every `.dll`/`.pyd` shipped with `OpenImageIO` and
-  `PyOpenColorIO`. Includes EXR codecs, color science, etc. Discovered
+* **Datas** — GLSL shader templates (`vertex.glsl`,
+  `fragment_template.glsl`) read via `importlib.resources.files()`,
+  the bundled font under `src/img_player/assets/fonts/`, and the
+  pip `sounddevice` wheel's bundled PortAudio DLL
+  (`_sounddevice_data/portaudio-binaries/`). Python `resources` /
+  `ctypes.CDLL` can't see files inside a frozen .exe unless they're
+  explicitly added.
+* **Binaries** — every `.dll`/`.pyd` shipped with `OpenImageIO`,
+  `PyOpenColorIO`, plus the FFmpeg + codec stack PyAV depends on
+  (avcodec/avformat/avutil/sw{resample,scale}/avfilter, x264, x265,
+  aom, dav1d, openh264, opus, vorbis/ogg, lame, …) scooped from the
+  conda env's `Library/bin/` because conda-forge PyAV doesn't bundle
+  FFmpeg next to the `av` package. OIIO + OCIO are discovered
   automatically via `collect_dynamic_libs()`.
 * **Hidden imports** — modules imported lazily (inside functions or via
   `importlib`) that PyInstaller's static analyser can miss:
