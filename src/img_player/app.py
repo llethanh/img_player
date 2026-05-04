@@ -1260,8 +1260,16 @@ class ImgPlayerApp:
                 self._active_audio_layer_id = None
             return
         if self._active_audio_layer_id == layer.id:
-            # Same layer — only the gain may have changed.
+            # Same layer — apply the new gain and re-seek the audio
+            # source. The latter handles the "user dragged the layer
+            # to a new offset" case: the master playhead stayed put
+            # but the layer's master_start moved, so the source-time
+            # ↔ master-time mapping changed and the audio buffer is
+            # now playing the wrong samples for the displayed frame.
             self._audio_output.set_gain(float(layer.audio_gain))
+            t = self._current_layer_time(layer)
+            if t is not None:
+                self._audio_output.seek(t)
             return
         # Open a new AudioSource for this layer. Failures (corrupt
         # audio stream, sample format we can't resample) downgrade
