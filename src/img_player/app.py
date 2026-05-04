@@ -225,6 +225,18 @@ class ImgPlayerApp:
         # different access patterns (sequential cheap, random expensive)
         # that don't fit the cache's per-frame independent model.
         self._video_sources = VideoSourceManager()
+        # Persistent audio output (sounddevice + feeder thread). Stays
+        # open from boot through shutdown — option (b) of the design:
+        # no play-time latency at the cost of holding the device.
+        # Initially silent (no source); ``_refresh_active_audio`` swaps
+        # the active AudioSource on layer-stack / playhead changes.
+        from img_player.media import AudioOutput
+        self._audio_output = AudioOutput()
+        self._audio_output.open()
+        # Tracks which layer id is currently feeding the AudioOutput,
+        # so ``_refresh_active_audio`` doesn't re-open the source on
+        # every frame_changed when the active layer is unchanged.
+        self._active_audio_layer_id: str | None = None
         self._controller = PlayerController(self._cache)
         # Comment store — owned by the app, passed to MainWindow so
         # the Comments tab can read / write directly. Cohérent with
@@ -460,6 +472,12 @@ class ImgPlayerApp:
             self._video_sources.shutdown()
         except Exception:  # pragma: no cover — best effort
             log.exception("video sources shutdown failed")
+        # Close the audio output (stops the feeder thread + closes
+        # the sounddevice stream + closes the active AudioSource).
+        try:
+            self._audio_output.close()
+        except Exception:  # pragma: no cover — best effort
+            log.exception("audio output close failed")
         # Drop python-level refs to anything that could still pin big
         # numpy arrays from the cache, then force a collection. Numpy
         # buffers backed by malloc are released on dict.clear() above,
@@ -651,6 +669,16 @@ class ImgPlayerApp:
         # session swaps on Windows).
         self._layer_stack.layers_changed.connect(
             self._close_orphan_video_sources,
+        )
+        # Refresh the active audio source whenever the stack composition,
+        # visibility, or per-layer audio fields change. Cheap when the
+        # active layer is unchanged (just updates gain).
+        self._layer_stack.layers_changed.connect(self._refresh_active_audio)
+        self._layer_stack.visibility_changed.connect(
+            lambda _id: self._refresh_active_audio(),
+        )
+        self._layer_stack.layer_modified.connect(
+            lambda _id: self._refresh_active_audio(),
         )
         self._layer_stack.visibility_changed.connect(
             lambda _id: self._refresh_after_stack_change(),
@@ -1174,6 +1202,108 @@ class ImgPlayerApp:
         """
         self._window.viewer.gl.clear_image()
 
+    def _pick_active_audio_layer(self):  # type: ignore[no-untyped-def]
+        """Choose which video layer's audio should play.
+
+        Policy (option 1c of the design discussion — "solo / mute per
+        layer with topmost-fallback"):
+
+        * Solo wins. If any video layer has ``audio_solo=True``, that
+          one plays even if another video layer is on top.
+        * Otherwise the topmost-visible video layer with audio plays.
+        * Layers with ``audio_mute=True`` never play.
+        * Layers without an audio stream (``has_audio=False``) never
+          play, regardless of solo/mute.
+
+        Returns ``None`` when no layer qualifies (all muted, no
+        audio, or no video layer at all).
+        """
+        if self._layer_stack is None:
+            return None
+        # Solo first: walk the stack top→bottom, return the first
+        # solo'd video layer with audio.
+        for layer in self._layer_stack.layers():
+            if (
+                layer.is_video
+                and layer.audio_solo
+                and not layer.audio_mute
+                and layer.video_metadata
+                and layer.video_metadata.has_audio
+            ):
+                return layer
+        # No solo — pick the topmost visible video layer with audio.
+        for layer in self._layer_stack.layers():
+            if (
+                layer.visible
+                and layer.is_video
+                and not layer.audio_mute
+                and layer.video_metadata
+                and layer.video_metadata.has_audio
+            ):
+                return layer
+        return None
+
+    def _refresh_active_audio(self) -> None:
+        """Sync the AudioOutput's source + gain with the layer stack.
+
+        Idempotent: if the active layer is unchanged we just update the
+        gain (cheap). When the active layer changes we open a new
+        AudioSource and ``set_source`` it on the output (which closes
+        the previous one). When no layer qualifies we set source to
+        None — the output goes silent.
+        """
+        layer = self._pick_active_audio_layer()
+        from img_player.media import AudioSource
+        if layer is None:
+            if self._active_audio_layer_id is not None:
+                self._audio_output.set_source(None, None)
+                self._active_audio_layer_id = None
+            return
+        if self._active_audio_layer_id == layer.id:
+            # Same layer — only the gain may have changed.
+            self._audio_output.set_gain(float(layer.audio_gain))
+            return
+        # Open a new AudioSource for this layer. Failures (corrupt
+        # audio stream, sample format we can't resample) downgrade
+        # to silence rather than crashing.
+        try:
+            assert layer.video_metadata is not None
+            source = AudioSource(layer.video_metadata.path)
+        except Exception:
+            log.exception("[audio] failed to open source for layer %s", layer.id)
+            self._audio_output.set_source(None, None)
+            self._active_audio_layer_id = None
+            return
+        # Position the new source at the current playhead so the user
+        # hears the right offset, not the start of the file.
+        try:
+            t = self._current_layer_time(layer)
+            if t is not None:
+                source.seek(t)
+        except Exception:
+            log.exception("[audio] initial seek failed")
+        self._audio_output.set_source(layer.id, source)
+        self._audio_output.set_gain(float(layer.audio_gain))
+        self._active_audio_layer_id = layer.id
+
+    def _current_layer_time(self, layer) -> float | None:  # type: ignore[no-untyped-def]
+        """Master playhead → seconds on ``layer``'s native timebase.
+
+        Mirrors the math in :meth:`_decode_video_layer`. Returns
+        ``None`` when the layer doesn't cover the playhead (caller
+        treats as "nothing to seek").
+        """
+        if not layer.is_video or layer.video_metadata is None:
+            return None
+        meta = layer.video_metadata
+        if meta.fps is None or meta.fps <= 0:
+            return None
+        cur = self._controller.state.current_frame
+        if not layer.covers(cur):
+            return None
+        source_frame_idx = cur - layer.master_start
+        return source_frame_idx / float(meta.fps)
+
     def _decode_video_layer(self, layer, master_frame: int):  # type: ignore[no-untyped-def]
         """Pull pixels for ``master_frame`` from a video-backed layer.
 
@@ -1277,6 +1407,54 @@ class ImgPlayerApp:
         # Tell the annotation overlay whether to render: hidden during
         # play unless the show-during-playback toggle is on.
         self._annotation_overlay.set_is_playing(state.is_playing)
+        # Drive the audio output. Three cases:
+        # - play/pause flip → call play() / pause() and reseek audio
+        #   to the current playhead so the user hears from the right
+        #   spot, not the residue of a previous run.
+        # - large playhead jump (= seek, scrub, J/K-step) → reseek
+        #   audio so the feeder picks up at the new time.
+        # - small +1 step while playing (= normal tick) → leave the
+        #   audio feeder alone; it runs free.
+        # set_speed compares session FPS vs the active video layer's
+        # native FPS — anything else than 1.0× ratio mutes (option
+        # 2(a): no time-stretch).
+        active = self._pick_active_audio_layer()
+        if active is not None and active.video_metadata is not None \
+                and active.video_metadata.fps is not None:
+            native = float(active.video_metadata.fps)
+            ratio = state.fps / native if native > 0 else 1.0
+            self._audio_output.set_speed(ratio)
+        else:
+            self._audio_output.set_speed(1.0)
+        prev_play = getattr(self, "_last_audio_play_state", False)
+        prev_frame = getattr(self, "_last_audio_synced_frame", None)
+        if state.is_playing != prev_play:
+            # Transition: pause → play OR play → pause. On a play
+            # transition, seek audio to the current frame so the user
+            # hears the right offset (the feeder may have stale data
+            # from a previous run).
+            if state.is_playing and active is not None:
+                t = self._current_layer_time(active)
+                if t is not None:
+                    self._audio_output.seek(t)
+            if state.is_playing:
+                self._audio_output.play()
+            else:
+                self._audio_output.pause()
+        else:
+            # Same play state — check for a large frame jump (= scrub
+            # / step). Tolerance ±2 covers normal forward / reverse
+            # play ticks; everything else is a seek.
+            if (
+                prev_frame is not None
+                and abs(state.current_frame - prev_frame) > 2
+                and active is not None
+            ):
+                t = self._current_layer_time(active)
+                if t is not None:
+                    self._audio_output.seek(t)
+        self._last_audio_play_state = state.is_playing
+        self._last_audio_synced_frame = state.current_frame
 
     def _on_play_toggled(self) -> None:
         if self._controller.state.is_playing:
