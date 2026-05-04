@@ -58,12 +58,19 @@ class AudioSource:
 
         self._output_sample_rate = int(output_sample_rate)
         self._output_channels = int(output_channels)
-        # Resampler: PyAV native fmt is usually fltp (float planar);
-        # sounddevice consumes flt (float interleaved). The format
-        # change + the rate change both happen here.
+        # Resampler output: float **planar** (``fltp``). PyAV's
+        # ``to_ndarray`` is consistent on planar — shape is always
+        # ``(channels, samples)`` regardless of channel count, so we
+        # can transpose to ``(samples, channels)`` (the layout
+        # sounddevice + numpy stacking expect) without per-channel
+        # bookkeeping. ``flt`` (interleaved) is a trap here: it
+        # returns ``(1, samples*channels)`` and a naive transpose
+        # gives ``(samples*channels, 1)`` — which sounds like the
+        # signal pitched down an octave because every stereo pair
+        # is read as two mono samples played at the same rate.
         layout = "mono" if output_channels == 1 else "stereo"
         self._resampler = av.AudioResampler(
-            format="flt",
+            format="fltp",
             layout=layout,
             rate=output_sample_rate,
         )
@@ -118,7 +125,7 @@ class AudioSource:
         import av  # type: ignore[import-untyped]
         layout = "mono" if self._output_channels == 1 else "stereo"
         self._resampler = av.AudioResampler(
-            format="flt",
+            format="fltp",
             layout=layout,
             rate=self._output_sample_rate,
         )
@@ -141,22 +148,23 @@ class AudioSource:
                 if "End of file" in str(exc) or "EOF" in type(exc).__name__:
                     break
                 raise
-            # Each decoded frame can yield zero or more resampled frames.
+            # Each decoded frame can yield zero or more resampled
+            # frames. With format=``fltp`` (planar), ``to_ndarray``
+            # always returns ``(channels, samples)`` — transpose to
+            # ``(samples, channels)`` so the consumer (sounddevice
+            # callback) sees row-major sample frames.
             for resampled in self._resampler.resample(frame):
-                # ``to_ndarray`` for interleaved float gives shape
-                # ``(channels, samples)`` — transpose to (samples,
-                # channels) so the consumer sees row-major samples.
                 arr = resampled.to_ndarray()
                 if arr.ndim == 1:
-                    # Mono interleaved comes out 1-D; promote to (N,1).
-                    arr = arr.reshape(-1, 1)
-                else:
-                    arr = arr.T
-                # Defensive: enforce dtype + channel count.
+                    # Mono planar can come out 1-D on some PyAV
+                    # builds; promote to (1, N) before transposing.
+                    arr = arr.reshape(1, -1)
+                arr = arr.T  # (channels, samples) → (samples, channels)
                 arr = arr.astype(np.float32, copy=False)
+                # Defensive channel-count fix-up. The resampler
+                # should already match output_channels; this catches
+                # exotic source layouts (5.1 etc.) downmixed wrong.
                 if arr.shape[1] != self._output_channels:
-                    # Resampler should have produced the right shape;
-                    # if not, mix down or duplicate.
                     if arr.shape[1] == 1 and self._output_channels == 2:
                         arr = np.repeat(arr, 2, axis=1)
                     elif arr.shape[1] == 2 and self._output_channels == 1:

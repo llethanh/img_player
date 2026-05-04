@@ -150,6 +150,34 @@ def test_no_audio_stream_raises(tmp_path: Path) -> None:
         AudioSource(p)
 
 
+def test_decoded_sample_count_matches_duration(tmp_path: Path) -> None:
+    """Regression: decoding 1 s of audio must yield ~48000 samples.
+
+    Earlier the resampler was configured for ``flt`` (interleaved)
+    and ``to_ndarray`` returned ``(1, samples*channels)``; a naive
+    transpose then produced 2× the samples (each stereo pair read
+    as two mono samples), and the ring buffer played back at half
+    speed → audio pitched down an octave.
+    """
+    p = tmp_path / "a.mp4"
+    _make_av_file(p, duration_s=1.0, audio_sr=48000, audio_channels=2)
+    with AudioSource(p, output_sample_rate=48000, output_channels=2) as src:
+        total = 0
+        for _ in range(80):  # plenty of room for AAC priming
+            block = src.read(4096)
+            total += block.shape[0]
+            if block.shape[0] < 4096:
+                break
+        # Tolerance: AAC encodes priming + flushing samples that can
+        # add a few thousand. The bug doubled the count → assert we're
+        # within ±10 % of the expected 48k, not 96k+.
+        expected = 48000
+        assert 0.9 * expected <= total <= 1.2 * expected, (
+            f"got {total} samples, expected ~{expected} (bug would "
+            f"give ~{2*expected})"
+        )
+
+
 def test_mono_to_stereo_conversion(tmp_path: Path) -> None:
     """Mono source + stereo output: both channels carry the same signal."""
     p = tmp_path / "mono.mp4"
