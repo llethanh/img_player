@@ -49,12 +49,20 @@ _NUMBER_W = 26       # leftmost "#" column
 _EYE_W = 26          # visibility toggle
 _T_W = 22            # transparency (alpha_composite) toggle
 _ALPHA_S_W = 28      # straight-alpha toggle (wider for the "αS" glyph)
+_AUDIO_M_W = 22      # audio mute (M)
+_AUDIO_S_W = 22      # audio solo (S)
 
 # Hue tokens for the per-row alpha toggles — kept consistent with the
 # previous transport-bar buttons so the user's mental "T = teal,
 # αS = purple" mapping carries over.
 _T_BTN_COLOR = "#5DC9D2"
 _ALPHA_S_BTN_COLOR = "#B783D9"
+# Audio toggles use distinct hues so they don't read as another alpha
+# toggle. Mute = warm orange (= "I'm silencing this"), solo = cool
+# yellow (= "ONLY this one plays"). Tuned to read as obviously-audio
+# at a glance against the teal / purple alpha buttons.
+_AUDIO_M_COLOR = "#E68A4D"
+_AUDIO_S_COLOR = "#E6C84D"
 
 
 # Public layout constants exposed so :class:`MasterTimelinePanel` can
@@ -76,6 +84,8 @@ def layer_row_prefix_width() -> int:
         + S.SM + _EYE_W
         + S.SM + _T_W
         + S.SM + _ALPHA_S_W
+        + S.SM + _AUDIO_M_W
+        + S.SM + _AUDIO_S_W
         + S.SM
     )
 
@@ -176,6 +186,11 @@ class LayerRow(QFrame):  # type: ignore[misc]
     # scanning rows.
     transparency_toggled = Signal(str, bool)
     alpha_straight_toggled = Signal(str, bool)
+    # Audio toggles (video layers only — disabled buttons on
+    # image-sequence rows). Same ``(id, on)`` shape as the alpha
+    # toggles so the panel's update routing is uniform.
+    audio_mute_toggled = Signal(str, bool)
+    audio_solo_toggled = Signal(str, bool)
 
     def __init__(self, layer: Layer, index: int, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -247,6 +262,39 @@ class LayerRow(QFrame):  # type: ignore[misc]
         self._alpha_straight_btn.setChecked(layer.alpha_is_straight)
         self._alpha_straight_btn.toggled.connect(self._on_alpha_straight_clicked)
         layout.addWidget(self._alpha_straight_btn)
+
+        # --- Per-layer audio toggles (M + S) ---------------------------
+        # Mute + solo for video layers with audio. Kept always-present
+        # in the layout so prefix_width stays uniform across rows
+        # (= timeline gutter alignment); for image-sequence layers and
+        # silent video layers the buttons are disabled + dimmed.
+        self._audio_mute_btn = _row_alpha_button(
+            "M",
+            "Mute this layer's audio",
+            color=_AUDIO_M_COLOR,
+            width=_AUDIO_M_W,
+            height=_ROW_HEIGHT - 4,
+        )
+        self._audio_mute_btn.setChecked(layer.audio_mute)
+        self._audio_mute_btn.toggled.connect(self._on_audio_mute_clicked)
+        layout.addWidget(self._audio_mute_btn)
+
+        self._audio_solo_btn = _row_alpha_button(
+            "S",
+            "Solo this layer's audio (only this one plays even if "
+            "another video layer is on top)",
+            color=_AUDIO_S_COLOR,
+            width=_AUDIO_S_W,
+            height=_ROW_HEIGHT - 4,
+        )
+        self._audio_solo_btn.setChecked(layer.audio_solo)
+        self._audio_solo_btn.toggled.connect(self._on_audio_solo_clicked)
+        layout.addWidget(self._audio_solo_btn)
+
+        # Disable both for layers that have no audio to control
+        # (image sequences, audio-less video). The buttons stay
+        # visually present so all rows have the same width.
+        self._refresh_audio_buttons_enabled(layer)
 
         # --- Layer bar (range + drag handles) ---------------------------
         # Replaces the plain filename label with an interactive
@@ -329,11 +377,14 @@ class LayerRow(QFrame):  # type: ignore[misc]
     def update_layer(self, layer: Layer) -> None:
         """Push a fresh Layer reference into the bar — call after the
         underlying layer's offset/trim/visibility/alpha-flags have
-        mutated. Keeps the per-row toggles (T / αS) in sync without
-        firing their own signals."""
+        mutated. Keeps the per-row toggles (T / αS / M / S) in sync
+        without firing their own signals."""
         self._bar.set_layer(layer)
         self.set_transparency_state(layer.alpha_composite)
         self.set_alpha_straight_state(layer.alpha_is_straight)
+        self.set_audio_mute_state(layer.audio_mute)
+        self.set_audio_solo_state(layer.audio_solo)
+        self._refresh_audio_buttons_enabled(layer)
 
     def set_master_range(self, first: int, last: int) -> None:
         """Coordinate-space update from the panel."""
@@ -458,6 +509,42 @@ class LayerRow(QFrame):  # type: ignore[misc]
             self._alpha_straight_btn.setChecked(bool(on))
         finally:
             self._alpha_straight_btn.blockSignals(False)
+
+    def _on_audio_mute_clicked(self, checked: bool) -> None:
+        self.audio_mute_toggled.emit(self._layer_id, bool(checked))
+
+    def _on_audio_solo_clicked(self, checked: bool) -> None:
+        self.audio_solo_toggled.emit(self._layer_id, bool(checked))
+
+    def set_audio_mute_state(self, on: bool) -> None:
+        self._audio_mute_btn.blockSignals(True)
+        try:
+            self._audio_mute_btn.setChecked(bool(on))
+        finally:
+            self._audio_mute_btn.blockSignals(False)
+
+    def set_audio_solo_state(self, on: bool) -> None:
+        self._audio_solo_btn.blockSignals(True)
+        try:
+            self._audio_solo_btn.setChecked(bool(on))
+        finally:
+            self._audio_solo_btn.blockSignals(False)
+
+    def _refresh_audio_buttons_enabled(self, layer: Layer) -> None:
+        """Disable the audio toggles when the layer has nothing to
+        control — image sequences and silent video. Keeps the buttons
+        visually present so the row prefix width is uniform."""
+        has_audio = bool(
+            layer.is_video
+            and layer.video_metadata is not None
+            and layer.video_metadata.has_audio
+        )
+        self._audio_mute_btn.setEnabled(has_audio)
+        self._audio_solo_btn.setEnabled(has_audio)
+        if not has_audio:
+            tip = "No audio on this layer"
+            self._audio_mute_btn.setToolTip(tip)
+            self._audio_solo_btn.setToolTip(tip)
 
     def _on_eye_clicked(self) -> None:
         # Toggle the glyph immediately for snappy feedback; the
@@ -881,6 +968,8 @@ class LayerPanel(QFrame):  # type: ignore[misc]
             row.alpha_straight_toggled.connect(
                 self._on_row_alpha_straight_toggled,
             )
+            row.audio_mute_toggled.connect(self._on_row_audio_mute_toggled)
+            row.audio_solo_toggled.connect(self._on_row_audio_solo_toggled)
             row.offset_changed.connect(self._on_row_offset_changed)
             row.offset_preview_changed.connect(
                 self._on_row_offset_preview_changed,
@@ -1228,6 +1317,31 @@ class LayerPanel(QFrame):  # type: ignore[misc]
                         self._stack.update(sid, alpha_is_straight=bool(on))
             return
         self._stack.update(layer_id, alpha_is_straight=bool(on))
+
+    def _on_row_audio_mute_toggled(self, layer_id: str, on: bool) -> None:
+        # Multi-select cascade — same model as transparency / alpha_straight.
+        if (
+            layer_id in self._selected_ids
+            and len(self._selected_ids) > 1
+        ):
+            with self._stack.batch():
+                for sid in self._selected_ids:
+                    if self._stack.find(sid) is not None:
+                        self._stack.update(sid, audio_mute=bool(on))
+            return
+        self._stack.update(layer_id, audio_mute=bool(on))
+
+    def _on_row_audio_solo_toggled(self, layer_id: str, on: bool) -> None:
+        # Solo is exclusive: turning it ON for one layer turns it OFF
+        # on every other video layer in the stack. Otherwise the user
+        # would have to manually un-solo a previous layer to retire
+        # the override — that's the standard DAW / NLE solo idiom.
+        with self._stack.batch():
+            if on:
+                for layer in self._stack.layers():
+                    if layer.id != layer_id and layer.audio_solo:
+                        self._stack.update(layer.id, audio_solo=False)
+            self._stack.update(layer_id, audio_solo=bool(on))
 
     def compose_reorder_drag_pixmap(
         self, source_id: str,
