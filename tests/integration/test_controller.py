@@ -16,13 +16,46 @@ from img_player.player.state import LoopMode, PlaybackState
 from img_player.sequence.scanner import scan
 
 
+class _MockClock:
+    """Controllable monotonic clock for deterministic ``_tick`` tests.
+
+    The wall-clock-driven controller advances the playhead by
+    ``round(elapsed × fps)`` per tick — calling ``_tick`` without
+    elapsed time would be a no-op. ``MockClock.tick`` bumps the
+    pretend-time by one frame interval at the controller's current
+    fps, so ``controller._tick()`` advances by exactly one frame
+    just like the legacy "++ per tick" behaviour the tests expect.
+    """
+
+    def __init__(self) -> None:
+        self.t = 1000.0  # arbitrary non-zero start
+
+    def __call__(self) -> float:
+        return self.t
+
+    def advance(self, seconds: float) -> None:
+        self.t += seconds
+
+
 @pytest.fixture
 def controller(qtbot, sequence_dir: Path):  # type: ignore[no-untyped-def]
     cache = FrameCache(budget_bytes=8 * 1024 * 1024, num_workers=2)
-    ctrl = PlayerController(cache)
+    clock = _MockClock()
+    ctrl = PlayerController(cache, clock=clock)
     seq = scan(sequence_dir)
     ctrl.load_sequence(seq)
     cache.wait_idle(timeout=5.0)
+    # Wrap _tick so each call advances the mock clock by one frame
+    # interval first — matches the pre-refactor "+1 per tick"
+    # contract every test relies on.
+    real_tick = ctrl._tick
+
+    def stepping_tick():
+        clock.advance(1.0 / ctrl.state.fps)
+        real_tick()
+
+    ctrl._tick = stepping_tick  # type: ignore[method-assign]
+    ctrl._mock_clock = clock  # type: ignore[attr-defined]
     yield ctrl
     ctrl.shutdown()
     cache.shutdown()
@@ -77,6 +110,29 @@ def test_tick_advances_forward(controller: PlayerController) -> None:
     assert controller.state.current_frame == 4
     controller._tick()
     assert controller.state.current_frame == 5
+
+
+def test_tick_catches_up_after_slow_qtimer(controller: PlayerController) -> None:
+    """Wall-clock-driven advance: a single tick fired late jumps the
+    playhead by however many frame intervals elapsed.
+
+    Pre-refactor the controller advanced ``current_frame`` by exactly
+    +1 per tick. If the QTimer slipped (GC pause, GUI redraw), the
+    playhead fell behind wall time → A/V drift built up. With the
+    wall-clock anchor, the next tick targets the right frame and
+    skips through the missed ones.
+    """
+    controller.seek(2)
+    controller.play()
+    # Simulate a 5-frame interval slip (e.g. the QTimer was blocked
+    # for ~208 ms at 24 fps). Bypass the fixture's stepping wrapper
+    # so we control the elapsed time directly.
+    clock = controller._mock_clock  # type: ignore[attr-defined]
+    clock.advance(5.0 / controller.state.fps)
+    # Call the real _tick (the fixture wraps it; reach the underlying
+    # method to avoid double-advance).
+    PlayerController._tick(controller)
+    assert controller.state.current_frame == 7  # 2 + 5
 
 
 def test_loop_mode_wraps_to_start(controller: PlayerController) -> None:

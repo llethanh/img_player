@@ -61,7 +61,13 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
     effective_fps_changed = Signal(float)
     cache_hit_rate_changed = Signal(float)
 
-    def __init__(self, cache: CacheLike, parent: QObject | None = None) -> None:
+    def __init__(
+        self,
+        cache: CacheLike,
+        parent: QObject | None = None,
+        *,
+        clock: "callable" | None = None,
+    ) -> None:
         super().__init__(parent)
         self._cache = cache
         self._sequence: SequenceInfo | None = None
@@ -69,6 +75,23 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
         self._timer = QTimer(self)
         self._timer.setTimerType(Qt.PreciseTimer)
         self._timer.timeout.connect(self._tick)
+        # Wall-clock provider. Defaults to ``time.monotonic`` so playback
+        # advances at real-world rate independent of QTimer jitter.
+        # Tests inject a controllable mock clock so ``_tick`` is
+        # deterministic without sleeping. Earlier the controller
+        # advanced ``current_frame`` by exactly +1 per tick — that
+        # made the master clock = "tick count" and any QTimer drift
+        # leaked straight into A/V desync. With a wall-clock anchor,
+        # the playhead targets the frame the wall clock says we
+        # should be on, and the audio (which plays at wall clock
+        # natively via PortAudio) stays aligned by construction.
+        self._clock: "callable" = clock if clock is not None else time.monotonic
+        # Anchor for the current play burst. ``None`` when paused or
+        # not yet anchored. ``play()`` and every range-/rate-changing
+        # call (seek, set_fps, set_direction) reset it so subsequent
+        # ticks measure elapsed time from the new anchor.
+        self._play_start_clock: float | None = None
+        self._play_start_frame: int = 0
         # Rolling window of monotonic timestamps captured at each tick.
         # Drives :meth:`effective_fps` so the UI can show what the play
         # loop is actually delivering, independent of the target FPS
@@ -274,6 +297,12 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
         self._tick_timestamps.clear()
         self._tick_hits.clear()
         self._last_metric_emit = 0.0
+        # Anchor the wall clock for this play burst. Subsequent ticks
+        # compute target_frame = anchor_frame + round(direction × elapsed × fps),
+        # so the playhead stays in lockstep with wall time even if
+        # the QTimer is jittery.
+        self._play_start_clock = self._clock()
+        self._play_start_frame = self._state.current_frame
 
         self._update(is_playing=True)
         self._timer.start(self._interval_ms())
@@ -294,6 +323,8 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
         self._tick_timestamps.clear()
         self._tick_hits.clear()
         self._last_metric_emit = 0.0
+        # Drop the wall-clock anchor — the next play() reseeds it.
+        self._play_start_clock = None
         self._update(is_playing=False)
 
     def stop(self) -> None:
@@ -337,6 +368,13 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
         self._tick_timestamps.clear()
         self._tick_hits.clear()
         self._last_metric_emit = 0.0
+        # Re-anchor the wall clock if we're playing — the seek moved
+        # the playhead arbitrarily; without a re-anchor the next tick
+        # would compute target = old_anchor_frame + round(elapsed × fps)
+        # and yank the playhead back toward the pre-seek position.
+        if self._state.is_playing:
+            self._play_start_clock = self._clock()
+            self._play_start_frame = clamped
         self._try_render(count_misses=False)
 
     def step(self, delta: int) -> None:
@@ -348,6 +386,11 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
         self._update(fps=max(0.1, fps))
         if self._state.is_playing:
             self._timer.setInterval(self._interval_ms())
+            # Re-anchor: the conversion ``elapsed × fps`` would
+            # produce an inconsistent target if we kept the old
+            # anchor across a rate change.
+            self._play_start_clock = self._clock()
+            self._play_start_frame = self._state.current_frame
 
     def set_loop_mode(self, mode: LoopMode) -> None:
         self._update(loop_mode=mode)
@@ -361,6 +404,11 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
         d = 1 if direction >= 0 else -1
         self._update(direction=d)
         self._cache.set_direction(d)
+        # Re-anchor: direction flip means target = anchor + direction
+        # × elapsed × fps reads the wrong way without a fresh anchor.
+        if self._state.is_playing:
+            self._play_start_clock = self._clock()
+            self._play_start_frame = self._state.current_frame
 
     def play_direction(self, direction: int) -> None:
         """Direction-aware play / pause.
@@ -407,7 +455,28 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
         # cadence of the QTimer, not the time we spend below in advance/
         # prefetch logic. The status bar reads this every 500 ms.
         self._tick_timestamps.append(time.monotonic())
-        next_frame, next_dir, should_stop = self._advance()
+        # Wall-clock-driven advance. ``play()`` and every range-/rate-
+        # changing call seed the anchor; the target frame is the one
+        # the wall clock says we should be on by now. This eliminates
+        # QTimer-jitter drift that used to leak straight into A/V
+        # desync (audio plays at PortAudio wall rate by construction;
+        # if the video tick advances by exactly +1 per QTimer firing
+        # without referring to wall time, any timer slippage shows up
+        # as cumulative desync).
+        if self._play_start_clock is None:
+            self._play_start_clock = self._clock()
+            self._play_start_frame = self._state.current_frame
+        elapsed = self._clock() - self._play_start_clock
+        d = self._state.direction
+        target_offset = int(round(d * elapsed * self._state.fps))
+        tentative = self._play_start_frame + target_offset
+        # Same frame as we're already on → idle tick (clock fired
+        # before a full frame interval elapsed). Skip the advance
+        # path so we don't burn cache requests on no-op transitions.
+        if tentative == self._state.current_frame:
+            self._maybe_emit_metrics()
+            return
+        next_frame, next_dir, should_stop = self._advance(tentative)
 
         # Cache-bound playback: stall the playhead instead of running
         # ahead of the cache fill bar. Per user feedback ("qd on lance
@@ -514,24 +583,43 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
             if hr is not None:
                 self.cache_hit_rate_changed.emit(hr)
 
-    def _advance(self) -> tuple[int, int, bool]:
-        """Return (next_frame, next_direction, should_pause_after)."""
+    def _advance(self, tentative: int | None = None) -> tuple[int, int, bool]:
+        """Apply range / loop semantics to a target frame.
+
+        Returns ``(next_frame, next_direction, should_pause_after)``.
+        ``tentative`` is the wall-clock-derived target the new
+        :meth:`_tick` computes; absent (legacy single-step callers)
+        defaults to ``current_frame + direction`` for a one-frame
+        advance.
+        """
         lo = self._effective_in_frame()
         hi = self._effective_out_frame()
         cur = self._state.current_frame
         d = self._state.direction
-        tentative = cur + d
+        if tentative is None:
+            tentative = cur + d
 
         if d > 0 and tentative > hi:
             if self._state.loop_mode == LoopMode.ONCE:
                 return (hi, 1, True)
             if self._state.loop_mode == LoopMode.LOOP:
+                # Wrap around — re-anchor the wall clock so the next
+                # tick measures elapsed from ``lo``, not from the
+                # pre-wrap position. Without this, a long run
+                # accumulates seconds of "phantom" elapsed time and
+                # the post-wrap target rockets past ``lo``.
+                if self._play_start_clock is not None:
+                    self._play_start_clock = self._clock()
+                    self._play_start_frame = lo
                 return (lo, 1, False)
             return (max(hi - 1, lo), -1, False)  # PING_PONG
         if d < 0 and tentative < lo:
             if self._state.loop_mode == LoopMode.ONCE:
                 return (lo, -1, True)
             if self._state.loop_mode == LoopMode.LOOP:
+                if self._play_start_clock is not None:
+                    self._play_start_clock = self._clock()
+                    self._play_start_frame = hi
                 return (hi, -1, False)
             return (min(lo + 1, hi), 1, False)  # PING_PONG
         return (tentative, d, False)
