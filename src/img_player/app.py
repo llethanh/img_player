@@ -677,8 +677,14 @@ class ImgPlayerApp:
         self._layer_stack.visibility_changed.connect(
             lambda _id: self._refresh_active_audio(),
         )
+        # ``layer_modified`` covers offset / trim drags that don't
+        # change *which* layer is active but DO change the source-time
+        # ↔ master-time mapping. Use the reseeking variant so the
+        # audio jumps to the new alignment once. The plain
+        # ``_refresh_active_audio`` on frame_changed must not reseek
+        # on every tick (would thrash the ring buffer → stutter).
         self._layer_stack.layer_modified.connect(
-            lambda _id: self._refresh_active_audio(),
+            lambda _id: self._reseek_active_audio_for_layer_change(),
         )
         self._layer_stack.visibility_changed.connect(
             lambda _id: self._refresh_after_stack_change(),
@@ -1263,6 +1269,25 @@ class ImgPlayerApp:
                 return layer
         return None
 
+    def _reseek_active_audio_for_layer_change(self) -> None:
+        """Reseek the audio source after a per-layer mutation that
+        shifted the source-time ↔ master-time mapping (offset / trim
+        drag, channel toggles, etc.). Refreshes the active layer
+        first so coverage transitions caused by the same edit are
+        also handled.
+
+        Called only on ``layer_modified``, never on ``frame_changed``
+        — reseeking on every play tick would flush the AudioOutput
+        ring buffer ~24×/s and stutter audibly.
+        """
+        self._refresh_active_audio()
+        layer = self._pick_active_audio_layer()
+        if layer is None:
+            return
+        t = self._current_layer_time(layer)
+        if t is not None:
+            self._audio_output.seek(t)
+
     def _refresh_active_audio(self) -> None:
         """Sync the AudioOutput's source + gain with the layer stack.
 
@@ -1280,16 +1305,14 @@ class ImgPlayerApp:
                 self._active_audio_layer_id = None
             return
         if self._active_audio_layer_id == layer.id:
-            # Same layer — apply the new gain and re-seek the audio
-            # source. The latter handles the "user dragged the layer
-            # to a new offset" case: the master playhead stayed put
-            # but the layer's master_start moved, so the source-time
-            # ↔ master-time mapping changed and the audio buffer is
-            # now playing the wrong samples for the displayed frame.
+            # Same layer — only the gain may have changed. We do NOT
+            # reseek here: this method is also called on every
+            # frame_changed (to catch coverage transitions during
+            # play), and reseeking on every tick would flush the
+            # AudioOutput ring buffer continuously and produce
+            # heavy stutter. Reseek-on-layer-state-change is handled
+            # by the dedicated layer_modified hook below.
             self._audio_output.set_gain(float(layer.audio_gain))
-            t = self._current_layer_time(layer)
-            if t is not None:
-                self._audio_output.seek(t)
             return
         # Open a new AudioSource for this layer. Failures (corrupt
         # audio stream, sample format we can't resample) downgrade
