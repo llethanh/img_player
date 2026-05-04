@@ -896,6 +896,12 @@ class ImgPlayerApp:
     # ------------------------------------------------------------------ Handlers
 
     def _on_frame_changed(self, frame: int) -> None:
+        # Re-evaluate the active audio layer first — the playhead may
+        # have crossed a coverage boundary (entered / exited a clip)
+        # which changes whether any layer should be feeding samples.
+        # Cheap when the active layer is unchanged: just walks the
+        # stack and early-returns.
+        self._refresh_active_audio()
         self._window.timeline.set_current_frame(frame)
         # The viewport needs to know the current frame so the next
         # drag-scrub can use it as a base reference.
@@ -1203,25 +1209,36 @@ class ImgPlayerApp:
         self._window.viewer.gl.clear_image()
 
     def _pick_active_audio_layer(self):  # type: ignore[no-untyped-def]
-        """Choose which video layer's audio should play.
+        """Choose which video layer's audio should play right now.
 
         Policy (option 1c of the design discussion — "solo / mute per
-        layer with topmost-fallback"):
+        layer with topmost-fallback"), coverage-aware:
 
-        * Solo wins. If any video layer has ``audio_solo=True``, that
-          one plays even if another video layer is on top.
-        * Otherwise the topmost-visible video layer with audio plays.
+        * **Coverage matters.** A layer that doesn't cover the current
+          playhead can't be active — the audio would play in advance
+          of the video reaching that clip. Without this guard, the
+          feeder reads continuously while the playhead is in a void
+          (offset > 0, between two clips, etc.), and by the time the
+          playhead enters the layer the audio is already N seconds
+          ahead of it.
+        * Solo wins. If any video layer has ``audio_solo=True`` AND
+          covers the playhead, that one plays even if another video
+          layer is on top.
+        * Otherwise the topmost-visible video layer with audio that
+          covers the playhead plays.
         * Layers with ``audio_mute=True`` never play.
         * Layers without an audio stream (``has_audio=False``) never
-          play, regardless of solo/mute.
+          play, regardless of solo / mute.
 
-        Returns ``None`` when no layer qualifies (all muted, no
-        audio, or no video layer at all).
+        Returns ``None`` when no layer qualifies (no coverage, all
+        muted, no audio, or no video layer at all).
         """
         if self._layer_stack is None:
             return None
-        # Solo first: walk the stack top→bottom, return the first
-        # solo'd video layer with audio.
+        cur = self._controller.state.current_frame
+        # Solo first: solo'd layer wins even past coverage of a
+        # higher one — but the layer must still cover the playhead
+        # for its audio to be meaningful.
         for layer in self._layer_stack.layers():
             if (
                 layer.is_video
@@ -1229,9 +1246,11 @@ class ImgPlayerApp:
                 and not layer.audio_mute
                 and layer.video_metadata
                 and layer.video_metadata.has_audio
+                and layer.covers(cur)
             ):
                 return layer
-        # No solo — pick the topmost visible video layer with audio.
+        # No covering solo — pick the topmost visible video layer
+        # that covers + has audio.
         for layer in self._layer_stack.layers():
             if (
                 layer.visible
@@ -1239,6 +1258,7 @@ class ImgPlayerApp:
                 and not layer.audio_mute
                 and layer.video_metadata
                 and layer.video_metadata.has_audio
+                and layer.covers(cur)
             ):
                 return layer
         return None
