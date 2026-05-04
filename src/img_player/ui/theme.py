@@ -311,6 +311,48 @@ QTabBar::tab:hover:!selected {{
     color: {h.TEXT_PRIMARY};
 }}
 
+/* ── Checkboxes + radio buttons ─────────────────────────────────────────── */
+/* Indicators need explicit border / background because the global
+ * ``QWidget {{ border: none }}`` cascades to the ``::indicator``
+ * subcontrol and erases the system-drawn outline. Without these
+ * rules, unchecked checkboxes / radios are invisible (only the
+ * inner checkmark of a checked box draws — the empty box has
+ * nothing to show). The channel menu's per-row tile checkboxes
+ * are the place this hurts most. */
+
+QCheckBox::indicator,
+QRadioButton::indicator {{
+    width: 14px;
+    height: 14px;
+    background-color: {h.BG_SURFACE};
+    border: 1px solid {h.BORDER_DEFAULT};
+}}
+
+QCheckBox::indicator {{
+    border-radius: 2px;
+}}
+
+QRadioButton::indicator {{
+    border-radius: 7px;
+}}
+
+QCheckBox::indicator:hover,
+QRadioButton::indicator:hover {{
+    border-color: {h.BORDER_STRONG};
+}}
+
+QCheckBox::indicator:checked,
+QRadioButton::indicator:checked {{
+    background-color: {h.ACCENT};
+    border-color: {h.ACCENT};
+}}
+
+QCheckBox::indicator:disabled,
+QRadioButton::indicator:disabled {{
+    background-color: {h.BG_RAISED};
+    border-color: {h.BORDER_SUBTLE};
+}}
+
 /* ── Buttons ────────────────────────────────────────────────────────────── */
 
 QPushButton {{
