@@ -491,8 +491,25 @@ class MasterFrameCache:
         if not visible:
             return False
         topmost = visible[0]
+        # Contact-sheet selections demand the union of every checked
+        # tile's channels (potentially 6+ on a multi-AOV pass). The
+        # composite path normalises every contributor to RGBA via
+        # ``_ensure_rgba`` and rejects anything else (= the user-
+        # reported ``Unsupported channel count: 7`` crash). For a
+        # single-layer stack with a contact-sheet selection the
+        # composite is structurally a no-op anyway (nothing to blend
+        # against); detour through the single-decode fast path so the
+        # full union buffer reaches ``compose_contact_sheet`` intact.
+        is_contact_sheet_selection = (
+            topmost.channel_selection is not None
+            and topmost.channel_selection.is_contact_sheet
+        )
+        single_layer = len(visible) == 1
         if not topmost.alpha_composite:
             # Topmost is opaque — single-layer fast path.
+            layer = topmost
+        elif single_layer and is_contact_sheet_selection:
+            # Single-layer contact-sheet — fast path, full union buffer.
             layer = topmost
         else:
             plan_layers: list = []
