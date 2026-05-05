@@ -891,6 +891,21 @@ class MasterFrameCache:
         invalidate_first = min(prev_start, new_start)
         invalidate_last = max(prev_end, new_end)
         self._invalidate_master_range(invalidate_first, invalidate_last)
+        # Drop the worker pool's pending decodes too — same reason
+        # ``_on_layers_changed`` does it. Pending tasks captured the
+        # OLD layer state at submit time (e.g. ``is_opaque_floor``
+        # baked into the composite plan, ``strip_alpha`` baked into
+        # the single-decode lambda); even though the epoch bump in
+        # ``_invalidate_master_range`` makes the workers DISCARD their
+        # results at store time, the pool's per-key dedup set still
+        # holds those frames as "pending" — so the controller's
+        # follow-up ``replan_prefetch`` is silently rejected for
+        # every still-pending frame and the cache never gets a
+        # fresh decode with the new state. End result: gaps that
+        # only fill once playback rolls past them. Toggling alpha
+        # while playing was the user-visible symptom — wave of "old
+        # alpha" frames in the middle of the cached range.
+        self._pool.clear()
         self._last_known_range[layer_id] = (new_start, new_end)
         self._last_known_state[layer_id] = new_state
 
@@ -1046,17 +1061,34 @@ class MasterFrameCache:
         etc. Per-layer flag means a stack can mix opaque and
         compositing layers without a single global toggle forcing
         the wrong choice.
+
+        Always filters the returned list against
+        ``layer.sequence.channel_names``. Without this, a
+        ``channel_selection`` carried over from a previous layer
+        (the channel menu's prefs-restore writes the saved selection
+        onto whichever layer takes focus, including freshly added
+        layers whose source might have a narrower channel set) can
+        request channels the source doesn't have — the OIIO reader
+        then raises ``requested channels not found`` and the cache
+        records a placeholder for every frame in the layer's range.
         """
+        available = set(layer.sequence.channel_names)
         sel = layer.channel_selection
         if sel is None:
             base: list[str] | None = None
         else:
-            union = list(sel.union_channels())
+            union = [c for c in sel.union_channels() if c in available]
             base = union or None
         if not layer.alpha_composite:
             return base
-        if "A" not in layer.sequence.channel_names:
-            return base
+        if "A" not in available:
+            # Source is RGB-only — strip A from the explicit selection
+            # too. Returning a list that includes A would feed the
+            # reader a request it can't satisfy.
+            if base is None:
+                return None
+            stripped = [c for c in base if c != "A"]
+            return stripped or None
         if base is None:
             return None  # reader default already RGBA
         if "A" in base:
