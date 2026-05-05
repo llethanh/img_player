@@ -8,6 +8,10 @@ dependencies:
   - pyside6
   - numpy
   - av                   # PyAV — FFmpeg bindings for video decode (mp4/mov, ProRes, DNxHR)
+  - sdl3                 # FFmpeg's avdevice transitively links SDL3.dll on conda-forge
+                         # win-64 builds since 2026-Q2 — without sdl3 explicitly in
+                         # the env, ``import av`` shows a "Failed loading SDL3 library"
+                         # MessageBox the moment a video layer is touched.
   - pip
   - pip:
       - opencolorio>=2.3  # ASWF wheels — not available on conda-forge win-64 as of 2026-04

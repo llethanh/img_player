@@ -101,6 +101,14 @@ if conda_bin.is_dir():
         "avif", "libwebp",
         "lcms2", "zimg", "vmaf",
         "libxml2", "libxslt",
+        # SDL3 is loaded transitively by FFmpeg's avdevice on
+        # conda-forge win-64 builds since 2026-Q2. PyInstaller's
+        # static analyser doesn't see this dep (it's resolved by
+        # Windows at LoadLibrary time), so without an explicit
+        # prefix here the bundle ships avdevice-XX.dll but no
+        # SDL3.dll → "Failed loading SDL3 library" MessageBox the
+        # moment a video layer is touched in the .exe.
+        "sdl3",
     )
     for f in conda_bin.glob("*.dll"):
         name = f.name.lower()
