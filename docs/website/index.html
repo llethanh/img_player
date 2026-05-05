@@ -1018,9 +1018,9 @@ footer a:hover { color: var(--accent); }
   <h2>Built for <span class="accent">VFX review</span>, not generic playback.</h2>
   <p class="lede">
     Flick Player reads what your pipeline produces — multichannel EXRs, OCIO-aware
-    floats, sparse sequences with holes, multiple takes side by side — and gives
-    you the tools you need to actually review them. Stack, trim, annotate, comment,
-    export, share.
+    floats, sparse sequences with holes, mp4 / mov / ProRes clips with audio,
+    multiple takes side by side — and gives you the tools you need to actually
+    review them. Stack, trim, annotate, comment, export, share.
   </p>
 
   <div class="feature-grid">
@@ -1036,7 +1036,7 @@ footer a:hover { color: var(--accent); }
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="14" width="6" height="6" rx="1"/><rect x="9" y="9" width="6" height="6" rx="1"/><rect x="15" y="4" width="6" height="6" rx="1"/></svg>
       </div>
       <h3>Multi-layer stack</h3>
-      <p>Stack takes, mattes, plate &amp; comp side by side. Reorder by drag, trim each layer's IN/OUT on the timeline, slide its offset.</p>
+      <p>Stack takes, mattes, plate &amp; comp side by side — image sequences <em>and</em> video clips together. Reorder by drag, trim each layer's IN/OUT on the timeline, slide its offset.</p>
     </div>
     <div class="feature-card">
       <div class="icon">
@@ -1099,7 +1099,7 @@ footer a:hover { color: var(--accent); }
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h12l4 4v12H4z"/><path d="M16 4v4h4"/><path d="M8 12h8M8 16h8"/></svg>
       </div>
       <h3>Sessions</h3>
-      <p>Save the full layer stack — sources, offsets, trims, channels, alpha modes — to a single <code>.session</code> JSON file.</p>
+      <p>Save the full layer stack — sources, offsets, trims, channels, alpha modes, audio mute / solo / gain — to a single <code>.session</code> JSON file. Drop the file back on the viewer to restore everything.</p>
     </div>
     <div class="feature-card">
       <div class="icon">
@@ -1643,10 +1643,11 @@ footer a:hover { color: var(--accent); }
   <h2>Save the whole <span class="accent">stack</span> as a session.</h2>
   <p class="lede">
     File → Save session writes every layer's source path, offset, IN/OUT trim,
-    channel selection, alpha-composite mode and visibility into one
-    <code>.session</code> JSON file. Reopen later and the stack reappears
-    exactly as it was. Travels next to the work; readable by hand if you ever need
-    to check what's in there.
+    channel selection, alpha-composite mode, visibility and per-layer audio state
+    (mute / solo / gain) into one <code>.session</code> JSON file. Drop the file
+    back on the viewer and the full stack reappears exactly as you left it.
+    Travels next to the work; readable by hand if you ever need to check what's
+    in there.
   </p>
 </section>
 
