@@ -106,6 +106,16 @@ class Layer:
     # the audio mix only; no effect on image-sequence layers.
     audio_gain: float = 1.0
 
+    # Still-image layer: a single file held visible for ``still_hold_frames``
+    # master frames. Built by :meth:`from_still` (drop / open of a single
+    # image file). The underlying :attr:`sequence` carries exactly one
+    # :class:`FrameInfo`; ``still_hold_frames`` controls how many master
+    # frames the layer "covers" without growing the disk-side frame count.
+    # The cache short-circuits decode for stills (one OIIO read shared
+    # across all hold frames via ndarray ref aliasing).
+    is_still: bool = False
+    still_hold_frames: int = 1
+
     @classmethod
     def from_sequence(
         cls,
@@ -130,6 +140,35 @@ class Layer:
             offset=offset,
             name=name or sequence.display_pattern(),
         )
+
+    @classmethod
+    def from_image(
+        cls,
+        sequence: SequenceInfo,
+        *,
+        default_still_hold: int = 100,
+        offset: int = 0,
+        name: str | None = None,
+    ) -> Layer:
+        """Smart image-layer factory: routes to still vs sequence.
+
+        Builds a still layer when the scanner returned exactly one
+        :class:`FrameInfo` (the user dropped a single image file —
+        slate, lookdev ref, matte). Otherwise falls through to
+        :meth:`from_sequence`. The ``default_still_hold`` argument is
+        only consulted on the still path; callers compute it from the
+        existing layer stack so a still dropped into a session full of
+        100-frame sequences inherits a 100-frame hold (no manual config
+        for the common slate case).
+        """
+        if sequence.frame_count == 1:
+            return cls.from_still(
+                sequence,
+                hold_frames=default_still_hold,
+                offset=offset,
+                name=name,
+            )
+        return cls.from_sequence(sequence, offset=offset, name=name)
 
     @classmethod
     def from_video(
@@ -202,6 +241,64 @@ class Layer:
             alpha_is_straight=True,
         )
 
+    @classmethod
+    def from_still(
+        cls,
+        sequence: SequenceInfo,
+        hold_frames: int,
+        offset: int = 0,
+        name: str | None = None,
+    ) -> Layer:
+        """Build a still-image layer from a single-file sequence.
+
+        ``sequence`` must hold exactly one :class:`FrameInfo` — the
+        scanner returns this when a single image file is dropped.
+        ``hold_frames`` is the number of master frames the still
+        will be visible for; a sensible default is the duration of
+        the longest existing layer (or a project-wide constant when
+        loaded into an empty session). The caller picks; the
+        constructor only validates ``hold_frames >= 1``.
+
+        Trim semantics: ``layer_in == layer_out == sequence.first_frame``
+        always — the trim window collapses to the single source frame
+        because there's only one to point at. The "logical" duration
+        is carried by :attr:`still_hold_frames` instead, and
+        :meth:`trim_length` / :meth:`source_frame_at` branch on
+        :attr:`is_still` so the rest of the code keeps treating
+        ``trim_length`` and ``master_end`` uniformly.
+        """
+        if sequence.frame_count != 1:
+            raise ValueError(
+                f"Layer.from_still requires a 1-frame SequenceInfo, "
+                f"got {sequence.frame_count}",
+            )
+        hold = max(1, int(hold_frames))
+        return cls(
+            sequence=sequence,
+            layer_in=sequence.first_frame,
+            layer_out=sequence.first_frame,
+            offset=offset,
+            name=name or sequence.frames[0].path.name,
+            is_still=True,
+            still_hold_frames=hold,
+            # Stills are usually JPG / PNG / single EXR refs — the
+            # straight/premult flag follows whatever ``from_sequence``
+            # would pick, but stills aren't typically composited as
+            # alpha mattes. Default ``False`` (premult) matches the
+            # rest of the app.
+            alpha_is_straight=False,
+            # Treat stills as opaque "floor" layers by default. This
+            # routes their cache requests through the simple
+            # single-decode path (``_decode_and_store``) instead of
+            # the multi-layer composite path — the simple path
+            # carries the still-fan-out optimisation, and a slate /
+            # ref doesn't need alpha blending against the void
+            # underneath. The user can still flip the T toggle in
+            # the layer panel if they intentionally want to use a
+            # still as an alpha matte over another layer.
+            alpha_composite=False,
+        )
+
     # ---- Derived properties --------------------------------------------
 
     @property
@@ -215,8 +312,18 @@ class Layer:
 
     @property
     def trim_length(self) -> int:
-        """Number of *master* frames this layer covers (= ``layer_out
-        - layer_in + 1``, inclusive on both ends)."""
+        """Number of *master* frames this layer covers.
+
+        Sequences and video layers: ``layer_out - layer_in + 1`` (the
+        trimmed source range, inclusive on both ends).
+
+        Still layers: :attr:`still_hold_frames` — the trim window is
+        collapsed to one source frame (``layer_in == layer_out``) and
+        the user-facing duration is decoupled from disk content via
+        the hold field.
+        """
+        if self.is_still:
+            return max(1, self.still_hold_frames)
         return max(0, self.layer_out - self.layer_in + 1)
 
     @property
@@ -244,7 +351,14 @@ class Layer:
         Caller must check :meth:`covers` first; out-of-range inputs
         return a frame number outside ``[layer_in, layer_out]``,
         which most downstream code treats as "no decode".
+
+        Stills always return :attr:`layer_in` (the single source
+        frame on disk) — every master frame in the hold range maps
+        to the same file, which lets the cache alias one decoded
+        ndarray across the entire hold without re-reading the file.
         """
+        if self.is_still:
+            return self.layer_in
         return self.layer_in + (master_frame - self.master_start)
 
     # ---- Validation -----------------------------------------------------
@@ -254,7 +368,13 @@ class Layer:
         underlying sequence's range and well-ordered. The model
         accepts inconsistent values (the UI sometimes mid-edits a
         spinbox); the renderer checks this before issuing a decode.
+
+        Stills are always trim-valid: the trim window is collapsed
+        to the single source frame and the duration is carried by
+        ``still_hold_frames`` instead.
         """
+        if self.is_still:
+            return True
         return (
             self.sequence.first_frame <= self.layer_in <= self.layer_out
             <= self.sequence.last_frame

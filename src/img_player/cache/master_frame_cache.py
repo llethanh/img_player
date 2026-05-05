@@ -266,7 +266,19 @@ class MasterFrameCache:
         with self._stack.batch():
             for existing in self._stack.layers():
                 self._stack.remove(existing.id)
-            layer = Layer.from_sequence(sequence, offset=sequence.first_frame)
+            # Route 1-frame sequences to ``Layer.from_still`` so a
+            # single dropped image (slate, ref) becomes a held still
+            # layer rather than a 1-frame sequence the user can't
+            # scrub. ``attach`` only fires when the stack is being
+            # replaced (the call wipes every existing layer first), so
+            # the default-hold heuristic doesn't have other layers to
+            # match — fall back to a project-wide default. Caller can
+            # bump the hold afterwards via the layer panel.
+            layer = Layer.from_image(
+                sequence,
+                default_still_hold=100,
+                offset=sequence.first_frame,
+            )
             self._stack.add(layer)
 
     def detach(self) -> None:
@@ -501,6 +513,31 @@ class MasterFrameCache:
         if not visible:
             return False
         topmost = visible[0]
+        # Still-image layers: every master frame in the hold range
+        # decodes the SAME file. Decode it once at the layer's
+        # ``master_start`` (canonical "anchor" frame) and alias the
+        # resulting ndarray into every other slot the request sweeps
+        # over — zero redundant OIIO opens, zero extra memory (Python
+        # ref-shares the buffer). Eviction may drop aliases
+        # independently of the anchor; that's fine, the next request
+        # re-aliases on demand.
+        if getattr(topmost, "is_still", False):
+            anchor = topmost.master_start
+            with self._lock:
+                anchor_arr = self._frames.get(anchor)
+            if anchor_arr is not None:
+                if master_frame != anchor:
+                    with self._lock:
+                        self._frames[master_frame] = anchor_arr
+                        self._record_frame_chain(master_frame)
+                return False
+            if master_frame != anchor:
+                # Anchor not decoded yet — drive the decode toward
+                # ``anchor`` so subsequent frames in the hold range
+                # can free-ride. The next request for any frame in
+                # range will alias on hit.
+                return self.request(anchor, priority)
+            # Fallthrough: master_frame == anchor → real decode.
         # Contact-sheet selections demand the union of every checked
         # tile's channels (potentially 6+ on a multi-AOV pass). The
         # composite path normalises every contributor to RGBA via
@@ -1234,6 +1271,19 @@ class MasterFrameCache:
             self._frames[master_frame] = accum
             self._bytes_used += accum.nbytes
             self._record_frame_chain(master_frame)
+            # Same still-fan-out as ``_decode_and_store`` — covers the
+            # case where a user explicitly toggles ``alpha_composite``
+            # on a still (uncommon, but supported via the T button).
+            still_layer = self._still_layer_anchored_at(master_frame)
+            if still_layer is not None:
+                for f in range(
+                    still_layer.master_start,
+                    still_layer.master_end + 1,
+                ):
+                    if f == master_frame or f in self._frames:
+                        continue
+                    self._frames[f] = accum
+                    self._record_frame_chain(f)
             self._evict_if_over_budget()
 
     def _decode_and_store(
@@ -1296,7 +1346,46 @@ class MasterFrameCache:
             self._frames[master_frame] = arr
             self._bytes_used += arr.nbytes
             self._record_frame_chain(master_frame)
+            # Still-image fan-out: when the just-decoded frame is the
+            # anchor (master_start) of a still layer, alias the same
+            # ndarray into every other master frame in the still's
+            # hold range. The prefetch loop already called
+            # ``request(N)`` for each of those, but they got dedup-
+            # rejected before the anchor was decoded. Without this
+            # fan-out, the cache bar would show only one decoded
+            # frame for a 100-frame still and the controller would
+            # stall on play (every non-anchor get() returns None).
+            # Aliases share the buffer (zero extra memory) and are
+            # exempt from byte accounting (no double-count).
+            still_layer = self._still_layer_anchored_at(master_frame)
+            if still_layer is not None:
+                for f in range(
+                    still_layer.master_start,
+                    still_layer.master_end + 1,
+                ):
+                    if f == master_frame or f in self._frames:
+                        continue
+                    self._frames[f] = arr  # ref-share, no nbytes bump
+                    self._record_frame_chain(f)
             self._evict_if_over_budget()
+
+    def _still_layer_anchored_at(self, master_frame: int):  # type: ignore[no-untyped-def]
+        """Return the topmost-visible still layer whose ``master_start``
+        equals ``master_frame``, else ``None``.
+
+        Used by :meth:`_decode_and_store` to fan a freshly-decoded
+        anchor across its entire hold range. We pick the topmost
+        rather than any covering still so the alias semantics line up
+        with what :meth:`request` already chose to decode.
+        """
+        for layer in self._stack.layers():
+            if not layer.visible:
+                continue
+            if not getattr(layer, "is_still", False):
+                continue
+            if layer.master_start == master_frame:
+                return layer
+        return None
 
     def _evict_if_over_budget(self) -> None:
         """Distance-from-playhead eviction with a behind-the-playhead

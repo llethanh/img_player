@@ -46,12 +46,15 @@ from img_player.sequence.scanner import scan
 
 log = logging.getLogger(__name__)
 
-SESSION_VERSION = 2
+SESSION_VERSION = 3
 SESSION_EXTENSION = ".session"
 
 # Versions we know how to read. v1 lacks the top-level ``color_state``
-# block; we accept it and just leave the panel state untouched on load.
-_READABLE_VERSIONS = {1, 2}
+# block (loader leaves the panel untouched). v2 lacks per-layer still
+# fields (``is_still`` / ``still_hold_frames``) — loader treats every
+# saved layer as a sequence layer, which is the correct fallback
+# (older sessions never had stills). v3 adds the still fields.
+_READABLE_VERSIONS = {1, 2, 3}
 
 
 # ----------------------------------------------------------------- Schema
@@ -89,6 +92,17 @@ class _SessionLayer:
     # wins, premult" combination.
     alpha_composite: bool = False
     alpha_is_straight: bool = False
+    # Still-image flag + hold duration + concrete file path. Stills
+    # may carry filenames without a numeric pattern (``slate.png``,
+    # ``ref.exr``) which the standard sequence-rebuild path can't
+    # reconstruct from base_name + padding alone — store the explicit
+    # filename so the loader can find it back. ``False`` / ``1`` /
+    # ``""`` for legacy sequence layers — the loader treats absence
+    # of these keys as "this is a normal sequence layer" (v2
+    # backward-compat).
+    is_still: bool = False
+    still_hold_frames: int = 1
+    still_filename: str = ""
 
 
 # ----------------------------------------------------------------- Color state
@@ -159,6 +173,11 @@ def save_session(
             gamma=layer.gamma,
             alpha_composite=layer.alpha_composite,
             alpha_is_straight=layer.alpha_is_straight,
+            is_still=layer.is_still,
+            still_hold_frames=layer.still_hold_frames,
+            still_filename=(
+                layer.sequence.frames[0].path.name if layer.is_still else ""
+            ),
         )
         sel = layer.channel_selection
         if sel is not None:
@@ -265,12 +284,77 @@ def _rebuild_layer(entry: dict[str, Any]) -> Layer:
     fresh mtimes + the current frame range (sequences may have
     grown since the session was saved). Raises if the path can't
     be resolved.
+
+    Still layers (``is_still=True``) take a separate path: the
+    explicit ``still_filename`` is rescanned as a single file so
+    layers whose filename has no numeric pattern (slates, lookdev
+    refs) round-trip without trying to glob a sequence pattern that
+    doesn't exist.
     """
     directory = Path(entry["sequence_directory"])
     if not directory.exists():
         raise FileNotFoundError(
             f"Sequence directory missing: {directory}"
         )
+    # Still path — short-circuit before the directory-scan logic
+    # because ``scan(directory)`` returns the largest sequence in
+    # the dir, which would silently switch a still entry to a
+    # full-sequence layer if the still happens to live next to a
+    # sequence (common in delivery folders).
+    if bool(entry.get("is_still", False)):
+        filename = str(entry.get("still_filename", "")).strip()
+        if not filename:
+            raise ValueError(
+                "Still session entry missing ``still_filename``"
+            )
+        still_path = directory / filename
+        if not still_path.exists():
+            raise FileNotFoundError(
+                f"Still file missing: {still_path}"
+            )
+        # ``scan(file)`` resolves the single image into a 1-frame
+        # SequenceInfo (handles non-pattern names since the
+        # scanner gained a still-fallback in v1.2).
+        still_seq = scan(still_path, probe=False)
+        if still_seq.frames and (not still_seq.width or not still_seq.height):
+            still_seq = _enrich_with_header(still_seq)
+        hold = max(1, int(entry.get("still_hold_frames", 1)))
+        layer = Layer.from_still(
+            still_seq,
+            hold_frames=hold,
+            offset=int(entry.get("offset", 0)),
+            name=entry.get("name") or still_path.name,
+        )
+        layer.id = entry.get("id", layer.id)
+        layer.visible = bool(entry.get("visible", True))
+        layer.channel_layout_mode = entry.get("channel_layout_mode", "Auto")
+        layer.channel_labels_visible = bool(
+            entry.get("channel_labels_visible", True),
+        )
+        layer.source_colorspace = entry.get("source_colorspace")
+        layer.exposure = float(entry.get("exposure", 0.0))
+        layer.gamma = float(entry.get("gamma", 1.0))
+        layer.alpha_composite = bool(entry.get("alpha_composite", False))
+        if "alpha_is_straight" in entry:
+            layer.alpha_is_straight = bool(entry["alpha_is_straight"])
+        # Stills don't carry channel selections in the same way
+        # multi-AOV EXR sequences do, but the schema accepts them
+        # uniformly — restore on a best-effort basis so a still
+        # with a saved per-channel preview round-trips.
+        active_label = entry.get("channel_active_label", "")
+        active_channels = entry.get("channel_active_channels", [])
+        if active_label and active_channels:
+            active = ChannelGroup(
+                label=active_label, channels=tuple(active_channels),
+            )
+            tile_labels = entry.get("channel_tile_labels", [])
+            tile_channels = entry.get("channel_tile_channels", [])
+            tiles = tuple(
+                ChannelGroup(label=lbl, channels=tuple(chs))
+                for lbl, chs in zip(tile_labels, tile_channels, strict=False)
+            )
+            layer.channel_selection = ChannelSelection(active=active, tiles=tiles)
+        return layer
     seq = scan(directory, probe=False)
     # ``scan(probe=False)`` skips the per-file header read (kept fast
     # for slow filesystems like Drive Stream), so ``seq.width`` /
@@ -315,7 +399,7 @@ def _rebuild_layer(entry: dict[str, Any]) -> Layer:
         tile_channels = entry.get("channel_tile_channels", [])
         tiles = tuple(
             ChannelGroup(label=lbl, channels=tuple(chs))
-            for lbl, chs in zip(tile_labels, tile_channels)
+            for lbl, chs in zip(tile_labels, tile_channels, strict=False)
         )
         layer.channel_selection = ChannelSelection(active=active, tiles=tiles)
     return layer

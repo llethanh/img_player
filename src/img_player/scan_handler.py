@@ -43,8 +43,38 @@ from img_player.sequence.scanner import (
 
 if TYPE_CHECKING:
     from img_player.app import ImgPlayerApp
+    from img_player.layers.stack import LayerStack
 
 log = logging.getLogger(__name__)
+
+
+# Default hold (in master frames) for a still loaded into an EMPTY
+# session. ~4 seconds at 24 fps — long enough to be scrubbable but
+# short enough that a single ref doesn't hijack the timebar. The user
+# can resize via the timeline drag handle or the layer panel spinbox.
+_EMPTY_STACK_STILL_HOLD = 100
+
+
+def _default_still_hold(stack: LayerStack) -> int:
+    """Pick a sensible hold duration for a still being added to ``stack``.
+
+    Logic:
+
+    * Stack has at least one non-still layer (sequence or video) →
+      match the longest one's ``trim_length`` so a slate dropped into
+      a 200-frame shot covers the whole shot by default.
+    * Stack is empty or contains only other stills → fall back to
+      :data:`_EMPTY_STACK_STILL_HOLD` (~4 s @ 24 fps). The user can
+      adjust afterwards.
+    """
+    candidates = [
+        layer.trim_length
+        for layer in stack.layers()
+        if not layer.is_still
+    ]
+    if not candidates:
+        return _EMPTY_STACK_STILL_HOLD
+    return max(candidates)
 
 
 class ScanRunner(QObject):  # type: ignore[misc]
@@ -168,11 +198,19 @@ def add_layer(app: ImgPlayerApp, path: Path) -> None:
         # Header probe so the new layer carries width / height /
         # channel info — same enrichment the main load path uses.
         seq = app._enrich_with_header(seq)
-        layer = Layer.from_sequence(seq, offset=seq.first_frame)
+        layer = Layer.from_image(
+            seq,
+            default_still_hold=_default_still_hold(app._layer_stack),
+            offset=seq.first_frame,
+        )
         app._layer_stack.add(layer)  # auto-positions at top (= focus shifts)
         for extra in extras:
             extra2 = app._enrich_with_header(extra)
-            extra_layer = Layer.from_sequence(extra2, offset=extra2.first_frame)
+            extra_layer = Layer.from_image(
+                extra2,
+                default_still_hold=_default_still_hold(app._layer_stack),
+                offset=extra2.first_frame,
+            )
             app._layer_stack.add(extra_layer)
         total = 1 + len(extras)
         if total == 1:
@@ -244,7 +282,11 @@ def open_paths(app: ImgPlayerApp, paths: list[Path]) -> None:
         from img_player.layers import Layer
         for seq in picked[1:]:
             seq2 = app._enrich_with_header(seq)
-            layer = Layer.from_sequence(seq2, offset=seq2.first_frame)
+            layer = Layer.from_image(
+                seq2,
+                default_still_hold=_default_still_hold(app._layer_stack),
+                offset=seq2.first_frame,
+            )
             app._layer_stack.add(layer)
         if len(picked) > 1:
             app._window.set_status(
@@ -289,7 +331,11 @@ def add_layers(app: ImgPlayerApp, paths: list[Path]) -> None:
             start_index = 1
         for seq in picked[start_index:]:
             seq2 = app._enrich_with_header(seq)
-            layer = Layer.from_sequence(seq2, offset=seq2.first_frame)
+            layer = Layer.from_image(
+                seq2,
+                default_still_hold=_default_still_hold(app._layer_stack),
+                offset=seq2.first_frame,
+            )
             app._layer_stack.add(layer)
         app._window.set_status(
             f"Added {len(picked) - start_index} layer"
@@ -395,7 +441,11 @@ def apply_scan_result(app: ImgPlayerApp, path: Path, result: object) -> None:
         from img_player.layers import Layer
         for extra in extras:
             extra2 = app._enrich_with_header(extra)
-            layer = Layer.from_sequence(extra2, offset=extra2.first_frame)
+            layer = Layer.from_image(
+                extra2,
+                default_still_hold=_default_still_hold(app._layer_stack),
+                offset=extra2.first_frame,
+            )
             app._layer_stack.add(layer)
     # Restore the saved channel-menu state (active radio + tile
     # checkboxes + layout). Best-effort: labels not present in

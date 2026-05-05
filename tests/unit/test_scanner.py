@@ -64,11 +64,29 @@ def test_scan_missing_path_raises(tmp_path: Path) -> None:
         scan(tmp_path / "nope")
 
 
-def test_scan_file_not_a_frame_raises(tmp_path: Path) -> None:
-    standalone = tmp_path / "nothing.png"
-    standalone.write_bytes(b"")
+def test_scan_file_without_numeric_pattern_returns_still(tmp_path: Path) -> None:
+    """Single image file without a numeric frame pattern resolves
+    as a 1-frame SequenceInfo so the still-image load path can pick
+    it up. Pre-1.2 this raised ``SequenceNotFoundError``; the still
+    feature requires non-numeric filenames (slates, lookdev refs)
+    to be loadable."""
+    standalone = tmp_path / "slate.png"
+    # PNG header is enough for ``is_supported`` — no decoder runs
+    # because we pass ``probe=False``.
+    standalone.write_bytes(b"\x89PNG\r\n\x1a\n")
+    seq = scan(standalone, probe=False)
+    assert seq.frame_count == 1
+    assert seq.frames[0].path == standalone
+
+
+def test_scan_file_unsupported_format_raises(tmp_path: Path) -> None:
+    """Unsupported extensions still fail loudly so the user sees a
+    clear "unsupported format" message rather than a silent empty
+    layer."""
+    standalone = tmp_path / "data.txt"
+    standalone.write_text("not an image")
     with pytest.raises(SequenceNotFoundError):
-        scan(standalone)
+        scan(standalone, probe=False)
 
 
 def test_scan_empty_directory_raises(tmp_path: Path) -> None:

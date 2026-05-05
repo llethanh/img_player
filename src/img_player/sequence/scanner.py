@@ -155,7 +155,32 @@ def scan_all(directory: Path | str, *, probe: bool = True) -> list[SequenceInfo]
 def _scan_from_file(file: Path, *, probe: bool = True) -> SequenceInfo:
     parsed = _parse(file.name)
     if parsed is None:
-        raise SequenceNotFoundError(f"Filename is not a sequence frame: {file.name}")
+        # No numeric frame pattern in the name — treat as a still
+        # image (slate, lookdev ref, single matte). We still
+        # validate the extension is one OIIO can read; otherwise
+        # the user gets a clear "unsupported format" rather than a
+        # confusing "not a sequence frame" message.
+        if not is_supported(file):
+            raise SequenceNotFoundError(
+                f"Unsupported image format: {file.name}",
+            )
+        frame = FrameInfo(path=file, frame_number=0, mtime=_safe_mtime(file))
+        width, height, channels = (
+            _probe_first_frame((frame,)) if probe else (None, None, ())
+        )
+        # base_name gets the filename stem; padding 0 indicates "no
+        # numeric pattern" so ``display_pattern`` falls back to a
+        # plain filename rendering.
+        return SequenceInfo(
+            base_name=file.stem,
+            extension=file.suffix,
+            directory=file.parent,
+            padding=0,
+            frames=(frame,),
+            width=width,
+            height=height,
+            channel_names=channels,
+        )
 
     directory = file.parent
     matching_frames: list[FrameInfo] = []

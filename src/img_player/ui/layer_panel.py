@@ -164,6 +164,8 @@ class LayerRow(QFrame):  # type: ignore[misc]
     offset_changed = Signal(str, int)
     trim_in_changed = Signal(str, int, int)  # (id, new_layer_in, new_offset)
     layer_out_changed = Signal(str, int)
+    # Still-only: right-handle drag committed a new ``still_hold_frames``.
+    still_hold_changed = Signal(str, int)  # (id, new_hold_frames)
     # Live offset preview during a body drag — forwarded for the
     # multi-select cascade so peer rows can paint at the same delta
     # while the user is still dragging.
@@ -306,6 +308,7 @@ class LayerRow(QFrame):  # type: ignore[misc]
         )
         self._bar.trim_in_changed.connect(self.trim_in_changed.emit)
         self._bar.layer_out_changed.connect(self.layer_out_changed.emit)
+        self._bar.still_hold_changed.connect(self.still_hold_changed.emit)
         self._bar.focus_requested.connect(self.focus_requested.emit)
         # Modifier-aware press inside the bar — same UX as a click on
         # the row body. The panel uses this to update multi-select
@@ -971,6 +974,7 @@ class LayerPanel(QFrame):  # type: ignore[misc]
             )
             row.trim_in_changed.connect(self._on_row_trim_in_changed)
             row.layer_out_changed.connect(self._on_row_layer_out_changed)
+            row.still_hold_changed.connect(self._on_row_still_hold_changed)
             self._rows_layout.addWidget(row)
             self._rows[layer.id] = row
         # Synchronise master-range + snap edges across every row
@@ -1502,6 +1506,15 @@ class LayerPanel(QFrame):  # type: ignore[misc]
 
     def _on_row_layer_out_changed(self, layer_id: str, new_out: int) -> None:
         self._stack.update(layer_id, layer_out=new_out)
+
+    def _on_row_still_hold_changed(self, layer_id: str, new_hold: int) -> None:
+        """Right-handle drag on a still committed a new hold duration.
+
+        Routes through the standard ``LayerStack.update`` so the
+        panel + cache + viewport receive a single ``layer_modified``
+        signal (one cache invalidation, one paint refresh).
+        """
+        self._stack.update(layer_id, still_hold_frames=max(1, int(new_hold)))
 
     # --- Geometry coordination across rows ---------------------------
 

@@ -36,6 +36,7 @@ from typing import Literal
 
 from PySide6.QtCore import QPoint, QRectF, Qt, Signal
 from PySide6.QtGui import (
+    QBrush,
     QColor,
     QFontMetrics,
     QMouseEvent,
@@ -186,6 +187,11 @@ class LayerBar(QWidget):  # type: ignore[misc]
     # cache invalidation).
     trim_in_changed = Signal(str, int, int)   # (layer_id, new_layer_in, new_offset)
     layer_out_changed = Signal(str, int)      # (layer_id, new_layer_out)
+    # Still-image right-edge drag: extends/contracts ``still_hold_frames``
+    # rather than ``layer_out`` (stills have a 1-frame source range, so
+    # the standard out-trim math collapses). Emitted instead of
+    # ``layer_out_changed`` when the dragged layer is a still.
+    still_hold_changed = Signal(str, int)     # (layer_id, new_still_hold_frames)
     # Anywhere on the bar, single-click without drag → focus the layer
     # (= same as clicking the row). Lets the row delegate without
     # having to forward QMouseEvent itself.
@@ -227,6 +233,11 @@ class LayerBar(QWidget):  # type: ignore[misc]
         self._drag_preview_offset: int | None = None
         self._drag_preview_layer_in: int | None = None
         self._drag_preview_layer_out: int | None = None
+        # Still-only: live preview of ``still_hold_frames`` while the
+        # right handle is being dragged on a still layer. ``None`` for
+        # sequence/video layers (their out-handle drag uses
+        # ``_drag_preview_layer_out`` instead).
+        self._drag_preview_still_hold: int | None = None
         # External preview offset pushed by the panel during a peer's
         # drag (= "this bar is part of a multi-select group, the user
         # is dragging another bar in the group, here's what your
@@ -346,7 +357,20 @@ class LayerBar(QWidget):  # type: ignore[misc]
         if layer_out is None:
             layer_out = layer.layer_out
         master_start = offset
-        master_end = offset + (layer_out - layer_in)
+        # Stills carry their duration in ``still_hold_frames`` rather
+        # than ``layer_out - layer_in`` (the trim window collapses to
+        # the single source frame), so derive ``master_end`` from a
+        # preview-aware hold value when this is a still.
+        if layer.is_still:
+            preview_hold = self._drag_preview_still_hold
+            hold = (
+                preview_hold
+                if preview_hold is not None
+                else layer.still_hold_frames
+            )
+            master_end = master_start + max(1, hold) - 1
+        else:
+            master_end = offset + (layer_out - layer_in)
 
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
@@ -397,6 +421,31 @@ class LayerBar(QWidget):  # type: ignore[misc]
         painter.setBrush(bar_color)
         painter.setPen(QPen(QColor(H.ACCENT_BRIGHT), 1))
         painter.drawRoundedRect(bar_rect, BAR_RADIUS, BAR_RADIUS)
+        # Still-image layers: overlay 45° diagonal hatching on the
+        # solid fill so they're visually distinct from sequence /
+        # video bands at a glance. The hatch rides on top of the
+        # accent fill (same rounded-rect clip via a save/restore
+        # clipPath dance) and uses a darker tint so the stripes
+        # read as "shadow" against the accent rather than as a
+        # second color. ``Qt.BDiagPattern`` = back-diagonal stripes
+        # (top-left → bottom-right), which conventional NLEs use
+        # for "freeze frame" / "still" markers.
+        if getattr(layer, "is_still", False):
+            painter.save()
+            painter.setClipRect(bar_rect)
+            hatch_color = QColor(H.ACCENT)
+            # Darker than the fill so stripes read as recessed.
+            hatch_color = hatch_color.darker(170)
+            hatch_color.setAlpha(180)
+            painter.setBrush(QBrush(hatch_color, Qt.BrushStyle.BDiagPattern))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawRect(bar_rect)
+            painter.restore()
+            # Re-stroke the rounded outline on top so the hatch
+            # doesn't poke past the rounded corners.
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QPen(QColor(H.ACCENT_BRIGHT), 1))
+            painter.drawRoundedRect(bar_rect, BAR_RADIUS, BAR_RADIUS)
 
         # Filename label, ellipsized to fit inside the bar minus the
         # handles. Drawn in dark-on-orange for legibility against
@@ -599,6 +648,27 @@ class LayerBar(QWidget):  # type: ignore[misc]
             self._drag_preview_layer_in = new_in
             self._drag_preview_offset = new_offset
         elif self._drag_kind == "out":
+            # Stills: the right handle controls ``still_hold_frames``,
+            # not ``layer_out`` (the trim window collapses to one
+            # source frame for a single-file layer). Compute the new
+            # hold from the master-frame delta and emit a separate
+            # signal on release.
+            if layer.is_still:
+                new_hold = max(1, layer.still_hold_frames + delta_frames)
+                # Snap on the visible right edge against neighboring
+                # layer edges + the playhead, same as the sequence
+                # path — gives consistent muscle memory.
+                master_out = layer.master_start + new_hold - 1
+                snapped_master = snap_master_frame(
+                    master_out, geom, self._snap_targets(exclude_self=True),
+                    snap_dist,
+                )
+                new_hold += snapped_master - master_out
+                new_hold = max(1, new_hold)
+                self._drag_preview_still_hold = new_hold
+                self.update()
+                event.accept()
+                return
             # Standard NLE out-trim: the RIGHT edge of the bar moves,
             # the left edge stays put. Only ``layer_out`` changes;
             # ``offset`` and ``layer_in`` are untouched.
@@ -671,12 +741,21 @@ class LayerBar(QWidget):  # type: ignore[misc]
                 self.layer_out_changed.emit(
                     self._layer.id, int(self._drag_preview_layer_out),
                 )
+            elif (
+                kind == "out"
+                and self._layer.is_still
+                and self._drag_preview_still_hold is not None
+            ):
+                self.still_hold_changed.emit(
+                    self._layer.id, int(self._drag_preview_still_hold),
+                )
         # Reset.
         was_body_drag = (kind == "body")
         self._drag_kind = None
         self._drag_preview_offset = None
         self._drag_preview_layer_in = None
         self._drag_preview_layer_out = None
+        self._drag_preview_still_hold = None
         self._has_moved = False
         self._pending_single_click = False
         self.setCursor(Qt.CursorShape.PointingHandCursor)
