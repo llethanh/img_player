@@ -28,12 +28,6 @@ from img_player.export.settings import ExportSettings, MissingFramePolicy
 from img_player.export.stroke_painter import paint_strokes
 from img_player.export.writers.image_seq import output_dtype_for
 from img_player.io.reader import read_frame
-from img_player.render.contact_sheet import (
-    bake_labels as bake_contact_sheet_labels,
-)
-from img_player.render.contact_sheet import (
-    compose as compose_contact_sheet,
-)
 from img_player.sequence.channels import ChannelSelection
 from img_player.sequence.models import SequenceInfo
 
@@ -56,17 +50,9 @@ class RenderContext:
     ocio_cpu_processor: object | None = None  # PyOpenColorIO.CPUProcessor
     # Snapshot of the live channel selection at export-dialog accept
     # time. Lets the export reproduce exactly what the user has on
-    # screen — single channel, single AOV, or full contact sheet
-    # with the same tile order. ``None`` falls back to the legacy
-    # behaviour: read the default RGB(A) channels per frame.
+    # screen — single channel or AOV. ``None`` falls back to the
+    # legacy behaviour: read the default RGB(A) channels per frame.
     channel_selection: ChannelSelection | None = None
-    # Grid mode that goes with ``channel_selection`` ("Auto" /
-    # "1×N" / etc.). Ignored when the selection is in single mode.
-    channel_layout_mode: str = "Auto"
-    # Whether the per-tile name chip should be baked onto the
-    # composite. Mirrors the live "Show labels" toggle so the export
-    # is faithful to the on-screen state.
-    channel_labels_visible: bool = True
 
 
 class FrameRenderer:
@@ -130,36 +116,16 @@ class FrameRenderer:
                 )
             return self._to_writer_dtype(self._missing_substitute_cache)
         selection = self._ctx.channel_selection
-        is_contact_sheet = selection is not None and selection.is_contact_sheet
 
         # ----- 1. Read from disk in float32 (we'll do colour math) ----
         # ``as_half=False`` so the float math stays in 32-bit.
-        if is_contact_sheet:
-            # Read the union of every displayed channel in one OIIO
-            # call — same shortcut as the live cache. The compositor
-            # then slices each tile from this union buffer; we only
-            # pay one decode per frame regardless of tile count.
-            channels = list(selection.union_channels())
+        if selection is not None:
+            channels = list(selection.active.channels)
             arr = read_frame(
                 self._frame_paths[source_frame],
                 channels=channels,
                 as_half=False,
             )
-            # Compose at the OUTPUT resolution so the layout matches
-            # the export size (rather than whatever the live viewport
-            # happened to be when the user accepted the dialog).
-            arr, geometry = compose_contact_sheet(
-                arr, selection,
-                viewport_w=out_w,
-                viewport_h=out_h,
-                layout_mode=self._ctx.channel_layout_mode,
-            )
-            # Bake labels onto the composite so each tile carries
-            # its name in the export — same step as the live viewer.
-            # Honour the live "Show labels" toggle so the export is
-            # faithful to what the user sees.
-            if self._ctx.channel_labels_visible:
-                arr = bake_contact_sheet_labels(arr, geometry)
         else:
             arr = read_frame(self._frame_paths[source_frame], as_half=False)
         # Always operate in 4-channel RGBA in our pipeline. Unpadded
@@ -174,10 +140,6 @@ class FrameRenderer:
             arr = self._apply_ocio(arr)
 
         # ----- 3. Resize -------------------------------------------
-        # In contact-sheet mode the composite was already shaped to
-        # roughly ``out_w × out_h`` (gap rounding may leave it a
-        # handful of pixels off), so this is usually a tight no-op
-        # rather than a heavy rescale.
         src_h, src_w = arr.shape[:2]
         if (src_w, src_h) != (out_w, out_h):
             arr = self._resize(arr, out_w, out_h)
@@ -191,15 +153,8 @@ class FrameRenderer:
         # composite then composite-blend back into the float buffer
         # (otherwise we'd lose the floating-point fidelity for the
         # parts NOT covered by annotations).
-        #
-        # Contact-sheet mode skips this step on purpose: the live
-        # viewer hides annotations there too (strokes are anchored
-        # in source-image coords and would land at the wrong place
-        # on the composite), so baking them into the export would
-        # contradict what the user sees on screen.
         if (
-            not is_contact_sheet
-            and self._settings.bake_annotations
+            self._settings.bake_annotations
             and self._ctx.annotation_store is not None
         ):
             strokes = self._ctx.annotation_store.strokes_at(source_frame)

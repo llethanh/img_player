@@ -401,68 +401,13 @@ class Preferences:
     def ephemeral_mode_enabled(self, value: bool) -> None:
         self._s.setValue("ephemeral/mode_enabled", bool(value))
 
-    # ------------------------------------------------------------------ Channel menu (Slice 2 of contact-sheet)
-
-    @property
-    def channel_layout_mode(self) -> str:
-        """Grid shape preference for the contact sheet ("Auto" /
-        "1×N" / "N×1" / "2×2" / "3×3" / "4×4"). Defaults to "Auto"
-        — matches the menu's footer combo default."""
-        raw = self._s.value("channel/layout_mode", "Auto")
-        return str(raw) if raw else "Auto"
-
-    @channel_layout_mode.setter
-    def channel_layout_mode(self, value: str) -> None:
-        self._s.setValue("channel/layout_mode", str(value))
-
-    @property
-    def channel_active_label(self) -> str:
-        """Label of the radio-selected channel group at last shutdown.
-
-        Empty string when no sequence had ever been opened in this
-        QSettings (= fresh user). The transport restores this on
-        boot via :meth:`TransportBar.restore_channel_state` — silent
-        fallback when the label doesn't exist in the new sequence's
-        groups (different EXR conventions)."""
-        return str(self._s.value("channel/active_label", "") or "")
-
-    @channel_active_label.setter
-    def channel_active_label(self, value: str) -> None:
-        self._s.setValue("channel/active_label", str(value))
-
-    @property
-    def channel_tile_labels(self) -> tuple[str, ...]:
-        """Last set of contact-sheet tiles (group labels). Empty
-        tuple = single-mode (no tiles checked)."""
-        raw = self._s.value("channel/tile_labels", "")
-        if not raw:
-            return ()
-        if isinstance(raw, list):
-            # QSettings backends sometimes round-trip lists natively;
-            # accept either to keep the API forgiving.
-            return tuple(str(x) for x in raw)
-        # Pipe-separated — labels can contain spaces but never a
-        # pipe in practice (channel names are EXR-conformant).
-        return tuple(s for s in str(raw).split("|") if s)
-
-    @channel_tile_labels.setter
-    def channel_tile_labels(self, labels: tuple[str, ...] | list[str]) -> None:
-        joined = "|".join(str(l) for l in labels)
-        self._s.setValue("channel/tile_labels", joined)
-
-    @property
-    def channel_labels_visible(self) -> bool:
-        """Whether the per-tile name chip is baked onto contact-sheet
-        composites. Default ``True`` — first-run discoverability ("which
-        tile is which?") matters more than visual purity."""
-        raw = self._s.value("channel/labels_visible", True)
-        if isinstance(raw, str):
-            return raw.lower() in ("true", "1", "yes")
-        return bool(raw)
-
-    @channel_labels_visible.setter
-    def channel_labels_visible(self, value: bool) -> None:
-        self._s.setValue("channel/labels_visible", bool(value))
+    # NB: ``channel_active_label`` was retired in v1.2 alongside the
+    # other channel-menu prefs (``channel/tile_labels``,
+    # ``channel/layout_mode``, ``channel/labels_visible``). The active
+    # channel is no longer persisted across runs — each newly loaded
+    # sequence opens on its first group so the user can't see a
+    # stale pick carry over from a previous, unrelated sequence.
+    # Existing QSettings keys stay as harmless leftovers.
 
     # ------------------------------------------------------------------ Export dialog (v0.5.0)
 

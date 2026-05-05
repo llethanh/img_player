@@ -23,10 +23,7 @@ from img_player.sequence.channels import (
     ChannelSelection,
     group_channels,
 )
-from img_player.ui.channel_menu import (
-    DEFAULT_LAYOUT_MODE,
-    ChannelMenu,
-)
+from img_player.ui.channel_menu import ChannelMenu
 from img_player.ui.frame_display import DisplayMode, FrameDisplay
 from img_player.ui.icons import make_icon
 from img_player.ui.theme import G, H, S
@@ -73,14 +70,6 @@ class TransportBar(QWidget):  # type: ignore[misc]
     # and contact-sheet modes without having to interpret raw channel
     # lists. Carries a :class:`ChannelSelection`.
     channel_selection_changed = Signal(object)
-    # Grid shape preference for the contact sheet (Auto / 1×N / N×1
-    # / 2×2 / 3×3 / 4×4). Persisted to QSettings so the user finds
-    # the same layout on next launch.
-    channel_layout_mode_changed = Signal(str)
-    # "Show labels" toggle in the channel menu footer. Drives whether
-    # the per-tile name chips are baked onto the contact sheet (live
-    # display + export). Persisted to QSettings.
-    channel_labels_visible_changed = Signal(bool)
     # Zoom — either ``None`` for fit-to-window, or a float factor
     # (1.0 = 100 %, 0.5 = 50 %, 2.0 = 200 %).
     zoom_requested = Signal(object)
@@ -317,12 +306,6 @@ class TransportBar(QWidget):  # type: ignore[misc]
 
         self._channel_menu = ChannelMenu(self._channel_button)
         self._channel_menu.selection_changed.connect(self._on_channel_selection_changed)
-        self._channel_menu.layout_mode_changed.connect(
-            self.channel_layout_mode_changed.emit
-        )
-        self._channel_menu.labels_visible_changed.connect(
-            self.channel_labels_visible_changed.emit
-        )
         self._channel_button.setMenu(self._channel_menu)
 
         # Track the current ChannelSelection so the button label can
@@ -643,35 +626,19 @@ class TransportBar(QWidget):  # type: ignore[misc]
         if sel is not None:
             self._on_channel_selection_changed(sel)
 
-    def restore_channel_state(
-        self,
-        active: str,
-        tiles: tuple[str, ...],
-        layout_mode: str = DEFAULT_LAYOUT_MODE,
-        labels_visible: bool | None = None,
-    ) -> None:
+    def restore_channel_state(self, active: str) -> None:
         """Reapply a saved ChannelMenu state on app boot (called from
         :class:`Preferences` round-trip in ``app.py``).
-
-        ``labels_visible`` is optional so the existing
-        ``_on_tile_isolate_requested`` / ``toggle_contact_sheet``
-        call sites — which only round-trip the active/tiles/layout
-        triplet — keep compiling. ``None`` leaves the flag untouched.
         """
-        self._channel_menu.set_state(active, tiles, layout_mode, labels_visible)
+        self._channel_menu.set_state(active)
         sel = self._channel_menu.current_selection()
         if sel is not None:
             self._on_channel_selection_changed(sel)
 
-    def channel_menu_state(self) -> tuple[str, tuple[str, ...], str, bool]:
-        """Return the menu's current (active, tiles, layout_mode,
-        labels_visible) for persistence."""
-        return (
-            self._channel_menu.active_label,
-            self._channel_menu.tile_labels,
-            self._channel_menu.layout_mode,
-            self._channel_menu.labels_visible,
-        )
+    def channel_menu_state(self) -> str:
+        """Return the menu's current active-channel label for
+        persistence."""
+        return self._channel_menu.active_label
 
     # ------------------------------------------------------------------ Internals
 
@@ -718,14 +685,7 @@ class TransportBar(QWidget):  # type: ignore[misc]
         if sel is None:
             self._channel_button.setText("RGB")
             return
-        if sel.is_contact_sheet:
-            extra = max(0, len(sel.tiles) - 1)
-            head = sel.tiles[0].label if sel.tiles else sel.active.label
-            self._channel_button.setText(
-                f"{head} +{extra}" if extra else head
-            )
-        else:
-            self._channel_button.setText(sel.active.label)
+        self._channel_button.setText(sel.active.label)
 
     def _on_zoom_picked(self, index: int) -> None:
         """User picked a preset from the dropdown.

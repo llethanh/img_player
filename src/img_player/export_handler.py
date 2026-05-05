@@ -81,14 +81,11 @@ def open_export_dialog(app: ImgPlayerApp) -> None:
         display=app._prefs.display,
         view=app._prefs.view,
         sidecar_source=app._annotations_path,
-        # Snapshot the live channel state so the export
-        # reproduces what's currently on screen (single channel,
-        # AOV, or contact sheet). The renderer reads this once
-        # at construction — subsequent live changes during the
-        # export don't affect the run.
+        # Snapshot the live channel state so the export reproduces
+        # whatever AOV / channel group is currently on screen. The
+        # renderer reads this once at construction — subsequent live
+        # changes during the export don't affect the run.
         channel_selection=app._channel_selection,
-        channel_layout_mode=app._channel_layout_mode,
-        channel_labels_visible=app._channel_labels_visible,
     )
     worker = ExportWorker(engine, parent=app._window)
     progress = ExportProgressDialog(

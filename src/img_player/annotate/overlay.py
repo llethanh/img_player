@@ -225,15 +225,6 @@ class AnnotationOverlay(QWidget):
         # back to None when the drag ends.
         self._current_stroke_is_ephemeral: bool | None = None
 
-        # Contact-sheet mode (≥2 tiles compositing). While on, we
-        # hide persistent strokes (they would land at the wrong
-        # position because the displayed composite is downsampled
-        # and re-tiled) and force every new stroke through the
-        # ephemeral pipeline, so the user can still point at things
-        # during a review without dirtying the saved annotations.
-        # Set by app.py whenever the channel selection changes.
-        self._contact_sheet_active: bool = False
-
         # When a non-left mouse button starts a drag (e.g. middle for
         # pan), we forward the entire press → move* → release sequence
         # to the GL viewport so the user can still pan / right-click /
@@ -370,37 +361,6 @@ class AnnotationOverlay(QWidget):
     def ephemeral_mode(self) -> bool:
         return self._ephemeral_mode
 
-    def set_contact_sheet_active(self, on: bool) -> None:
-        """Toggle contact-sheet display mode.
-
-        Contact sheet downsamples and re-tiles the source image, so
-        strokes anchored in source-image coords no longer line up
-        with the displayed content. Rather than try to re-project
-        them onto a "best-guess" tile, we hide persistent strokes
-        entirely and force any new stroke to be ephemeral — the
-        user can still gesture during a side-by-side review (the
-        ephemeral stroke fades on its own) without ever creating
-        annotations on coords that would be saved at the wrong
-        position. Toggling back to single mode restores the normal
-        behaviour and re-shows the existing annotations untouched.
-        """
-        if on == self._contact_sheet_active:
-            return
-        self._contact_sheet_active = bool(on)
-        # In-progress drag: force the routing snapshot so a stroke
-        # already mid-flight finishes as ephemeral if we just
-        # entered contact-sheet, or as persistent (back to the
-        # toolbar's mode) if we just left.
-        if self._current_stroke_is_ephemeral is not None:
-            self._current_stroke_is_ephemeral = (
-                True if self._contact_sheet_active else self._ephemeral_mode
-            )
-        self.update()
-
-    @property
-    def contact_sheet_active(self) -> bool:
-        return self._contact_sheet_active
-
     # ------------------------------------------------------------------ Event filter (resize)
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
@@ -443,15 +403,7 @@ class AnnotationOverlay(QWidget):
             # reroute the finished stroke. The user's intent is
             # decided at press-time: "I started this stroke in
             # ephemeral/persistent mode, that's where it goes".
-            #
-            # Contact-sheet mode forces ephemeral regardless of the
-            # toolbar toggle: persistent annotations would be saved
-            # at coords that don't match the displayed composite, so
-            # we route them through the fade-on-its-own path instead
-            # of polluting the sidecar.
-            self._current_stroke_is_ephemeral = (
-                True if self._contact_sheet_active else self._ephemeral_mode
-            )
+            self._current_stroke_is_ephemeral = self._ephemeral_mode
             # Lazy Mouse: when active, kick off the catch-up timer.
             # Smoothed and target both start at the press point, so
             # there's no initial "jump" visible.
@@ -462,13 +414,6 @@ class AnnotationOverlay(QWidget):
             self.update()
             event.accept()
         elif self._tool == ToolKind.ERASER:
-            # Contact-sheet hides persistent strokes anyway, and the
-            # hit-test math would target source-image coords that
-            # the user can't actually see. Swallow the click so it
-            # doesn't accidentally erase invisible strokes.
-            if self._contact_sheet_active:
-                event.accept()
-                return
             idx = nearest_stroke_index(
                 cursor_image,
                 self._store.strokes_at(self._current_frame),
@@ -635,26 +580,18 @@ class AnnotationOverlay(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         try:
             # Pass 1 — persistent strokes attached to the current frame,
-            # at full alpha (current behaviour, unchanged).
-            #
-            # Skipped entirely while contact-sheet mode is active: the
-            # composite is downsampled and re-tiled, so a stroke
-            # anchored in source-image coords would land at the wrong
-            # position. Hiding is cleaner than re-projecting onto
-            # one chosen tile (ambiguous when multiple AOVs are
-            # displayed).
-            if not self._contact_sheet_active:
-                for stroke in self._store.strokes_at(self._current_frame):
-                    self._draw_stroke(
-                        painter,
-                        stroke.points,
-                        stroke.color,
-                        stroke.size,
-                        widget_size,
-                        img_size,
-                        factor,
-                        (pan_x, pan_y),
-                    )
+            # at full alpha.
+            for stroke in self._store.strokes_at(self._current_frame):
+                self._draw_stroke(
+                    painter,
+                    stroke.points,
+                    stroke.color,
+                    stroke.size,
+                    widget_size,
+                    img_size,
+                    factor,
+                    (pan_x, pan_y),
+                )
             # Pass 2 — live ephemeral strokes (v0.4.1). Painted on
             # top of persistent so a fading gesture stays visible
             # over the underlying review notes. Each stroke gets its

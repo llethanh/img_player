@@ -61,15 +61,12 @@ class ExportEngine:
         view: str | None,
         sidecar_source: Path | None = None,
         channel_selection: ChannelSelection | None = None,
-        channel_layout_mode: str = "Auto",
-        channel_labels_visible: bool = True,
     ) -> None:
         self._settings = settings
         self._sequence = sequence
         # Capture the live channel state so the export reproduces the
-        # exact contact sheet (or single channel) the user has on
-        # screen. ``None`` falls back to the legacy default-channels
-        # path.
+        # exact channel the user has on screen. ``None`` falls back to
+        # the legacy default-channels path.
         self._channel_selection = channel_selection
         # The CPU OCIO processor is built once at engine setup. If
         # OCIO isn't available or the user disabled the transform we
@@ -87,8 +84,6 @@ class ExportEngine:
             annotation_store=annotation_store if settings.bake_annotations else None,
             ocio_cpu_processor=ocio_proc,
             channel_selection=channel_selection,
-            channel_layout_mode=channel_layout_mode,
-            channel_labels_visible=channel_labels_visible,
         )
         self._renderer = FrameRenderer(ctx, settings)
         self._sidecar_source = sidecar_source

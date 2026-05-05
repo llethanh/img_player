@@ -447,19 +447,11 @@ def apply_scan_result(app: ImgPlayerApp, path: Path, result: object) -> None:
                 offset=extra2.first_frame,
             )
             app._layer_stack.add(layer)
-    # Restore the saved channel-menu state (active radio + tile
-    # checkboxes + layout). Best-effort: labels not present in
-    # this sequence's group list are silently skipped, so the
-    # user never sees a stale state cause a crash. Same call
-    # also re-emits ``channel_selection_changed`` which drives
-    # the cache via :meth:`set_channel_selection` and writes the
-    # selection onto the just-added focused layer.
-    app._window.transport.restore_channel_state(
-        app._prefs.channel_active_label,
-        app._prefs.channel_tile_labels,
-        app._prefs.channel_layout_mode,
-        app._prefs.channel_labels_visible,
-    )
+    # Each new sequence opens on its first channel group (RGB by
+    # default for beauty plates) — no cross-sequence carry-over.
+    # ``set_available_channels`` (called by the transport's focus
+    # sync) already picks the first group of the freshly-loaded
+    # sequence, so there's nothing to restore here.
     app._window.set_status(
         f"Loaded {seq.display_pattern()} ({seq.frame_count} frames) — decoding first frame…"
     )

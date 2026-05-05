@@ -320,13 +320,6 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
     # ``Signal()`` (no args): consumers ask for the current state via
     # :meth:`current_transform` / :meth:`image_size` when they need it.
     transform_changed = Signal()
-    # User double-clicked a point on the viewport (left button). Carries
-    # the click position in widget pixel coords. Used by ``app.py`` in
-    # contact-sheet mode to map the click to a tile via the current
-    # :class:`CompositeGeometry` and isolate that channel group. Plain
-    # double-click is unused outside contact-sheet mode, so emitting
-    # unconditionally is harmless.
-    tile_isolate_requested = Signal(float, float)
 
     # ------------------------------------------------------------------ Lifecycle
 
@@ -636,23 +629,17 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
         super().mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
-        """Left-button double-click → emit
-        :attr:`tile_isolate_requested` with the widget pixel coords.
+        """Reset any in-progress drag-scrub on a double-click so the
+        scrub doesn't keep tracking the cursor while the user is
+        gesturing for something else.
 
-        ``app.py`` listens to this only in contact-sheet mode; outside
-        of that mode the emission is harmless (no listener acts on
-        it). We also reset any in-progress drag-scrub started by the
-        underlying ``mousePressEvent`` of the second click — without
-        this the scrub would silently keep tracking the cursor while
-        the controller switches selection.
+        Historical: this used to emit ``tile_isolate_requested`` for
+        contact-sheet tile isolation, retired with the contact-sheet
+        feature in v1.2.
         """
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_base_frame = None
             self.setCursor(Qt.CursorShape.SizeHorCursor)
-            self.tile_isolate_requested.emit(
-                float(event.position().x()),
-                float(event.position().y()),
-            )
             event.accept()
             return
         super().mouseDoubleClickEvent(event)

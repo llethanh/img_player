@@ -44,15 +44,6 @@ from img_player.perf import (
 from img_player.player.controller import PlayerController
 from img_player.player.state import PlaybackState
 from img_player.preferences import Preferences
-from img_player.render.contact_sheet import (
-    CompositeGeometry,
-)
-from img_player.render.contact_sheet import (
-    bake_labels as bake_contact_sheet_labels,
-)
-from img_player.render.contact_sheet import (
-    compose as compose_contact_sheet,
-)
 from img_player.sequence.channels import ChannelSelection
 from img_player.sequence.models import SequenceInfo
 from img_player.ui.main_window import MainWindow
@@ -370,36 +361,14 @@ class ImgPlayerApp:
         self._scrub_debounce.timeout.connect(self._apply_pending_seek)
 
     def _init_channel_state(self) -> None:
-        """Channel-selection bookkeeping (depends on prefs being loaded)."""
-        # Current channel selection (single-channel + optional
-        # contact-sheet tiles). ``None`` until the first sequence
-        # loads. ``_display_array`` switches to compositing when
-        # ``selection.is_contact_sheet`` is True.
+        """Channel-selection bookkeeping (depends on prefs being loaded).
+
+        The contact-sheet feature was removed in v1.2 (multi-tile grid
+        of channels). Only the single-channel ``active`` selection
+        survives — kept here as the app-level fallback used by
+        ``_set_channel_selection`` until the first layer focuses.
+        """
         self._channel_selection: ChannelSelection | None = None
-        # Grid shape for the contact sheet ("Auto" / "1×N" / "N×1" /
-        # "2×2" / "3×3" / "4×4"). Read once from prefs at boot so the
-        # very first composite uses the saved mode; updated live by
-        # ``_on_channel_layout_mode_changed``.
-        self._channel_layout_mode: str = self._prefs.channel_layout_mode
-        # Most recent contact-sheet layout returned by ``compose()``.
-        # Used to hit-test double-clicks for the click-to-isolate
-        # gesture. ``None`` when single mode is active —
-        # ``_on_tile_isolate_requested`` short-circuits in that case.
-        self._composite_geometry: CompositeGeometry | None = None
-        # Whether the per-tile name chip is baked onto the composite.
-        # Read from prefs at boot so the first composite respects the
-        # saved choice; updated live by
-        # ``_on_channel_labels_visible_changed``.
-        self._channel_labels_visible: bool = self._prefs.channel_labels_visible
-        # Last tile-set the user had checked when they left
-        # contact-sheet mode via Shift+C. Used to restore the same
-        # set on the next Shift+C press, so the shortcut toggles
-        # between single and the "previous" contact sheet rather
-        # than starting from scratch each time.
-        self._last_contact_sheet_tiles: tuple[str, ...] = ()
-        # NB: ``_drop_action_remember`` (Phase 6a's "Remember this
-        # choice" lock for the Add/Replace modal) is gone — drops are
-        # now spatially disambiguated by zone, no modal needed.
 
     # ------------------------------------------------------------------ Lifecycle
 
@@ -462,22 +431,11 @@ class ImgPlayerApp:
         panel = getattr(self._window, "_layer_panel", None)
         if panel is not None:
             self._prefs.layer_panel_collapsed = panel.is_collapsed()
-        # Persist the channel menu's state (radio + checkboxes +
-        # layout mode) so the user reopens onto the same view.
-        # Layout mode is also persisted live in
-        # ``_on_channel_layout_mode_changed`` — re-saving here is a
-        # no-op safety net if that path was never invoked (e.g. user
-        # never opened the menu).
-        try:
-            active, tiles, layout_mode, labels_visible = (
-                self._window.transport.channel_menu_state()
-            )
-            self._prefs.channel_active_label = active
-            self._prefs.channel_tile_labels = tiles
-            self._prefs.channel_layout_mode = layout_mode
-            self._prefs.channel_labels_visible = labels_visible
-        except Exception as err:  # pragma: no cover — best effort
-            log.warning("[channel-menu] save failed at shutdown: %s", err)
+        # NB: the channel menu's active selection is intentionally
+        # NOT persisted across runs. Each newly loaded sequence opens
+        # on its first channel group (RGB / beauty pass) so the user
+        # never sees a stale "albedo" pick from a previous sequence
+        # carry over to a fresh one.
         self._status_timer.stop()
         self._wait_timer.stop()
         self._cache_bar_timer.stop()
@@ -654,11 +612,6 @@ class ImgPlayerApp:
         self._window.viewer.gl.gpu_renderer_detected.connect(
             self._on_gpu_renderer_detected
         )
-        # Double-click in contact-sheet mode → isolate the tile under
-        # the cursor (= switch to single-mode on that group).
-        self._window.viewer.gl.tile_isolate_requested.connect(
-            self._on_tile_isolate_requested
-        )
 
     def _wire_controller(self) -> None:
         """Controller → UI updates."""
@@ -796,18 +749,13 @@ class ImgPlayerApp:
         w.set_before_close_callback(self._prompt_save_annotations)
 
     def _wire_channel_menu(self) -> None:
-        """Transport channel menu (single + contact-sheet) → app."""
+        """Transport channel menu → app."""
         w = self._window
-        # The transport's checkable menu emits ``channel_selection_changed``
-        # whenever the user toggles a radio or a checkbox; we bridge
+        # The transport's channel menu emits ``channel_selection_changed``
+        # whenever the user picks a different active radio; we bridge
         # straight to ``set_channel_selection`` which handles cache +
         # display.
         w.channel_selection_changed.connect(self._on_channel_selection_changed)
-        w.channel_layout_mode_changed.connect(self._on_channel_layout_mode_changed)
-        w.channel_labels_visible_changed.connect(
-            self._on_channel_labels_visible_changed,
-        )
-        w.contact_sheet_toggle_requested.connect(self.toggle_contact_sheet)
         w.channel_mask_changed.connect(self._on_channel_mask_changed)
 
     def _wire_color_and_zoom(self) -> None:
@@ -1233,40 +1181,16 @@ class ImgPlayerApp:
             transport.set_available_channels(layer.sequence.channel_names)
             sel = layer.channel_selection
             if sel is not None:
-                transport.restore_channel_state(
-                    sel.active.label,
-                    tuple(g.label for g in sel.tiles),
-                    layer.channel_layout_mode,
-                    layer.channel_labels_visible,
-                )
-            else:
-                # Layer never had a selection set (just added) —
-                # apply the global / prefs-fallback state so the
-                # menu isn't blank, and write it back to the layer.
-                # ``tile_labels`` deliberately left empty: contact-
-                # sheet tile selections are session-bound (the
-                # user's last tile set rarely matches the next EXR's
-                # AOV layout, and auto-checking "the same labels"
-                # ends up auto-checking the first two groups every
-                # fresh load — confusing). Layout mode + labels
-                # visibility ARE preference-restored because they
-                # describe the contact-sheet's *shape*, which the
-                # user genuinely wants stable across loads.
-                transport.restore_channel_state(
-                    self._prefs.channel_active_label,
-                    (),
-                    self._prefs.channel_layout_mode,
-                    self._prefs.channel_labels_visible,
-                )
+                # The layer was previously focused and the user picked
+                # an explicit channel — restore that pick.
+                transport.restore_channel_state(sel.active.label)
+            # else: fresh layer → ``set_available_channels`` already
+            # defaulted the menu to the first group of *this* sequence.
+            # No cross-sequence carry-over from a previous layer.
         finally:
             transport.blockSignals(False)
-        # NB: per-layer T / αS now live on the row itself and update
-        # via ``layer_modified`` → ``LayerRow.update_layer``. No
-        # focus-time sync needed for them.
-        # Sync app-level fallback fields with the focused layer's
-        # state so legacy export-snapshot code keeps working.
-        self._channel_layout_mode = layer.channel_layout_mode
-        self._channel_labels_visible = layer.channel_labels_visible
+        # Sync app-level fallback so legacy export-snapshot code keeps
+        # working.
         if layer.channel_selection is not None:
             self._channel_selection = layer.channel_selection
 
@@ -1336,57 +1260,16 @@ class ImgPlayerApp:
         return decode_video_layer(self, layer, master_frame)
 
     def _display_array(self, arr) -> None:  # type: ignore[no-untyped-def]
-        # The displayed pixels come from the *topmost-visible* layer
-        # at the current master frame — that's also the layer the
-        # cache decoded with, so its ChannelSelection / layout mode
-        # / labels-visible drive the contact-sheet compose. (The
-        # FOCUSED layer is what the menu edits, but it can differ
-        # from the displayed layer when several layers cover the
-        # playhead.)
-        cur = self._controller.state.current_frame
-        displayed = self._layer_stack.topmost_visible_at(cur)
-        sel = displayed.channel_selection if displayed else None
-        layout_mode = (
-            displayed.channel_layout_mode if displayed
-            else self._channel_layout_mode
-        )
-        labels_visible = (
-            displayed.channel_labels_visible if displayed
-            else self._channel_labels_visible
-        )
-        if sel is not None and sel.is_contact_sheet:
-            gl = self._window.viewer.gl
-            arr, geometry = compose_contact_sheet(
-                arr, sel,
-                viewport_w=max(1, gl.width()),
-                viewport_h=max(1, gl.height()),
-                layout_mode=layout_mode,
-            )
-            # Bake labels onto the composite so each tile shows its
-            # group name. Done after compose so the un-labelled
-            # composite stays available if we ever need it for
-            # export / debug. ``bake_labels`` no-ops when only one
-            # tile is in the geometry.
-            if labels_visible:
-                arr = bake_contact_sheet_labels(arr, geometry)
-            self._composite_geometry = geometry
-        else:
-            # Single mode → no contact-sheet geometry to remember.
-            self._composite_geometry = None
-        # Toggle the annotation overlay's contact-sheet flag based on
-        # whether the compose pass actually composited (i.e. the
-        # displayed image differs from the source). When True, the
-        # overlay hides persistent strokes and forces every new
-        # stroke through the ephemeral pipeline — so the user can
-        # still gesture during a side-by-side review without saving
-        # at coords that don't match the displayed composite.
-        geom = self._composite_geometry
-        is_real_composite = geom is not None and (
-            len(geom.tiles) >= 2 or (geom.rows * geom.cols > 1)
-        )
-        self._annotation_overlay.set_contact_sheet_active(is_real_composite)
+        """Push a decoded buffer to the GL viewport.
+
+        The viewport only handles RGB/RGBA, so we trim any extra
+        channels the cache may have decoded for a multi-channel
+        selection that the user later narrowed back to a single
+        group. Historical contact-sheet compose path was retired in
+        v1.2 — the buffer is uploaded as-is.
+        """
         if arr.shape[2] > 4:
-            arr = arr[:, :, :4]  # viewport only handles RGB/RGBA today
+            arr = arr[:, :, :4]
         self._window.viewer.gl.set_frame(arr)
 
     def set_channel_selection(self, selection: ChannelSelection) -> None:
@@ -1891,25 +1774,6 @@ class ImgPlayerApp:
         from img_player.channel_handler import on_channel_selection_changed
         on_channel_selection_changed(self, selection)
 
-    def _on_tile_isolate_requested(self, widget_x: float, widget_y: float) -> None:
-        """Double-click → isolate the clicked tile."""
-        from img_player.channel_handler import on_tile_isolate_requested
-        on_tile_isolate_requested(self, widget_x, widget_y)
-
-    def toggle_contact_sheet(self) -> None:
-        """Shift+C — bascule single ⇄ contact-sheet."""
-        from img_player.channel_handler import toggle_contact_sheet
-        toggle_contact_sheet(self)
-
-    def _on_channel_labels_visible_changed(self, on: object) -> None:
-        """Footer "Show labels" toggle → refresh + persist."""
-        from img_player.channel_handler import on_channel_labels_visible_changed
-        on_channel_labels_visible_changed(self, on)
-
-    def _on_channel_layout_mode_changed(self, mode: object) -> None:
-        """Persist the contact-sheet grid mode and force a redisplay."""
-        from img_player.channel_handler import on_channel_layout_mode_changed
-        on_channel_layout_mode_changed(self, mode)
 
     def _on_scrub_requested(self, frame: int) -> None:
         """Timeline scrub: update the display immediately from the cache, but

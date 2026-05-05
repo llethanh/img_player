@@ -27,9 +27,8 @@ The output is ordered to match the user's mental model:
 
 from __future__ import annotations
 
-import math
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 # RGB-like sub-channel names recognised when grouping. Some renderers
 # write lower-case (Cryptomatte does), so we normalise.
@@ -148,107 +147,25 @@ def group_channels(raw: Iterable[str]) -> list[ChannelGroup]:
 
 # ---------------------------------------------------------------- Selection model
 #
-# A ``ChannelSelection`` describes WHAT the user wants to see in the
-# viewport at any given moment. It carries two pieces of state:
+# A ``ChannelSelection`` describes which channel group the user wants
+# to see in the viewport. Carries a single :class:`ChannelGroup` —
+# the "active" pick from the channel menu's radio buttons.
 #
-# * ``active`` — the single "current" group (= what was clickable in the
-#   old combo box). Always non-None once a sequence is loaded.
-# * ``tiles`` — zero or more groups checked for the contact-sheet view.
-#   When empty, the viewport shows ``active`` only (legacy mode). When
-#   non-empty, the viewport shows the tiles in a grid and the active
-#   group is purely a "next single channel to fall back to" reference.
+# The selection round-trips through :class:`Layer` (per-layer state)
+# so each loaded sequence preserves its own channel pick when the
+# focus moves between layers. Frozen for cheap equality checks in
+# signal slots — the cache early-returns when the new selection
+# matches the old one.
 #
-# The same dataclass is the single source of truth used by:
-#   - the cache (decode the union of all displayed channels in one OIIO call),
-#   - the contact-sheet compositor (split the union back into per-tile arrays),
-#   - the UI menu (round-trip to QSettings, render the popup state).
-#
-# Frozen + slots-friendly: cheap to compare in signal slots so the
-# controller can early-return when nothing actually changed.
+# Historical note (v1.2): an earlier version supported a contact-
+# sheet mode (multiple ``tiles`` displayed in a grid). It was
+# removed because the workflow it enabled (compare AOVs side by
+# side) is better served by loading multiple layers and using the
+# layer panel's visibility / focus controls.
 
 
 @dataclass(frozen=True)
 class ChannelSelection:
-    """Channels to display: one ``active`` + zero or more contact-sheet ``tiles``.
-
-    Empty ``tiles`` → single mode (display ``active`` as before).
-    Non-empty ``tiles`` → contact-sheet mode (display each tile in a grid,
-    in the order given).
-    """
+    """The channel group currently displayed for a layer."""
 
     active: ChannelGroup
-    tiles: tuple[ChannelGroup, ...] = field(default_factory=tuple)
-
-    @property
-    def is_contact_sheet(self) -> bool:
-        return len(self.tiles) > 0
-
-    @property
-    def displayed(self) -> tuple[ChannelGroup, ...]:
-        """Groups actually painted by the viewport."""
-        return self.tiles if self.is_contact_sheet else (self.active,)
-
-    def union_channels(self) -> tuple[str, ...]:
-        """Deduplicated, order-preserving union of all displayed channels.
-
-        This is what we pass to OIIO ``read_image`` so a single decode
-        pass loads everything the viewport needs — re-reading the same
-        EXR once per tile would be wasteful (the OS cache helps but
-        OIIO setup costs aren't free).
-        """
-        seen: dict[str, None] = {}
-        for group in self.displayed:
-            for ch in group.channels:
-                seen.setdefault(ch, None)
-        return tuple(seen)
-
-    def tile_layout(self) -> tuple[tuple[str, tuple[int, ...]], ...]:
-        """Map each displayed group to its column indices in the union buffer.
-
-        Returns ``((label, (col0, col1, ...)), ...)`` where the inner
-        ints index the channel axis of the array produced by reading
-        ``union_channels()``. The compositor uses this to split a
-        single decoded buffer back into per-tile arrays without
-        re-reading the file.
-        """
-        union = self.union_channels()
-        index_of = {ch: i for i, ch in enumerate(union)}
-        return tuple(
-            (g.label, tuple(index_of[c] for c in g.channels))
-            for g in self.displayed
-        )
-
-
-def auto_grid(n: int, viewport_aspect: float, tile_aspect: float) -> tuple[int, int]:
-    """Choose ``(rows, cols)`` so the contact sheet fills the viewport
-    while keeping each tile as close to its native aspect as possible.
-
-    For ``n`` tiles of aspect ``tile_aspect`` (= w/h of the source
-    image) inside a viewport of aspect ``viewport_aspect``, the
-    column count that minimises wasted space is roughly:
-
-        cols ≈ √(n × viewport_aspect / tile_aspect)
-
-    Round + clamp to ``[1, n]``, then derive rows. Edge cases:
-
-    * ``n == 0`` → ``(1, 1)`` (caller draws nothing anyway).
-    * Wide tiles in a square viewport → cols smaller, rows taller.
-    * Square tiles in a wide viewport → cols larger.
-    """
-    if n <= 1:
-        return (1, max(1, n))
-    if tile_aspect <= 0 or viewport_aspect <= 0:
-        # Degenerate inputs (no image yet, headless test). Pick a
-        # near-square grid so we don't crash. ``ceil`` so 2 tiles
-        # become 1×2 not 1×1.
-        cols = max(1, math.ceil(math.sqrt(n)))
-    else:
-        # ``ceil`` rather than ``round``: when the math is borderline
-        # (e.g. n=2 with tile_aspect == viewport_aspect, where 1×2 and
-        # 2×1 waste the same area), we'd rather fill the wider axis
-        # of the viewport. Round would pick 1×N stacked, which feels
-        # wrong in a landscape viewport.
-        cols = max(1, math.ceil(math.sqrt(n * viewport_aspect / tile_aspect)))
-    cols = min(cols, n)
-    rows = math.ceil(n / cols)
-    return (rows, cols)

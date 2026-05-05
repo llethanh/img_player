@@ -75,13 +75,13 @@ class _SessionLayer:
     offset: int
     visible: bool
     # Channel state — stored flat so JSON readers don't have to
-    # mirror our ChannelSelection class shape.
+    # mirror our ChannelSelection class shape. ``channel_tile_*``,
+    # ``channel_layout_mode`` and ``channel_labels_visible`` were
+    # written by older sessions (contact-sheet feature, retired in
+    # v1.2). Kept readable on load (silently dropped) but no longer
+    # written.
     channel_active_label: str = ""
     channel_active_channels: list[str] = field(default_factory=list)
-    channel_tile_labels: list[str] = field(default_factory=list)
-    channel_tile_channels: list[list[str]] = field(default_factory=list)
-    channel_layout_mode: str = "Auto"
-    channel_labels_visible: bool = True
     source_colorspace: str | None = None
     exposure: float = 0.0
     gamma: float = 1.0
@@ -166,8 +166,6 @@ def save_session(
             layer_out=layer.layer_out,
             offset=layer.offset,
             visible=layer.visible,
-            channel_layout_mode=layer.channel_layout_mode,
-            channel_labels_visible=layer.channel_labels_visible,
             source_colorspace=layer.source_colorspace,
             exposure=layer.exposure,
             gamma=layer.gamma,
@@ -183,8 +181,6 @@ def save_session(
         if sel is not None:
             sl.channel_active_label = sel.active.label
             sl.channel_active_channels = list(sel.active.channels)
-            sl.channel_tile_labels = [g.label for g in sel.tiles]
-            sl.channel_tile_channels = [list(g.channels) for g in sel.tiles]
         layers_payload.append(asdict(sl))
     payload: dict[str, Any] = {
         "version": SESSION_VERSION,
@@ -327,10 +323,6 @@ def _rebuild_layer(entry: dict[str, Any]) -> Layer:
         )
         layer.id = entry.get("id", layer.id)
         layer.visible = bool(entry.get("visible", True))
-        layer.channel_layout_mode = entry.get("channel_layout_mode", "Auto")
-        layer.channel_labels_visible = bool(
-            entry.get("channel_labels_visible", True),
-        )
         layer.source_colorspace = entry.get("source_colorspace")
         layer.exposure = float(entry.get("exposure", 0.0))
         layer.gamma = float(entry.get("gamma", 1.0))
@@ -347,13 +339,7 @@ def _rebuild_layer(entry: dict[str, Any]) -> Layer:
             active = ChannelGroup(
                 label=active_label, channels=tuple(active_channels),
             )
-            tile_labels = entry.get("channel_tile_labels", [])
-            tile_channels = entry.get("channel_tile_channels", [])
-            tiles = tuple(
-                ChannelGroup(label=lbl, channels=tuple(chs))
-                for lbl, chs in zip(tile_labels, tile_channels, strict=False)
-            )
-            layer.channel_selection = ChannelSelection(active=active, tiles=tiles)
+            layer.channel_selection = ChannelSelection(active=active)
         return layer
     seq = scan(directory, probe=False)
     # ``scan(probe=False)`` skips the per-file header read (kept fast
@@ -375,10 +361,6 @@ def _rebuild_layer(entry: dict[str, Any]) -> Layer:
     layer.layer_in = int(entry.get("layer_in", seq.first_frame))
     layer.layer_out = int(entry.get("layer_out", seq.last_frame))
     layer.visible = bool(entry.get("visible", True))
-    layer.channel_layout_mode = entry.get("channel_layout_mode", "Auto")
-    layer.channel_labels_visible = bool(
-        entry.get("channel_labels_visible", True),
-    )
     layer.source_colorspace = entry.get("source_colorspace")
     layer.exposure = float(entry.get("exposure", 0.0))
     layer.alpha_composite = bool(entry.get("alpha_composite", False))
@@ -388,20 +370,16 @@ def _rebuild_layer(entry: dict[str, Any]) -> Layer:
     # the file extension (legacy sessions predate this field).
     layer.gamma = float(entry.get("gamma", 1.0))
     # Channel selection — only rebuild if both active label + at
-    # least one channel survived.
+    # least one channel survived. Older sessions also stored
+    # ``channel_tile_*`` (contact-sheet tiles, retired in v1.2);
+    # those keys are silently ignored.
     active_label = entry.get("channel_active_label", "")
     active_channels = entry.get("channel_active_channels", [])
     if active_label and active_channels:
         active = ChannelGroup(
             label=active_label, channels=tuple(active_channels),
         )
-        tile_labels = entry.get("channel_tile_labels", [])
-        tile_channels = entry.get("channel_tile_channels", [])
-        tiles = tuple(
-            ChannelGroup(label=lbl, channels=tuple(chs))
-            for lbl, chs in zip(tile_labels, tile_channels, strict=False)
-        )
-        layer.channel_selection = ChannelSelection(active=active, tiles=tiles)
+        layer.channel_selection = ChannelSelection(active=active)
     return layer
 
 

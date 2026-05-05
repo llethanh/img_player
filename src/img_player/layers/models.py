@@ -60,8 +60,6 @@ class Layer:
 
     # ---- Per-layer state (populated as the user touches the layer) ----
     channel_selection: ChannelSelection | None = None
-    channel_layout_mode: str = "Auto"
-    channel_labels_visible: bool = True
     source_colorspace: str | None = None
     exposure: float = 0.0
     gamma: float = 1.0
