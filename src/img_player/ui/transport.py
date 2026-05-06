@@ -346,13 +346,14 @@ class TransportBar(QWidget):  # type: ignore[misc]
             f"  border-right: {_border_dis};"
             f"}}"
         )
-        # NB: stays ENABLED at all times so it carries the same
-        # frame as reload / export — the disabled-state QSS
-        # (BORDER_SUBTLE) collides visually with QMenuBar's own
-        # border-bottom and erases the button's bottom edge.
-        # The "needs ≥2 layers" gate lives in the compare-toggle
-        # handler instead (it surfaces a status hint when the
-        # stack isn't ready).
+        # Disabled by default — no sequence loaded means there's
+        # nothing to compare. The app's ``_refresh_after_stack_change``
+        # flips it on once the layer stack reaches at least 2 layers.
+        # The :disabled QSS rule above paints a desaturated frame
+        # using ``BORDER_DEFAULT`` (instead of BORDER_SUBTLE) so the
+        # button still reads "not actionable yet" without the bottom
+        # edge collapsing into a neighbouring border.
+        self._compare_btn.setEnabled(False)
 
         # --- FPS ------------------------------------------------------------
         # Plain editable line — no dropdown of presets. The user

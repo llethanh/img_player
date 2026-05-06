@@ -418,82 +418,19 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         return self._compare_band
 
     def set_compare_band_visible(self, on: bool) -> None:
-        """Toggle the compare band's visibility AND force the menu-bar
-        row to recompute its geometry. A raw ``setVisible`` leaves the
-        corner widget's QHBoxLayout with stale size hints — the row
-        ends up the wrong height at startup and doesn't shrink back
-        when compare closes. ``updateGeometry`` + ``adjustSize`` on
-        the corner and the menu bar push the layout to re-flow."""
-        if self._compare_band.isVisible() == bool(on):
-            return
-        self._compare_band.setVisible(bool(on))
-        self._menu_corner.updateGeometry()
-        self._menu_corner.adjustSize()
-        self.menuBar().adjustSize()
-        self.menuBar().updateGeometry()
-        self._adjust_compare_band_width()
+        """Toggle the compare band's visibility.
 
-    def _adjust_compare_band_width(self) -> None:
-        """Clamp the compare band so the corner widget never overlaps
-        the File/Edit/View menus on narrow windows.
-
-        QMenuBar gives the corner widget its full sizeHint width
-        unconditionally — Qt doesn't compress the corner on resize, so
-        size policies inside it have no effect on its outer footprint.
-        We compute the space left over after the menus on the left and
-        the rest of the corner items on the right, then ``setFixedWidth``
-        on the band to ``min(available, natural)``. Inner Preferred-policy
-        children (combos, seam bar) absorb the squeeze when the band is
-        narrowed; on a wide window the cap at ``natural`` prevents extra
-        space from stretching the seam bar / A↔B button.
+        The band lives between two stretches in the top layout. We
+        also flip the right stretch's weight so the band centres
+        between menus and buttons when visible, and the buttons sit
+        flush right when the band is hidden.
         """
-        band = getattr(self, "_compare_band", None)
-        if band is None or not band.isVisible():
-            return
-        bar = self.menuBar()
-        # Width consumed by the menu actions on the left (File/Edit/...).
-        # ``actionGeometry`` is reliable after the first paint; on the
-        # very first call it may report 0, which is harmless — the
-        # estimate just collapses to the safety floor and the next
-        # resize gets the real value.
-        menus_w = 0
-        for act in bar.actions():
-            if act.menu() is not None:
-                menus_w += bar.actionGeometry(act).width()
-        # Width consumed by the other corner items (right of the band).
-        layout = self._menu_corner.layout()
-        other_w = 0
-        margins = layout.contentsMargins()
-        other_w += margins.left() + margins.right()
-        visible_n = 0
-        for i in range(layout.count()):
-            w = layout.itemAt(i).widget()
-            if w is None or w is band:
-                continue
-            if not w.isVisible():
-                continue
-            other_w += w.sizeHint().width()
-            visible_n += 1
-        # Spacing between visible items, including one before the band.
-        other_w += layout.spacing() * max(0, visible_n)
-        safety = 16
-        available = bar.width() - menus_w - other_w - safety
-        # The band's natural width = its inner layout's sizeHint, which
-        # is independent of any setFixedWidth we previously applied
-        # (layout sizeHints sum the children's sizeHints, not the
-        # parent's geometry). Clamping ``target`` to this prevents the
-        # band from stretching past its content on wide windows.
-        natural = band.layout().sizeHint().width()
-        # Floor: don't collapse below ~200 (roughly the band's hard
-        # minimum given fixed-size mode buttons + min combos).
-        target = max(200, min(available, natural))
-        if (
-            band.maximumWidth() == target
-            and band.minimumWidth() == target
-        ):
-            return
-        band.setFixedWidth(target)
-        bar.adjustSize()
+        on = bool(on)
+        self._compare_band.setVisible(on)
+        # Right stretch weight: 1 when compare is on (equal split with
+        # the left stretch → band centred), 0 when off (left stretch
+        # absorbs the slack → buttons flush right).
+        self._top_layout.setStretch(self._top_stretch_right_idx, 1 if on else 0)
 
     @property
     def color_panel(self) -> ColorPanel:
@@ -873,63 +810,11 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         )
         burger.clicked.connect(self._toggle_side_dock)
 
-        # The corner widget hosts the burger PLUS the global-state
-        # controls that used to live at the right of the transport
-        # bar (reload, export, channel selector, RGBA mute toggles,
-        # zoom). Putting them here frees the bottom bar for
-        # playback-only tools and gives the user a single "global
-        # state" row at the very top of the window.
-        corner = QWidget(self)
-        corner.setStyleSheet("background: transparent;")
-        wrap_layout = QHBoxLayout(corner)
-        wrap_layout.setContentsMargins(0, 0, S.MD, 0)
-        wrap_layout.setSpacing(S.SM)
-        # Reload + export sit first (left of the channel controls) —
-        # they're file-level commands, kin to File menu actions.
-        wrap_layout.addWidget(self._transport.reload_button)
-        wrap_layout.addWidget(self._transport.export_button)
-        wrap_layout.addWidget(self._transport.compare_button)
-        # Channel selector + RGBA mute toggles, grouped tight.
-        wrap_layout.addWidget(self._transport.channel_button)
-        for letter in ("R", "G", "B", "A"):
-            wrap_layout.addWidget(self._transport.channel_mute_buttons[letter])
-        # Zoom selector — preceded by a small "Zoom" label, mirroring
-        # the "FPS" label/field pairing in the transport bar so the
-        # value alone doesn't read as a mystery percentage.
-        zoom_label = QLabel("Zoom")
-        zoom_label.setStyleSheet(f"color: {H.TEXT_SECONDARY};")
-        wrap_layout.addWidget(zoom_label)
-        wrap_layout.addWidget(self._transport.zoom_combo)
-        # Burger last (closest to the right edge — easiest mouse
-        # target).
-        wrap_layout.addWidget(burger)
-        menu_bar.setCornerWidget(corner, Qt.Corner.TopRightCorner)
         self._burger_btn = burger
-        self._menu_corner = corner
-
-        # --- Compare band — first slot of the right corner widget --------
-        # Used to live as a top-of-viewer overlay, cropping the display
-        # whenever compare mode was on. Re-homed into the menu-bar's
-        # right corner widget — first position, just to the left of
-        # reload/export — so it shares the menu-bar row instead of
-        # consuming viewport pixels. Hidden by default; the compare
-        # handler flips ``set_compare_band_visible`` on toggle. The
-        # explicit setter (instead of a raw ``setVisible``) is
-        # necessary because Qt's QHBoxLayout in the corner widget
-        # caches sizeHints on QMenuBar paint, and a bare visibility
-        # toggle leaves the row at the wrong height — looks "crushed"
-        # at startup and doesn't snap back when compare is closed.
-        # The setter forces ``updateGeometry`` + ``adjustSize`` on the
-        # corner and the menu bar after the toggle so the row re-flows
-        # immediately.
-        self._compare_band = CompareBand(corner)
-        sp = self._compare_band.sizePolicy()
-        sp.setRetainSizeWhenHidden(False)
-        self._compare_band.setSizePolicy(sp)
-        self._compare_band.setVisible(False)
-        wrap_layout.insertWidget(0, self._compare_band)
 
         # --- Help menu ----------------------------------------------------
+        # Added before the right-toolbar wiring below so the menu bar
+        # has its full set of menus before we measure / install it.
         help_menu = menu_bar.addMenu("&Help")
         shortcuts_act = QAction("&Keyboard shortcuts…", self)
         shortcuts_act.setShortcut(QKeySequence("F1"))
@@ -939,6 +824,76 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         about_act = QAction("&About Flick Player", self)
         about_act.triggered.connect(self._show_about)
         help_menu.addAction(about_act)
+
+        # --- Top bar layout ----------------------------------------------
+        # [QMenuBar | <stretch L> | compare_band | <stretch R> | buttons]
+        #
+        # Three flex zones:
+        # * Left stretch — fills the gap between Help and the centred
+        #   compare band.
+        # * Right stretch — fills the gap between the band and the
+        #   buttons toolbar (reload / export / channel / zoom / …).
+        #   Its weight is toggled in ``set_compare_band_visible``: 1
+        #   when compare is on (= the band centres), 0 when off (=
+        #   the buttons sit flush against the right edge).
+        # Standard QHBoxLayout — no manual width math, no QMenuBar
+        # corner-widget tricks. Combos with Preferred policy squeeze
+        # naturally when the window narrows, after the stretches have
+        # collapsed to zero.
+        buttons_toolbar = QWidget(self)
+        buttons_toolbar.setStyleSheet("background: transparent;")
+        buttons_layout = QHBoxLayout(buttons_toolbar)
+        buttons_layout.setContentsMargins(0, 0, S.MD, 0)
+        buttons_layout.setSpacing(S.SM)
+        # Compare sits LEFT of reload — review-mode action first,
+        # then file-level commands (reload, export).
+        buttons_layout.addWidget(self._transport.compare_button)
+        buttons_layout.addWidget(self._transport.reload_button)
+        buttons_layout.addWidget(self._transport.export_button)
+        # Channel selector + RGBA mute toggles, grouped tight.
+        buttons_layout.addWidget(self._transport.channel_button)
+        for letter in ("R", "G", "B", "A"):
+            buttons_layout.addWidget(self._transport.channel_mute_buttons[letter])
+        # Zoom selector — preceded by a small "Zoom" label, mirroring
+        # the "FPS" label/field pairing in the transport bar.
+        zoom_label = QLabel("Zoom")
+        zoom_label.setStyleSheet(f"color: {H.TEXT_SECONDARY};")
+        buttons_layout.addWidget(zoom_label)
+        buttons_layout.addWidget(self._transport.zoom_combo)
+        # Burger last (closest to the right edge — easiest mouse
+        # target).
+        buttons_layout.addWidget(burger)
+
+        # Compare band — its own widget, sandwiched between two
+        # stretches in the top layout so it centres horizontally
+        # between the menus and the buttons toolbar when visible.
+        self._compare_band = CompareBand(self)
+        self._compare_band.setVisible(False)
+
+        top_bar = QWidget(self)
+        top_bar.setStyleSheet("background: transparent;")
+        top_layout = QHBoxLayout(top_bar)
+        top_layout.setContentsMargins(0, 0, 0, 0)
+        top_layout.setSpacing(0)
+        top_layout.addWidget(menu_bar, 0)
+        top_layout.addStretch(1)
+        top_layout.addWidget(self._compare_band, 0)
+        # Right stretch starts at 0 so the buttons toolbar sits flush
+        # right while compare is hidden. ``set_compare_band_visible``
+        # flips it to 1 when compare turns on, which centres the band
+        # between the two equal-weight stretches.
+        top_layout.addStretch(0)
+        top_layout.addWidget(buttons_toolbar, 0)
+        # Cache the layout + the right-stretch index so the visibility
+        # toggle can update its weight without rebuilding anything.
+        self._top_layout = top_layout
+        # Layout indices: 0 = menu_bar, 1 = stretch_L, 2 = compare_band,
+        # 3 = stretch_R, 4 = buttons_toolbar.
+        self._top_stretch_right_idx = 3
+        # Replace the auto-installed menu bar slot with the composite.
+        # ``setMenuWidget`` takes ownership; QMainWindow positions it
+        # at the top of the window where the menu bar usually lives.
+        self.setMenuWidget(top_bar)
 
     def _refresh_image_size_label(self) -> None:
         """Push image dimensions to the bottom info band."""
@@ -1534,10 +1489,9 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             and self._session_drop_overlay.isVisible()
         ):
             self._session_drop_overlay.setGeometry(self.rect())
-        # Reflow the compare band so the menu-bar corner widget never
-        # spills over the File/Edit/View menus when the window is
-        # narrow.
-        self._adjust_compare_band_width()
+        # The compare band lives in a sibling toolbar inside a plain
+        # QHBoxLayout (built in ``_build_menu``), so no manual reflow
+        # is needed on resize — Qt handles the squeeze automatically.
 
     def closeEvent(self, event: QCloseEvent) -> None:
         # The app can register a callback that runs before the window

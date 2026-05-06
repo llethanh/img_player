@@ -799,6 +799,17 @@ class ImgPlayerApp:
         self._window.compare_swap_layers_requested.connect(
             lambda: swap_layers(self),
         )
+        # Mouse-drag in the viewport → moves the seam while compare
+        # is active. The filter intercepts left-press / move / release
+        # ahead of the GL viewport's normal drag-scrub handler so the
+        # gesture doesn't fight the timeline scrub. Held on ``self``
+        # so the filter object isn't garbage-collected — Qt only
+        # keeps a weak reference via installEventFilter.
+        from img_player.compare_handler import _ViewportSeamFilter
+        self._compare_viewport_filter = _ViewportSeamFilter(self)
+        self._window.viewer.gl.installEventFilter(
+            self._compare_viewport_filter,
+        )
 
     def _wire_color_and_zoom(self) -> None:
         """ColorPanel + zoom combo → GL viewport."""

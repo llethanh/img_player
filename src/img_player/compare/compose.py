@@ -30,11 +30,14 @@ from img_player.compare.state import (
     MODE_VERTICAL,
 )
 
-# RGB seam line painted on top of the wipe composite. White, 1 px,
-# baked into the buffer because the BracketsOverlay pipeline has no
-# easy hook for "draw a single line at this fraction of the
-# viewport". Could move to a Qt overlay later if styling needs grow.
-_SEAM_COLOR_RGB: tuple[int, int, int] = (255, 255, 255)
+# Seam line painted on top of the wipe composite. Accent orange
+# (matches ``H.ACCENT`` in the theme), alpha-blended at ~50 % so the
+# stroke reads as a thin tint rather than a hard 1-px wall over the
+# image — the user can still see the pixels under the seam. Baked
+# into the buffer because the BracketsOverlay pipeline has no easy
+# hook for "draw a single line at this fraction of the viewport".
+_SEAM_COLOR_RGB: tuple[int, int, int] = (232, 144, 28)  # H.ACCENT
+_SEAM_ALPHA: float = 0.55
 _SEAM_THICKNESS_PX: int = 1
 
 
@@ -77,20 +80,29 @@ def compose(
         return (a.astype(np.float32) * (1.0 - t)
                 + b.astype(np.float32) * t).astype(a.dtype)
     if mode == MODE_VERTICAL:
-        out = a.copy()
-        h, w = out.shape[:2]
+        # ``np.empty_like`` + two half-writes is ~50 % less memory
+        # traffic than the more obvious ``out = a.copy(); out[..] = b[..]``
+        # (a full ``a.copy`` then a half overwrite). Matters during
+        # interactive seam-drag, where every mouse-move triggers
+        # one of these per frame.
+        h, w = a.shape[:2]
         split = int(round(w * max(0.0, min(1.0, float(seam)))))
-        # Right side comes from B.
-        out[:, split:] = b[:, split:]
+        out = np.empty_like(a)
+        if split > 0:
+            out[:, :split] = a[:, :split]
+        if split < w:
+            out[:, split:] = b[:, split:]
         if draw_seam_line and 0 < split < w:
             _paint_vertical_seam(out, split)
         return out
     if mode == MODE_HORIZONTAL:
-        out = a.copy()
-        h, w = out.shape[:2]
+        h, w = a.shape[:2]
         split = int(round(h * max(0.0, min(1.0, float(seam)))))
-        # Bottom comes from B.
-        out[split:] = b[split:]
+        out = np.empty_like(a)
+        if split > 0:
+            out[:split] = a[:split]
+        if split < h:
+            out[split:] = b[split:]
         if draw_seam_line and 0 < split < h:
             _paint_horizontal_seam(out, split)
         return out
@@ -172,21 +184,44 @@ def _nn_resize(arr: np.ndarray, *, target_h: int, target_w: int) -> np.ndarray:
 
 
 def _paint_vertical_seam(out: np.ndarray, x: int) -> None:
-    """Paint a 1-px white vertical line at column ``x`` on ``out``
-    (in-place)."""
-    color = _seam_value(out.dtype, channels=out.shape[2])
+    """Alpha-blend the accent-orange seam line onto column ``x`` of
+    ``out`` (in-place). The seam is ``_SEAM_THICKNESS_PX`` wide and
+    blended at ``_SEAM_ALPHA`` so the underlying pixels stay
+    partially visible — reads as a thin tint, not a hard divider."""
     x0 = max(0, x - _SEAM_THICKNESS_PX // 2)
     x1 = min(out.shape[1], x0 + _SEAM_THICKNESS_PX)
-    out[:, x0:x1] = color
+    if x0 >= x1:
+        return
+    _blend_seam_strip(out, np.s_[:, x0:x1])
 
 
 def _paint_horizontal_seam(out: np.ndarray, y: int) -> None:
-    """Paint a 1-px white horizontal line at row ``y`` on ``out``
-    (in-place)."""
-    color = _seam_value(out.dtype, channels=out.shape[2])
+    """Alpha-blend the accent-orange seam line onto row ``y`` of
+    ``out`` (in-place). See :func:`_paint_vertical_seam`."""
     y0 = max(0, y - _SEAM_THICKNESS_PX // 2)
     y1 = min(out.shape[0], y0 + _SEAM_THICKNESS_PX)
-    out[y0:y1] = color
+    if y0 >= y1:
+        return
+    _blend_seam_strip(out, np.s_[y0:y1, :])
+
+
+def _blend_seam_strip(out: np.ndarray, slc: tuple) -> None:
+    """In-place alpha blend of the seam colour over ``out[slc]``.
+
+    Float output: linear blend in the buffer's native scale.
+    Integer output (uint8 / uint16): blend in float32 then cast back
+    so the rounded result stays inside the dtype's range.
+    """
+    color = _seam_value(out.dtype, channels=out.shape[2])
+    strip = out[slc]
+    if np.issubdtype(out.dtype, np.floating):
+        out[slc] = strip * (1.0 - _SEAM_ALPHA) + color * _SEAM_ALPHA
+    else:
+        blended = (
+            strip.astype(np.float32) * (1.0 - _SEAM_ALPHA)
+            + color.astype(np.float32) * _SEAM_ALPHA
+        )
+        out[slc] = blended.astype(out.dtype)
 
 
 def _seam_value(dtype: np.dtype, channels: int) -> np.ndarray:

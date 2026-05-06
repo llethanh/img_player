@@ -36,7 +36,7 @@ class TestCompareState:
         assert s.enabled is False
         assert s.layer_a_id is None
         assert s.layer_b_id is None
-        assert s.mode == MODE_OPACITY  # neutral default since swap-mode retired
+        assert s.mode == MODE_VERTICAL  # default after swap-mode retired
         assert s.seam == 0.5
         assert s.swap_showing_b is False
 
@@ -72,7 +72,7 @@ class TestCompareState:
         # Unknown mode → falls back to default; non-numeric seam → 0.5;
         # seam out of range → clamped.
         s = CompareState.from_dict({"mode": "weird", "seam": "nope"})
-        assert s.mode == MODE_OPACITY
+        assert s.mode == MODE_VERTICAL
         assert s.seam == 0.5
         s2 = CompareState.from_dict({"seam": 2.5})
         assert s2.seam == 1.0
@@ -82,7 +82,7 @@ class TestCompareState:
         # should preserve the visual ("show full B") via the new
         # always-on ``swap_showing_b`` toggle.
         s = CompareState.from_dict({"mode": "swap"})
-        assert s.mode == MODE_OPACITY
+        assert s.mode == MODE_VERTICAL
         assert s.swap_showing_b is True
 
     def test_from_dict_skipped_keys_use_defaults(self) -> None:
@@ -160,11 +160,22 @@ class TestComposeVerticalWipe:
         out = compose(a, b, mode=MODE_VERTICAL, seam=1.0, draw_seam_line=False)
         assert (out == 10).all()
 
-    def test_seam_line_painted_white(self) -> None:
+    def test_seam_line_blended_orange(self) -> None:
         a, b = _block(10, w=8), _block(200, w=8)
         out = compose(a, b, mode=MODE_VERTICAL, seam=0.5)
-        # Default: 1-px white line at column 4.
-        assert (out[:, 4] == 255).all()
+        # The seam is alpha-blended accent-orange (R≈232, G≈144,
+        # B≈28) over the underlying B-side gray (= 200). With ~55%
+        # alpha:
+        #   R = 200*0.45 + 232*0.55 ≈ 217
+        #   G = 200*0.45 + 144*0.55 ≈ 169
+        #   B = 200*0.45 +  28*0.55 ≈  105
+        # The R channel stays warm and brightest, B stays dimmest —
+        # we just check the relative ordering rather than exact
+        # rounded values so the test stays robust to small alpha
+        # tweaks.
+        seam_pixel = out[:, 4]
+        assert (seam_pixel[..., 0] > seam_pixel[..., 1]).all()  # R > G
+        assert (seam_pixel[..., 1] > seam_pixel[..., 2]).all()  # G > B
 
 
 class TestComposeHorizontalWipe:

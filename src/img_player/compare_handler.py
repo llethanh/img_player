@@ -11,6 +11,8 @@ import logging
 from typing import TYPE_CHECKING
 
 import numpy as np
+from PySide6.QtCore import QEvent, QObject, Qt
+from PySide6.QtGui import QCursor
 
 from img_player.compare.compose import compose
 from img_player.compare.state import (
@@ -195,6 +197,35 @@ def nudge_seam(app: ImgPlayerApp, delta: float) -> None:
     set_seam_from_viewport(app, app._compare_state.seam + delta)
 
 
+def set_seam_from_pointer(
+    app: ImgPlayerApp, x: float, y: float, widget_w: int, widget_h: int,
+) -> None:
+    """Map a viewport mouse position to a seam value.
+
+    Called by the compare-mode mouse filter (installed in
+    ``app._wire_compare``) on left-click + drag. The mapping depends
+    on the active blend mode:
+
+    * **Vertical** wipe — horizontal drag (X / widget_w) controls the
+      left↔right seam.
+    * **Horizontal** wipe — vertical drag (Y / widget_h) controls the
+      top↕bottom seam.
+    * **Opacity** blend — horizontal drag (X / widget_w). Both axes
+      were considered, but the band's slider runs left-to-right and
+      sticking to the same axis keeps muscle memory consistent.
+    """
+    state = app._compare_state
+    if state.mode == MODE_VERTICAL:
+        seam = x / max(1.0, float(widget_w))
+    elif state.mode == MODE_HORIZONTAL:
+        seam = y / max(1.0, float(widget_h))
+    elif state.mode == MODE_OPACITY:
+        seam = x / max(1.0, float(widget_w))
+    else:
+        return
+    set_seam_from_viewport(app, seam)
+
+
 # ============================================================================
 # Render hook — called by app._on_frame_changed
 # ============================================================================
@@ -257,12 +288,190 @@ def _ensure_contiguous(arr: np.ndarray) -> np.ndarray:
     return np.ascontiguousarray(arr)
 
 
+# ============================================================================
+# Viewport mouse filter — left-click drag updates the seam
+# ============================================================================
+
+
+class _ViewportSeamFilter(QObject):
+    """Intercept right-click drag on the GL viewport while compare
+    mode is active and route the cursor to the seam.
+
+    Sits as a Qt event filter on ``viewer.gl`` (installed in
+    ``app._wire_compare``). Only acts when ``CompareState.is_active``
+    — outside compare mode it falls through so the GL viewport's
+    own gestures keep working. Right-click was picked over
+    left-click so the standard left-drag gesture (= drag-scrub the
+    timeline) stays available even while comparing.
+
+    Behaviour per blend mode:
+
+    * **Vertical / Horizontal wipe** — *absolute*: pressing snaps
+      the seam to the cursor (so the wipe line jumps to where the
+      user grabbed), and subsequent moves keep the seam attached to
+      the cursor. Feels like "grab the seam line and drag it".
+    * **Opacity blend** — *relative + amplified*: pressing captures
+      an anchor (current seam + cursor coords). Each move adds the
+      cursor delta (× ``_OPACITY_GAIN``) to the captured seam.
+      Multiplier > 1 means less mouse distance is needed to sweep
+      0 → 1 — a short gesture covers the full opacity range, which
+      feels nicer than dragging across the whole viewport.
+
+    Returning ``True`` from ``eventFilter`` suppresses the event so
+    the GL viewport doesn't ALSO try to drag-scrub the timeline at
+    the same gesture.
+    """
+
+    # Opacity drag amplification. ``3.0`` means a third of the
+    # viewport width drags the opacity from 0 to 1, which is a
+    # comfortable wrist gesture without being twitchy.
+    _OPACITY_GAIN: float = 3.0
+
+    def __init__(self, app: ImgPlayerApp) -> None:
+        super().__init__(app._window)
+        self._app = app
+        self._dragging = False
+        # Press-time anchors — the seam moves relative to these so a
+        # short drag near the seam line nudges it slightly rather
+        # than teleporting it to the absolute cursor position.
+        self._press_x: float = 0.0
+        self._press_y: float = 0.0
+        self._press_seam: float = 0.5
+
+    def eventFilter(self, watched: object, event: QEvent) -> bool:  # type: ignore[override]
+        state = self._app._compare_state
+        if not state.is_active():
+            return False
+        et = event.type()
+        if (
+            et == QEvent.Type.MouseButtonPress
+            and event.button() == Qt.MouseButton.RightButton
+        ):
+            pos = event.position()
+            self._dragging = True
+            self._press_x = pos.x()
+            self._press_y = pos.y()
+            self._press_seam = state.seam
+            # Wipe modes: snap the seam to the cursor at press time
+            # so the line jumps under the click. Opacity stays
+            # delta-based — there's no visible seam line, so an
+            # absolute snap would feel disorienting.
+            if state.mode in (MODE_VERTICAL, MODE_HORIZONTAL):
+                self._apply_absolute(watched, event)
+            return True
+        if et == QEvent.Type.MouseMove and self._dragging:
+            if state.mode in (MODE_VERTICAL, MODE_HORIZONTAL):
+                self._apply_absolute(watched, event)
+            else:
+                self._apply_delta(watched, event)
+            # Force a synchronous repaint so the seam line catches up
+            # with the cursor on the same event tick. ``set_frame``
+            # only calls ``update`` which schedules an async paint —
+            # at fast mouse-drag rates Qt can stack 2-3 mouse-move
+            # events between paints, producing visible lag between
+            # cursor and seam. ``repaint`` flushes the pending GL
+            # upload before returning.
+            self._app._window.viewer.gl.repaint()
+            return True
+        if (
+            et == QEvent.Type.MouseButtonRelease
+            and event.button() == Qt.MouseButton.RightButton
+            and self._dragging
+        ):
+            self._dragging = False
+            return True
+        return False
+
+    def _apply_absolute(self, watched: object, event: QEvent) -> None:
+        """Wipe modes: seam follows the cursor's absolute position
+        in *image space*.
+
+        We use ``QCursor.pos()`` (= the latest OS cursor position) +
+        ``mapFromGlobal`` instead of ``event.position()`` because Qt
+        can queue several mouse-move events between paints during a
+        fast drag — using the embedded position would have us paint
+        to a stale spot. Querying the cursor at handler-time gives
+        the most recent position regardless of event backlog.
+
+        The cursor's widget coordinates are then converted to
+        image-space via the GL viewport's current zoom + pan
+        transform, so the seam stays under the cursor regardless of
+        how the image is fit / zoomed / panned.
+        """
+        from img_player.annotate.overlay import widget_to_image
+
+        gl = self._app._window.viewer.gl
+        # Latest cursor position in this widget's local coords.
+        local = watched.mapFromGlobal(QCursor.pos())
+        cur_x = float(local.x())
+        cur_y = float(local.y())
+        img_w, img_h = gl.image_size()
+        if img_w <= 0 or img_h <= 0:
+            # No image loaded yet — fall back to widget-space mapping
+            # so the press still produces *something* consistent.
+            try:
+                w = int(watched.width())
+                h = int(watched.height())
+            except AttributeError:
+                return
+            set_seam_from_pointer(self._app, cur_x, cur_y, w, h)
+            return
+        factor, pan_x, pan_y = gl.current_transform()
+        if factor <= 0:
+            return
+        # ``event`` is unused in this code path — see ``QCursor.pos``
+        # rationale in the docstring above.
+        del event
+        ix, iy = widget_to_image(
+            widget_xy=(cur_x, cur_y),
+            widget_size=(gl.width(), gl.height()),
+            img_size=(img_w, img_h),
+            factor=factor,
+            pan=(pan_x, pan_y),
+        )
+        # Map image-space cursor to a [0..1] seam value. Clamping is
+        # done by ``set_seam_from_viewport`` downstream, so a cursor
+        # outside the image bounds (= the user dragged off-image)
+        # still pegs the seam at 0 or 1 cleanly.
+        state = self._app._compare_state
+        if state.mode == MODE_HORIZONTAL:
+            seam = iy / float(img_h)
+        else:
+            seam = ix / float(img_w)
+        set_seam_from_viewport(self._app, seam)
+
+    def _apply_delta(self, watched: object, event: QEvent) -> None:
+        """Opacity mode: seam moves relative to press, amplified by
+        ``_OPACITY_GAIN`` so a short drag covers the full 0 → 1 range.
+        ``QCursor.pos`` over the queued event position for the same
+        reason as ``_apply_absolute`` (avoid stale events during
+        fast drags).
+        """
+        del event  # unused — see ``QCursor.pos`` rationale above.
+        try:
+            w = float(watched.width())
+        except AttributeError:
+            return
+        local = watched.mapFromGlobal(QCursor.pos())
+        # X axis on opacity (consistent with the band's left-to-right
+        # slider). The Y component is not folded in — adding it would
+        # make the gesture jittery for a user who's just shaking
+        # their hand horizontally.
+        denom = max(1.0, w)
+        delta_frac = (float(local.x()) - self._press_x) / denom
+        set_seam_from_viewport(
+            self._app,
+            self._press_seam + delta_frac * self._OPACITY_GAIN,
+        )
+
+
 # Re-exports for the typing-only convenience of app.py / main_window.
 __all__ = [
     "MODE_HORIZONTAL",
     "MODE_OPACITY",
     "MODE_VERTICAL",
     "available_layer_options",
+    "set_seam_from_pointer",
     "nudge_seam",
     "refresh_band_layers",
     "render_compare",

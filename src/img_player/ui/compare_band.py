@@ -39,6 +39,17 @@ from img_player.ui.icons import make_icon
 from img_player.ui.theme import C, G, H, S
 
 
+# Sizing knobs for the layer dropdowns. The combo's preferred width
+# follows the longest currently-listed name (via Qt's
+# ``setMinimumContentsLength``), clamped between a sensible floor
+# (so a one-letter name doesn't collapse the combo) and a hard
+# ceiling (so a pathological 100-char filename doesn't shove every
+# other right-toolbar item off-screen).
+_COMBO_MIN_CHARS = 12
+_COMBO_MAX_CHARS = 36
+_COMBO_MAX_PX = 360
+
+
 # Tooltips for each mode button — labels live as icons now.
 _MODE_TOOLTIPS: dict[str, str] = {
     MODE_VERTICAL: "Vertical split",
@@ -161,9 +172,12 @@ class SeamBar(QWidget):  # type: ignore[misc]
         painter.setBrush(QBrush(C.BG_SURFACE))
         painter.drawRoundedRect(track_rect, radius, radius)
 
-        # Filled portion (orange + bright outline matching the layer
-        # cache-bar idiom). Clipped to the rounded track so the fill
-        # keeps the corner radius on the left edge.
+        # Filled portion — same idiom as the timeline's cache bar:
+        # translucent accent fill (50 % alpha, ``C.CACHE_BAR``) with
+        # an opaque accent outline (``C.CACHE_BAR_BORDER``). Lifts
+        # the warm fill off the dark track without over-saturating.
+        # Clipped to the rounded track so the left edge stays
+        # rounded; the right edge is the seam itself.
         fill_w = max(0.0, rect.width() * self._value)
         if fill_w > 0:
             painter.save()
@@ -171,18 +185,17 @@ class SeamBar(QWidget):  # type: ignore[misc]
             track_path.addRoundedRect(track_rect, radius, radius)
             painter.setClipPath(track_path)
             fill_rect = QRectF(rect.left(), rect.top(), fill_w, rect.height())
-            # Solid orange fill.
+            # Translucent accent fill — visible but doesn't drown out
+            # the centred "Split" label that sits across the seam.
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QBrush(C.ACCENT))
+            painter.setBrush(QBrush(C.CACHE_BAR))
             painter.drawRect(fill_rect)
-            # Bright outline tracing the entire fill (= same idiom
-            # the layer cache-bar uses to lift the warm fill off the
-            # dark track). The clip-path crops the strokes that
-            # would land outside the track's rounded shape, so the
-            # outline naturally follows the left rounded corners
-            # and stops dead at the seam on the right.
+            # Opaque accent outline tracing the fill. The clip-path
+            # crops strokes that would land outside the track's
+            # rounded shape, so the outline naturally follows the
+            # left rounded corners and stops at the seam on the right.
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.setPen(QPen(C.ACCENT_BRIGHT, 1.0))
+            painter.setPen(QPen(C.CACHE_BAR_BORDER, 1.0))
             painter.drawRect(fill_rect.adjusted(0.5, 0.5, -0.5, -0.5))
             painter.restore()
 
@@ -231,11 +244,10 @@ class CompareBand(QFrame):  # type: ignore[misc]
         super().__init__(parent)
         self.setObjectName("compareBand")
         self.setFrameShape(QFrame.Shape.NoFrame)
-        # Transparent — the band lives inside the menu bar's corner
-        # widget now, so it should inherit the menu-bar background
-        # rather than draw its own raised panel. Applies the global
-        # QPushButton / QComboBox styles uniformly with the rest of
-        # the corner controls.
+        # Transparent — the band lives inside the right-side toolbar
+        # alongside the menu bar (see ``MainWindow._build_menu``), so
+        # it should inherit the menu-bar background rather than draw
+        # its own raised panel.
         self.setStyleSheet(
             "QFrame#compareBand { background: transparent; }"
             # Mode buttons (object-named below) — pull the accent
@@ -260,21 +272,20 @@ class CompareBand(QFrame):  # type: ignore[misc]
 
         # ---- Layer A dropdown ----
         layout.addWidget(QLabel("A"))
+        # Stock QComboBox: ``setMinimumContentsLength`` drives both
+        # ``sizeHint`` and ``minimumSizeHint`` (Qt's behaviour) — fine
+        # here because the band is no longer wedged into a non-
+        # squeezable corner widget. The QHBoxLayout the band lives in
+        # (the right toolbar built in ``MainWindow._build_menu``)
+        # absorbs the squeeze through its leading stretch first; once
+        # the stretch is at zero, Qt's standard layout shrinks
+        # Preferred-policy widgets like the combo down to their
+        # minimumSizeHint. ``setMaximumWidth`` keeps a long layer
+        # name from expanding the combo past a reasonable cap.
         self._combo_a = QComboBox()
         self._combo_a.setFixedHeight(G.INPUT_H)
-        # Without overrides, QComboBox.minimumSizeHint() factors in the
-        # widest dropdown item — long filenames blow the combo past any
-        # setMaximumWidth (Qt resolves a min > max conflict by giving
-        # min priority). Pin the contents-length-based size policy so
-        # the combo's minimum sizeHint is anchored to a small char
-        # count instead of the longest filename, then cap with
-        # min/max width for the band's shrink range.
-        self._combo_a.setSizeAdjustPolicy(
-            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon,
-        )
-        self._combo_a.setMinimumContentsLength(8)
-        self._combo_a.setMinimumWidth(60)
-        self._combo_a.setMaximumWidth(140)
+        self._combo_a.setMinimumContentsLength(_COMBO_MIN_CHARS)
+        self._combo_a.setMaximumWidth(_COMBO_MAX_PX)
         self._combo_a.setSizePolicy(
             QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed,
         )
@@ -292,12 +303,8 @@ class CompareBand(QFrame):  # type: ignore[misc]
         layout.addWidget(QLabel("B"))
         self._combo_b = QComboBox()
         self._combo_b.setFixedHeight(G.INPUT_H)
-        self._combo_b.setSizeAdjustPolicy(
-            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon,
-        )
-        self._combo_b.setMinimumContentsLength(8)
-        self._combo_b.setMinimumWidth(60)
-        self._combo_b.setMaximumWidth(140)
+        self._combo_b.setMinimumContentsLength(_COMBO_MIN_CHARS)
+        self._combo_b.setMaximumWidth(_COMBO_MAX_PX)
         self._combo_b.setSizePolicy(
             QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed,
         )
@@ -366,7 +373,17 @@ class CompareBand(QFrame):  # type: ignore[misc]
         Called whenever ``layers_changed`` fires. Block signals so
         the rebuild doesn't trigger ``layer_a_picked`` /
         ``layer_b_picked`` emissions for a non-user change.
+
+        Each combo's ``minimumContentsLength`` is updated to fit the
+        longest layer name (clamped to ``[_COMBO_MIN_CHARS,
+        _COMBO_MAX_CHARS]``) so a 20-char filename displays fully
+        without ellipsis when there's room. Qt's standard layout
+        squeezes the combos when the band's parent (the right
+        toolbar in ``MainWindow._build_menu``) runs out of horizontal
+        space — no manual width clamp on our side.
         """
+        longest = max((len(opt.name) for opt in options), default=0)
+        chars = max(_COMBO_MIN_CHARS, min(_COMBO_MAX_CHARS, longest + 2))
         for combo, current in (
             (self._combo_a, a_id), (self._combo_b, b_id),
         ):
@@ -378,6 +395,7 @@ class CompareBand(QFrame):  # type: ignore[misc]
                 idx = combo.findData(current)
                 if idx >= 0:
                     combo.setCurrentIndex(idx)
+            combo.setMinimumContentsLength(chars)
             combo.blockSignals(False)
 
     def set_mode(self, mode: str) -> None:
