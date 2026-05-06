@@ -14,7 +14,6 @@ import numpy as np
 from PySide6.QtCore import QEvent, QObject, Qt
 from PySide6.QtGui import QCursor
 
-from img_player.compare.compose import compose
 from img_player.compare.state import (
     MODE_HORIZONTAL,
     MODE_OPACITY,
@@ -117,6 +116,9 @@ def toggle_compare(app: ImgPlayerApp) -> None:
         # Drop the per-layer decoder caches so a re-entry doesn't
         # paint stale pixels (rare, but cheap).
         app._compare_decoder.invalidate()
+        # Disable the compare shader so the viewport falls back to
+        # the regular single-texture path on its next paint.
+        app._window.viewer.gl.clear_compare()
     # Either way: trigger a redisplay so the viewport reflects the
     # new mode (compare overlay or back to the normal composite).
     app._redisplay_current()
@@ -151,7 +153,9 @@ def set_mode(app: ImgPlayerApp, mode: str) -> None:
         return
     state.mode = mode
     app._window.compare_band.set_mode(mode)
-    app._redisplay_current()
+    # GPU path: just push the new mode uniform, no re-upload, no
+    # numpy compose. The textures already on the GPU stay valid.
+    _push_uniforms(app)
 
 
 def set_seam(app: ImgPlayerApp, seam: float) -> None:
@@ -161,7 +165,7 @@ def set_seam(app: ImgPlayerApp, seam: float) -> None:
     # value (the signal came from there). Drag-from-viewer routes
     # through ``set_seam_from_viewport`` which DOES re-feed the
     # slider so the two stay in sync.
-    app._redisplay_current()
+    _push_uniforms(app)
 
 
 def set_seam_from_viewport(app: ImgPlayerApp, seam: float) -> None:
@@ -180,15 +184,38 @@ def toggle_swap(app: ImgPlayerApp) -> None:
     state = app._compare_state
     state.swap_showing_b = not state.swap_showing_b
     app._window.compare_band.set_swap_showing_b(state.swap_showing_b)
-    app._redisplay_current()
+    _push_uniforms(app)
 
 
 def swap_layers(app: ImgPlayerApp) -> None:
-    """Permute A and B in the dropdowns + state."""
+    """Permute A and B in the dropdowns + state.
+
+    This swaps the underlying textures (A → B and vice versa), so
+    we re-run ``_redisplay_current`` to reupload — a uniform update
+    alone wouldn't reflect the new ids.
+    """
     state = app._compare_state
     state.layer_a_id, state.layer_b_id = state.layer_b_id, state.layer_a_id
     refresh_band_layers(app)
     app._redisplay_current()
+
+
+def _push_uniforms(app: ImgPlayerApp) -> None:
+    """Update the GL viewport's compare-mode uniforms in place.
+
+    Called from the seam / mode / swap setters when only the shader
+    config has changed (= layer textures are still valid). Cheap:
+    one int + one float + a viewport repaint, no upload, no compose.
+    """
+    state = app._compare_state
+    if not state.is_active():
+        # Compare just got turned off — drop the overlay entirely.
+        app._window.viewer.gl.clear_compare()
+        app._redisplay_current()
+        return
+    app._window.viewer.gl.set_compare_state(
+        _compare_shader_mode(state), state.seam,
+    )
 
 
 def nudge_seam(app: ImgPlayerApp, delta: float) -> None:
@@ -234,10 +261,15 @@ def set_seam_from_pointer(
 def render_compare(app: ImgPlayerApp, master_frame: int) -> bool:
     """Try to render the compare overlay for ``master_frame``.
 
-    Returns ``True`` when the overlay handled the upload (caller
-    should skip the normal display path); ``False`` when compare
-    isn't active or both layer buffers couldn't be obtained, in
-    which case the caller falls through to the standard composite.
+    GPU path: uploads layer A as the regular image texture and
+    layer B as a second texture, then sets the compare-mode uniform
+    on the GL viewport. The shader does the wipe / opacity blend
+    per fragment, so a subsequent seam drag is uniform-only — no
+    re-upload, no compose. Returns ``True`` when the overlay handled
+    the upload (caller should skip the normal display path);
+    ``False`` when compare isn't active or both layer buffers
+    couldn't be obtained, in which case the caller falls through
+    to the standard composite.
     """
     state = app._compare_state
     if not state.is_active():
@@ -251,32 +283,64 @@ def render_compare(app: ImgPlayerApp, master_frame: int) -> bool:
         return False
     arr_a = app._compare_decoder.decode(layer_a, master_frame)
     arr_b = app._compare_decoder.decode(layer_b, master_frame)
-    # Out-of-range fallbacks: if only one is available, draw it
-    # alone; if neither, give up and let the normal path try.
+    # Out-of-range fallbacks: if only one buffer is available, paint
+    # it as a normal frame and disable the compare overlay so the
+    # shader doesn't try to read an empty B texture. If neither, give
+    # up and let the normal path try.
     if arr_a is None and arr_b is None:
         return False
+    gl = app._window.viewer.gl
     if arr_a is None:
-        composed = arr_b
-    elif arr_b is None:
-        composed = arr_a
-    else:
-        try:
-            composed = compose(
-                arr_a, arr_b,
-                mode=state.mode,
-                seam=state.seam,
-                swap_showing_b=state.swap_showing_b,
-            )
-        except Exception:
-            log.exception("[compare] compose failed at master frame %d", master_frame)
-            return False
-    if composed.ndim != 3:
-        return False
-    if composed.shape[2] > 4:
-        composed = composed[:, :, :4]
-    composed = _ensure_contiguous(composed)
-    app._window.viewer.gl.set_frame(composed)
+        gl.clear_compare()
+        gl.set_frame(_ensure_rgb_or_rgba(arr_b))
+        return True
+    if arr_b is None:
+        gl.clear_compare()
+        gl.set_frame(_ensure_rgb_or_rgba(arr_a))
+        return True
+    # Both layers available — push them to GL and set the compare
+    # uniforms. The shader does the actual blend.
+    gl.set_frame(_ensure_rgb_or_rgba(arr_a))
+    gl.set_compare_b(_ensure_rgb_or_rgba(arr_b))
+    gl.set_compare_state(_compare_shader_mode(state), state.seam)
     return True
+
+
+# Mapping from CompareState mode tokens + swap_showing_b to the
+# shader's int code (cf. fragment_template.glsl uCompareMode).
+_SHADER_MODE_OFF = 0
+_SHADER_MODE_VERTICAL = 1
+_SHADER_MODE_HORIZONTAL = 2
+_SHADER_MODE_OPACITY = 3
+_SHADER_MODE_SOLO_B = 4
+
+
+def _compare_shader_mode(state: CompareState) -> int:
+    """Translate ``CompareState`` to the fragment shader's int code.
+
+    The Solo-B override (``swap_showing_b``) takes priority over the
+    blend mode — same semantics as :func:`compose.compose`.
+    """
+    if state.swap_showing_b:
+        return _SHADER_MODE_SOLO_B
+    if state.mode == MODE_VERTICAL:
+        return _SHADER_MODE_VERTICAL
+    if state.mode == MODE_HORIZONTAL:
+        return _SHADER_MODE_HORIZONTAL
+    if state.mode == MODE_OPACITY:
+        return _SHADER_MODE_OPACITY
+    return _SHADER_MODE_OFF
+
+
+def _ensure_rgb_or_rgba(arr: np.ndarray) -> np.ndarray:
+    """Drop any extra channels and ensure C-contiguous storage so
+    ``GLViewport.set_frame`` accepts the buffer (it requires HxWx3
+    or HxWx4)."""
+    if arr.ndim != 3:
+        return arr  # caller will fail loudly if this isn't HxWxC
+    if arr.shape[2] > 4:
+        arr = arr[:, :, :4]
+    return _ensure_contiguous(arr)
 
 
 def _ensure_contiguous(arr: np.ndarray) -> np.ndarray:
@@ -364,14 +428,12 @@ class _ViewportSeamFilter(QObject):
                 self._apply_absolute(watched, event)
             else:
                 self._apply_delta(watched, event)
-            # Force a synchronous repaint so the seam line catches up
-            # with the cursor on the same event tick. ``set_frame``
-            # only calls ``update`` which schedules an async paint —
-            # at fast mouse-drag rates Qt can stack 2-3 mouse-move
-            # events between paints, producing visible lag between
-            # cursor and seam. ``repaint`` flushes the pending GL
-            # upload before returning.
-            self._app._window.viewer.gl.repaint()
+            # GPU compare path: the seam update is uniform-only (no
+            # numpy compose, no GL upload), so the regular ``update``
+            # scheduled inside ``set_compare_state`` is enough — no
+            # need for a synchronous ``repaint`` to fight a slow
+            # compose. Qt's natural paint coalescing handles fast
+            # drags cleanly.
             return True
         if (
             et == QEvent.Type.MouseButtonRelease

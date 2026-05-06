@@ -363,6 +363,26 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
         self._last_upload_gpu_us: float | None = None
         self._last_upload_gpu_pending: bool = False
 
+        # Compare-overlay state (v1.2). When ``_compare_mode != 0``
+        # the fragment shader picks pixels from ``uImage`` (= layer
+        # A, uploaded via the existing ``set_frame``) AND ``uImageB``
+        # (= layer B, uploaded via ``set_compare_b``) according to
+        # the wipe / opacity mode + the ``_compare_seam`` value.
+        # Mouse-drag updates ``_compare_seam`` only — no numpy
+        # compose, no per-event GL upload, just a uniform write +
+        # repaint. ``_pending_compare_b`` is the deferred upload
+        # target (mirrors ``_pending_frame``); ``_compare_b_alloc``
+        # tracks size for the texSubImage fast path.
+        self._compare_tex_b: int = 0
+        self._pending_compare_b: np.ndarray | None = None
+        self._compare_b_alloc: tuple[int, int, int] = (0, 0, 0)
+        # 0=off, 1=vert wipe, 2=horiz wipe, 3=opacity, 4=solo B.
+        self._compare_mode: int = 0
+        self._compare_seam: float = 0.5
+        # Seam line tint alpha (0 = no line). Only meaningful in
+        # wipe modes 1 and 2; the shader no-ops elsewhere.
+        self._compare_seam_line_alpha: float = 0.55
+
         # Drag-to-scrub state. The viewport doesn't own the playback
         # state — the controller does — so we just remember "where the
         # drag started, and what frame we were on then" and emit
@@ -418,6 +438,62 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
         if pixels.dtype not in (np.float16, np.float32):
             pixels = pixels.astype(np.float32, copy=False)
         self._pending_frame = np.ascontiguousarray(pixels)
+        self.update()
+
+    # ------------------------------------------------------------------ Compare overlay
+
+    def set_compare_b(self, pixels: np.ndarray) -> None:
+        """Upload the layer-B image used by the compare shader.
+
+        Same constraints as :meth:`set_frame` (HxWx3 or HxWx4,
+        float16/32). The actual GL upload runs deferred inside
+        ``paintGL`` so callers don't need to be on the GL thread.
+
+        Compare-mode keeps two textures alive at once: ``uImage``
+        (= layer A, set via :meth:`set_frame`) and ``uImageB`` (this
+        one). The fragment shader picks per-fragment between A and
+        B based on :meth:`set_compare_state`'s mode + seam, so a
+        seam drag is just a uniform update and a repaint.
+        """
+        if pixels.ndim != 3 or pixels.shape[2] not in (3, 4):
+            raise ValueError(f"Expected HxWx3 or HxWx4, got shape {pixels.shape}")
+        if pixels.dtype not in (np.float16, np.float32):
+            pixels = pixels.astype(np.float32, copy=False)
+        self._pending_compare_b = np.ascontiguousarray(pixels)
+        self.update()
+
+    def set_compare_state(
+        self,
+        mode: int,
+        seam: float,
+        seam_line_alpha: float = 0.55,
+    ) -> None:
+        """Configure the compare shader uniforms.
+
+        ``mode`` is one of:
+          0 — off (= ignore B, use A as before)
+          1 — vertical wipe (left = A, right = B at ``seam``)
+          2 — horizontal wipe (top = A, bottom = B at ``seam``)
+          3 — opacity blend (linear mix(A, B, seam))
+          4 — solo B (= show only B regardless of seam)
+        ``seam`` is the wipe / opacity position in [0, 1].
+        ``seam_line_alpha`` controls the visible seam stripe in
+        wipe modes — 0 hides it.
+
+        All three values are pure uniforms — no upload, no compose.
+        Calling this on every mouse-move during a drag is safe.
+        """
+        self._compare_mode = int(mode)
+        self._compare_seam = max(0.0, min(1.0, float(seam)))
+        self._compare_seam_line_alpha = max(0.0, min(1.0, float(seam_line_alpha)))
+        self.update()
+
+    def clear_compare(self) -> None:
+        """Disable compare overlay — sets mode to 0 + drops any
+        pending B upload. Doesn't free the underlying GL texture
+        (cheap to keep allocated for the next compare entry)."""
+        self._compare_mode = 0
+        self._pending_compare_b = None
         self.update()
 
     def clear_image(self) -> None:
@@ -722,6 +798,7 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
         GL.glClearColor(*self.DEFAULT_BG)
         self._make_fullscreen_quad()
         self._make_image_texture()
+        self._make_compare_texture()
         # Late-bind hook: now that the GL context exists, app.py can
         # re-run the perf tune with the real GPU classification (slice 4).
         # Connecting handlers were attached at app boot; the signal is
@@ -761,6 +838,10 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
             self._pending_frame = None
             had_upload = True
 
+        if self._pending_compare_b is not None:
+            self._upload_compare_b(self._pending_compare_b)
+            self._pending_compare_b = None
+
         if self._program == 0 or self._image_size == (0, 0):
             if bench_enabled and had_upload:
                 width, height = self._image_size
@@ -793,6 +874,27 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
             GL.glBindTexture(GL.GL_TEXTURE_3D, tex_id)
             self._set_uniform_int(name, unit)
             unit += 1
+
+        # Layer-B texture for compare overlay. Bound after the LUTs
+        # so it doesn't fight for unit 1+. Even when compare is off
+        # we still bind something here — the shader's
+        # ``texture(uImageB, …)`` call would otherwise read from an
+        # unbound sampler on some drivers (undefined behaviour). The
+        # mode uniform is what gates the actual lookup, so binding
+        # the same A texture here when compare is off is harmless
+        # (the shader simply doesn't sample uImageB in that case).
+        GL.glActiveTexture(GL.GL_TEXTURE0 + unit)
+        GL.glBindTexture(
+            GL.GL_TEXTURE_2D,
+            self._compare_tex_b if self._compare_tex_b else self._image_tex,
+        )
+        self._set_uniform_int("uImageB", unit)
+        unit += 1
+        self._set_uniform_int("uCompareMode", self._compare_mode)
+        self._set_uniform_float("uCompareSeam", self._compare_seam)
+        self._set_uniform_float(
+            "uCompareSeamLineAlpha", self._compare_seam_line_alpha,
+        )
 
         self._set_uniform_float("uExposure", self._color_params.exposure)
         self._set_uniform_float("uGamma", self._color_params.gamma)
@@ -852,6 +954,22 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
     def _make_image_texture(self) -> None:
         self._image_tex = GL.glGenTextures(1)
         GL.glBindTexture(GL.GL_TEXTURE_2D, self._image_tex)
+        GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MIN_FILTER, GL.GL_LINEAR)
+        GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MAG_FILTER, GL.GL_LINEAR)
+        GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_S, GL.GL_CLAMP_TO_EDGE)
+        GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_T, GL.GL_CLAMP_TO_EDGE)
+
+    def _make_compare_texture(self) -> None:
+        """Allocate the layer-B texture used by the compare shader.
+
+        Same filter / wrap settings as the main image texture so the
+        wipe doesn't show a seam-edge artefact between the two
+        sources at the boundary. Storage is allocated lazily on the
+        first ``_upload_compare_b`` call (we don't know the image
+        size yet here).
+        """
+        self._compare_tex_b = GL.glGenTextures(1)
+        GL.glBindTexture(GL.GL_TEXTURE_2D, self._compare_tex_b)
         GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MIN_FILTER, GL.GL_LINEAR)
         GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MAG_FILTER, GL.GL_LINEAR)
         GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_S, GL.GL_CLAMP_TO_EDGE)
@@ -961,6 +1079,43 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
         )
         self._last_upload_gpu_us = None
         self._last_upload_gpu_pending = False
+
+    def _upload_compare_b(self, pixels: np.ndarray) -> None:
+        """Push the layer-B image to ``_compare_tex_b``.
+
+        Stripped-down version of :meth:`_upload_image` — same dtype
+        and format handling, but no PBO ring (compare-mode entry is a
+        once-per-frame_changed event, the bulk of paints during a
+        seam drag are uniform-only and don't touch the texture). The
+        first allocation goes through ``glTexImage2D``; subsequent
+        same-sized uploads use ``glTexSubImage2D``.
+        """
+        height, width, channels = pixels.shape
+        gl_format = GL.GL_RGBA if channels == 4 else GL.GL_RGB
+        gl_type = GL.GL_HALF_FLOAT if pixels.dtype == np.float16 else GL.GL_FLOAT
+        internal = GL.GL_RGBA16F if channels == 4 else GL.GL_RGB16F
+
+        GL.glPixelStorei(GL.GL_UNPACK_ALIGNMENT, 1)
+        GL.glBindTexture(GL.GL_TEXTURE_2D, self._compare_tex_b)
+        first_alloc = (width, height, channels) != self._compare_b_alloc
+        if first_alloc:
+            GL.glTexImage2D(
+                GL.GL_TEXTURE_2D,
+                0,
+                internal,
+                width,
+                height,
+                0,
+                gl_format,
+                gl_type,
+                pixels,
+            )
+            self._compare_b_alloc = (width, height, channels)
+            return
+        GL.glTexSubImage2D(
+            GL.GL_TEXTURE_2D, 0, 0, 0,
+            width, height, gl_format, gl_type, pixels,
+        )
 
     # ------------------------------------------------------------------ Shader / LUT setup
 

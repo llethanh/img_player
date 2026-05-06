@@ -33,10 +33,83 @@ uniform float uChannelIsolateLuminance;
 // content never sees it — no mode flag needed.
 uniform float uCheckerScale;
 
+// ---- Compare overlay (v1.2) -----------------------------------------
+// Two-layer A/B compare lives in the shader so dragging the seam is
+// a uniform-update, not a full numpy compose + GL upload. ``uImage``
+// holds layer A (the existing single-image texture); ``uImageB``
+// holds layer B (uploaded once per frame_changed via
+// ``GLViewport.set_compare_b``). ``uCompareMode`` selects the wipe
+// shape:
+//   0 = compare off (= use uImage as before, ignore uImageB)
+//   1 = vertical wipe — left half from A, right half from B at seam
+//   2 = horizontal wipe — top half from A, bottom half from B
+//   3 = opacity blend — linear mix(A, B, seam)
+//   4 = solo B — show only B regardless of seam
+// ``uCompareSeam`` is the wipe / blend position in [0..1] (texture
+// coords). ``uCompareSeamLineAlpha`` is the seam line's blend
+// strength against an accent-orange tint; 0 disables the line.
+uniform sampler2D uImageB;
+uniform int uCompareMode;
+uniform float uCompareSeam;
+uniform float uCompareSeamLineAlpha;
+
 @@OCIO_INJECT@@
 
+// Pick the compare-mode source pixel for the current fragment. When
+// compare is off this is just texture(uImage, …); for wipes it's a
+// branch on vTexCoord; for opacity it's a linear mix.
+vec4 compare_pick() {
+    vec4 pa = texture(uImage, vTexCoord);
+    if (uCompareMode == 0) {
+        return pa;
+    }
+    vec4 pb = texture(uImageB, vTexCoord);
+    if (uCompareMode == 4) {
+        // Solo B — used by the band's A↔B toggle.
+        return pb;
+    }
+    if (uCompareMode == 3) {
+        // Opacity blend — same math as compose.MODE_OPACITY.
+        return mix(pa, pb, clamp(uCompareSeam, 0.0, 1.0));
+    }
+    if (uCompareMode == 1) {
+        // Vertical wipe. Left half (vTexCoord.x < seam) is A, right is B.
+        return vTexCoord.x < uCompareSeam ? pa : pb;
+    }
+    if (uCompareMode == 2) {
+        // Horizontal wipe. Top half is A, bottom is B. The vertex
+        // shader already flipped vTexCoord.y so y=0 is the top of
+        // the image (= row 0 of the numpy array). seam < y means
+        // we're below the seam line → B.
+        return vTexCoord.y < uCompareSeam ? pa : pb;
+    }
+    return pa;
+}
+
+// Apply a thin accent-orange tint at the wipe seam so the user can
+// see the boundary. Width is one screen pixel via fwidth(); when
+// compare mode isn't a wipe (= no spatial seam) we no-op.
+vec3 paint_seam_tint(vec3 rgb) {
+    if (uCompareSeamLineAlpha <= 0.0) {
+        return rgb;
+    }
+    if (uCompareMode != 1 && uCompareMode != 2) {
+        return rgb;
+    }
+    float coord = (uCompareMode == 1) ? vTexCoord.x : vTexCoord.y;
+    float pixel_w = (uCompareMode == 1) ? fwidth(vTexCoord.x)
+                                        : fwidth(vTexCoord.y);
+    float dist = abs(coord - uCompareSeam);
+    if (dist <= pixel_w) {
+        // Accent orange (= H.ACCENT) blended at the configured alpha.
+        vec3 accent = vec3(232.0 / 255.0, 144.0 / 255.0, 28.0 / 255.0);
+        return mix(rgb, accent, uCompareSeamLineAlpha);
+    }
+    return rgb;
+}
+
 void main() {
-    vec4 pixel = texture(uImage, vTexCoord);
+    vec4 pixel = compare_pick();
     // Capture the raw alpha BEFORE OCIO. Most OCIO transforms leave
     // alpha untouched but some configs route it through display
     // tone-mapping curves — would corrupt the transparency composite
@@ -77,5 +150,8 @@ void main() {
     vec3 checker = mix(vec3(0.40), vec3(0.55), c);
     float a = clamp(raw_alpha, 0.0, 1.0);
     vec3 final_rgb = masked * uChannelMask.a + checker * (1.0 - a);
+    // Compare seam line — painted in display space so it stays a
+    // consistent thickness regardless of zoom or OCIO output range.
+    final_rgb = paint_seam_tint(final_rgb);
     fragColor = vec4(final_rgb, 1.0);
 }
