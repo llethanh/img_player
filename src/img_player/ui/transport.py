@@ -265,16 +265,94 @@ class TransportBar(QWidget):  # type: ignore[misc]
         self._reload_btn.setEnabled(False)
 
         # --- Compare toggle (v1.2) ------------------------------------
-        # ⇄ shows the two-layer compare band on top of the viewer.
+        # Split-view icon (rectangle, vertical seam, A | B labels) in
+        # the warm accent so it stands out on the menu-bar row as a
+        # mode toggle rather than a generic transport control.
         # Checkable: stays "down" while compare mode is active.
         # Disabled until the stack has at least two layers — there's
         # nothing meaningful to compare against otherwise.
-        self._compare_btn = _text_button(
-            "⇄", "Compare two layers (W)"
+        self._compare_btn = _icon_button(
+            make_icon(
+                "compare",
+                color=H.ACCENT,
+                size=22,
+                disabled_color=H.TEXT_DISABLED,
+            ),
+            "Compare two layers (W)",
         )
+        # Render the icon larger inside its button than the
+        # default G.ICON_SIZE (18) — this mark fills the button
+        # less visually than the simpler arrow / disk glyphs and
+        # was reading as "tiny" by comparison. 22 px gives it the
+        # same on-screen weight as the other buttons.
+        self._compare_btn.setIconSize(QSize(22, 22))
         self._compare_btn.setCheckable(True)
         self._compare_btn.clicked.connect(self.compare_toggled.emit)
-        self._compare_btn.setEnabled(False)
+        # Use ``border`` shorthand (not bare ``border-color``) so Qt
+        # draws all 4 sides at the same width / style — bare
+        # ``border-color`` left the bottom edge unrendered in some
+        # paint paths. Add ``background-color`` so the rule isn't
+        # ambiguous about the surface bg either; padding stays from
+        # the global cascade.
+        # Pin every property explicitly. The minute one is left to
+        # the global cascade Qt's QSS engine seems to drop the
+        # bottom edge on this checkable QPushButton (probably a
+        # native-style merge artefact specific to the corner-widget
+        # context). Including ``min-width`` / ``min-height`` /
+        # ``padding`` / ``border-radius`` alongside the explicit
+        # per-side borders has been the only reliable way to keep
+        # all four edges painted.
+        _border = f"1px solid {H.ACCENT_DIM}"
+        _border_h = f"1px solid {H.ACCENT}"
+        _border_chk = f"1px solid {H.ACCENT_BRIGHT}"
+        # Disabled state — desaturated dim border + muted bg, so the
+        # button reads "not actionable yet" when the layer stack only
+        # has 0 or 1 entry. Uses a neutral border (not BORDER_SUBTLE
+        # which collapses into the QMenuBar's bottom rule) so the
+        # 4 edges stay visible. Icon is auto-greyed by Qt's Disabled
+        # pixmap mode (handled in icons.make_icon).
+        _border_dis = f"1px solid {H.BORDER_DEFAULT}"
+        self._compare_btn.setStyleSheet(
+            f"QPushButton {{"
+            f"  background-color: {H.BG_SURFACE};"
+            f"  color: {H.TEXT_PRIMARY};"
+            f"  border-top: {_border};"
+            f"  border-bottom: {_border};"
+            f"  border-left: {_border};"
+            f"  border-right: {_border};"
+            f"  border-radius: 3px;"
+            f"  padding: 0;"
+            f"}}"
+            f"QPushButton:hover {{"
+            f"  background-color: {H.BG_HOVER};"
+            f"  border-top: {_border_h};"
+            f"  border-bottom: {_border_h};"
+            f"  border-left: {_border_h};"
+            f"  border-right: {_border_h};"
+            f"}}"
+            f"QPushButton:checked {{"
+            f"  background-color: {H.BG_SELECT};"
+            f"  border-top: {_border_chk};"
+            f"  border-bottom: {_border_chk};"
+            f"  border-left: {_border_chk};"
+            f"  border-right: {_border_chk};"
+            f"}}"
+            f"QPushButton:disabled {{"
+            f"  background-color: {H.BG_BASE};"
+            f"  color: {H.TEXT_DISABLED};"
+            f"  border-top: {_border_dis};"
+            f"  border-bottom: {_border_dis};"
+            f"  border-left: {_border_dis};"
+            f"  border-right: {_border_dis};"
+            f"}}"
+        )
+        # NB: stays ENABLED at all times so it carries the same
+        # frame as reload / export — the disabled-state QSS
+        # (BORDER_SUBTLE) collides visually with QMenuBar's own
+        # border-bottom and erases the button's bottom edge.
+        # The "needs ≥2 layers" gate lives in the compare-toggle
+        # handler instead (it surfaces a status hint when the
+        # stack isn't ready).
 
         # --- FPS ------------------------------------------------------------
         # Plain editable line — no dropdown of presets. The user
@@ -492,8 +570,13 @@ class TransportBar(QWidget):  # type: ignore[misc]
         return self._compare_btn
 
     def set_compare_enabled(self, enabled: bool) -> None:
-        """Enable / disable the compare-mode toggle. The button is
-        gated by the layer count (need ≥ 2 layers to compare)."""
+        """Grey out the compare button when the layer stack has < 2
+        entries — there's nothing to compare against then. The local
+        ``:disabled`` QSS rule uses ``BORDER_DEFAULT`` (not the dimmer
+        ``BORDER_SUBTLE`` which would collapse into ``QMenuBar``'s own
+        ``border-bottom``) so all 4 edges of the disabled button stay
+        legible. The desaturated icon is provided by Qt's Disabled
+        pixmap mode (see ``make_icon``)."""
         self._compare_btn.setEnabled(bool(enabled))
 
     def set_compare_checked(self, on: bool) -> None:

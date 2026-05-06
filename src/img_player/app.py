@@ -784,7 +784,7 @@ class ImgPlayerApp:
         self._window.transport.compare_toggled.connect(
             lambda: toggle_compare(self),
         )
-        band = self._window.viewer.compare_band
+        band = self._window.compare_band
         band.layer_a_picked.connect(lambda lid: set_layer_a(self, lid))
         band.layer_b_picked.connect(lambda lid: set_layer_b(self, lid))
         band.mode_picked.connect(lambda mode: set_mode(self, mode))
@@ -1915,6 +1915,23 @@ class ImgPlayerApp:
             self._controller.play()
 
     def _show_best_available(self, frame: int) -> None:
+        # Compare-mode early-out: same hijack as ``_on_frame_changed``.
+        # Without this, scrubbing while compare is active fires
+        # ``_show_best_available`` from the scrub fast-path (which
+        # bypasses the controller's debounced seek) and uploads the
+        # plain cache pixel data — i.e. only layer A, no wipe — until
+        # the debounced seek lands and ``_on_frame_changed`` finally
+        # paints the compare result. The user sees a flicker between
+        # "just A" and "A vs B at the seam" with each scrub tick.
+        # Routing through ``render_compare`` here keeps the wipe
+        # painted continuously under the cursor.
+        if self._compare_state.is_active():
+            from img_player.compare_handler import render_compare
+            if render_compare(self, frame):
+                self._last_displayed = frame
+                return
+            # else: fall through to the cache path so the user still
+            # sees something if the compare decode failed.
         # Video layer? Decode synchronously so scrub gives the user
         # frame-accurate feedback under the cursor instead of the
         # MISSING-FRAME placeholder (the cache never has anything for
@@ -2636,7 +2653,7 @@ class ImgPlayerApp:
             self._compare_state = restored
             self._compare_decoder.invalidate()
             refresh_band_layers(self)
-            band = self._window.viewer.compare_band
+            band = self._window.compare_band
             band.set_mode(restored.mode)
             band.set_seam(restored.seam)
             if restored.enabled:

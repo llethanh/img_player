@@ -32,10 +32,10 @@ COMPARE_MODES: tuple[str, ...] = (
     MODE_VERTICAL, MODE_HORIZONTAL, MODE_OPACITY,
 )
 
-# Default mode at compare-mode entry. Opacity at seam=0 (= full A)
-# is the most neutral starting point — the user can drag the seam
-# right to fade in B, or pick a wipe mode for spatial comparison.
-DEFAULT_MODE = MODE_OPACITY
+# Default mode at compare-mode entry. Vertical split — the most
+# common A/B review pattern (left vs right at a draggable seam).
+# The user can switch to horizontal / opacity from the band.
+DEFAULT_MODE = MODE_VERTICAL
 
 # Default seam / opacity = 50% — the most common starting position
 # for a wipe ("show me half-and-half"). Slider lives in [0, 1].

@@ -98,6 +98,80 @@ _TEMPLATES: dict[str, str] = {
         '<polygon points="2,2 10,8 2,14" fill="{color}"/>'
         "</svg>"
     ),
+    # Compare two layers — a rectangle split vertically by a seam,
+    # left half filled and labelled ``A``, right half outlined and
+    # labelled ``B``. Reads instantly as "compare two sides". The
+    # ``A`` punches dark on the filled half (hard-coded #1A1A1A so
+    # contrast is preserved regardless of the dynamic icon colour);
+    # the ``B`` rides the icon colour against the empty half. The
+    # outer rect is enlarged to nearly fill the 16×16 viewBox so the
+    # glyphs have room to breathe at small render sizes.
+    "compare": (
+        '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">'
+        # Larger content — fills ~75% of the viewBox vertically so
+        # the mark reads at small icon sizes. The rect occupies the
+        # full width minus a tiny inset; A / B labels grow
+        # proportionally so they're legible at the target render
+        # sizes.
+        '<rect x="1.4" y="2.6" width="13.2" height="10.8" rx="1.2" '
+        'fill="none" stroke="{color}" stroke-width="1.4"/>'
+        '<rect x="2.1" y="3.3" width="5.9" height="9.4" '
+        'fill="{color}"/>'
+        '<text x="5.0" y="10.4" font-family="Segoe UI, Arial, sans-serif" '
+        'font-size="7" font-weight="700" fill="#1A1A1A" '
+        'text-anchor="middle">A</text>'
+        '<text x="11.0" y="10.4" font-family="Segoe UI, Arial, sans-serif" '
+        'font-size="7" font-weight="700" fill="{color}" '
+        'text-anchor="middle">B</text>'
+        # Central seam — small overshoot above and below the rect
+        # so it reads as a draggable handle going through the
+        # image.
+        '<line x1="8" y1="1.6" x2="8" y2="14.4" '
+        'stroke="{color}" stroke-width="1.6" stroke-linecap="square"/>'
+        "</svg>"
+    ),
+    # Vertical compare — same shape as the ``compare`` icon above
+    # but without the A/B labels: just the two halves of an image
+    # separated by a vertical seam handle that slightly overshoots
+    # at top and bottom. Used by the compare-band's "Vert" mode
+    # toggle.
+    "compare_vert": (
+        '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">'
+        '<rect x="1.4" y="2.6" width="13.2" height="10.8" rx="1.2" '
+        'fill="none" stroke="{color}" stroke-width="1.4"/>'
+        '<rect x="2.1" y="3.3" width="5.9" height="9.4" '
+        'fill="{color}"/>'
+        '<line x1="8" y1="1.6" x2="8" y2="14.4" '
+        'stroke="{color}" stroke-width="1.6" stroke-linecap="square"/>'
+        "</svg>"
+    ),
+    # Horizontal compare — same outer rect but the split runs
+    # horizontally: top half filled, bottom half empty, seam handle
+    # overshoots left and right.
+    "compare_horiz": (
+        '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">'
+        '<rect x="1.4" y="2.6" width="13.2" height="10.8" rx="1.2" '
+        'fill="none" stroke="{color}" stroke-width="1.4"/>'
+        '<rect x="2.1" y="3.3" width="11.8" height="4.4" '
+        'fill="{color}"/>'
+        '<line x1="0.6" y1="8" x2="15.4" y2="8" '
+        'stroke="{color}" stroke-width="1.6" stroke-linecap="square"/>'
+        "</svg>"
+    ),
+    # Opacity / blend — two rounded squares overlapping, with the
+    # intersection filled solid to suggest the "common alpha"
+    # region between layers. Pure outline elsewhere keeps the icon
+    # readable at small sizes.
+    "opacity": (
+        '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">'
+        '<rect x="1.4" y="1.4" width="9.2" height="9.2" rx="1.4" '
+        'fill="none" stroke="{color}" stroke-width="1.4"/>'
+        '<rect x="5.4" y="5.4" width="9.2" height="9.2" rx="1.4" '
+        'fill="none" stroke="{color}" stroke-width="1.4"/>'
+        '<rect x="5.4" y="5.4" width="5.2" height="5.2" '
+        'fill="{color}"/>'
+        "</svg>"
+    ),
     # Hamburger / dock toggle. Three horizontal bars at y=3, y=7, y=11
     # (height 2 each → centres at 4 / 8 / 12), so the gaps above/below
     # each bar are identical. The Unicode glyph U+2630 we used to
@@ -222,7 +296,31 @@ def _device_pixel_ratio() -> float:
 
 
 @lru_cache(maxsize=64)
-def make_icon(name: str, color: str = H.TEXT_PRIMARY, size: int = 18) -> QIcon:
+def _render_pixmap(name: str, color: str, size: int) -> QPixmap:
+    """Internal: render the named SVG template into a pixmap of the
+    given logical ``size`` at the system DPR."""
+    template = _TEMPLATES[name]
+    xml = template.format(color=color)
+    renderer = QSvgRenderer(QByteArray(xml.encode("utf-8")))
+    dpr = _device_pixel_ratio()
+    physical = max(1, round(size * dpr))
+    pixmap = QPixmap(physical, physical)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    try:
+        renderer.render(painter)
+    finally:
+        painter.end()
+    pixmap.setDevicePixelRatio(dpr)
+    return pixmap
+
+
+def make_icon(
+    name: str,
+    color: str = H.TEXT_PRIMARY,
+    size: int = 18,
+    disabled_color: str | None = None,
+) -> QIcon:
     """Return a ``QIcon`` for a named template, painted in ``color``.
 
     Parameters
@@ -236,27 +334,28 @@ def make_icon(name: str, color: str = H.TEXT_PRIMARY, size: int = 18) -> QIcon:
         Logical pixel size of the resulting icon. Hi-DPI handling is
         automatic — on a 200 % display we render at ``size * dpr`` and
         attach the DPR to the pixmap so Qt downscales cleanly.
+    disabled_color:
+        Optional hex string used to paint the icon in its disabled
+        state. Default ``None`` → Qt grays the Normal pixmap (= the
+        usual "icon on a disabled QPushButton" look). Pass e.g.
+        ``H.ACCENT_DIM`` to keep a coloured silhouette when disabled
+        instead of losing the icon's identity to grayscale.
 
-    Caching: the icon is memoized on ``(name, color, size)``. We expect
-    at most a few dozen unique combinations across the whole app.
+    Caching: the icon is memoized on ``(name, color, size,
+    disabled_color)``. We expect at most a few dozen unique
+    combinations across the whole app.
     """
-    template = _TEMPLATES[name]
-    xml = template.format(color=color)
-    renderer = QSvgRenderer(QByteArray(xml.encode("utf-8")))
-
-    dpr = _device_pixel_ratio()
-    physical = max(1, round(size * dpr))
-    pixmap = QPixmap(physical, physical)
-    pixmap.fill(Qt.GlobalColor.transparent)
-
-    painter = QPainter(pixmap)
-    try:
-        renderer.render(painter)
-    finally:
-        painter.end()
-
-    pixmap.setDevicePixelRatio(dpr)
-    return QIcon(pixmap)
+    pixmap = _render_pixmap(name, color, size)
+    icon = QIcon(pixmap)
+    if disabled_color is not None:
+        disabled_pix = _render_pixmap(name, disabled_color, size)
+        icon.addPixmap(
+            disabled_pix, QIcon.Mode.Disabled, QIcon.State.Off,
+        )
+        icon.addPixmap(
+            disabled_pix, QIcon.Mode.Disabled, QIcon.State.On,
+        )
+    return icon
 
 
 def available_names() -> tuple[str, ...]:

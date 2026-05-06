@@ -14,7 +14,6 @@ from PySide6.QtWidgets import QStackedLayout, QWidget
 
 from img_player.render.gl_viewport import GLViewport
 from img_player.ui.brackets_overlay import BracketsOverlay
-from img_player.ui.compare_band import CompareBand
 from img_player.ui.drop_zone import (
     REPLACE_ACCENT,
     DropOverlay,
@@ -69,14 +68,6 @@ class ViewerWidget(QWidget):  # type: ignore[misc]
         self._info_band = InfoBand(self)
         self._info_band.raise_()
 
-        # Top-of-viewer compare band — hidden by default, shown by
-        # ``app.py`` when CompareState.enabled flips True. Sits as a
-        # child of self (not in the stacked layout) so we can pin it
-        # absolutely flush with the top edge.
-        self._compare_band = CompareBand(self)
-        self._compare_band.setVisible(False)
-        self._compare_band.raise_()
-
     @property
     def gl(self) -> GLViewport:
         return self._gl
@@ -89,23 +80,12 @@ class ViewerWidget(QWidget):  # type: ignore[misc]
     def info_band(self) -> InfoBand:
         return self._info_band
 
-    @property
-    def compare_band(self) -> CompareBand:
-        return self._compare_band
-
     def _reposition_info_band(self) -> None:
         """Pin the info band to the bottom edge of the viewer, full
         width. Visible / hidden state isn't touched here — the
         caller controls it."""
         h = self._info_band.height()
         self._info_band.setGeometry(0, self.height() - h, self.width(), h)
-
-    def _reposition_compare_band(self) -> None:
-        """Pin the compare band to the top edge of the viewer, full
-        width. Same lifecycle as the info band — visibility owned by
-        the caller (app.py)."""
-        h = self._compare_band.height()
-        self._compare_band.setGeometry(0, 0, self.width(), h)
 
     def resizeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         super().resizeEvent(event)
@@ -115,4 +95,3 @@ class ViewerWidget(QWidget):  # type: ignore[misc]
         if self._drop_overlay.isVisible():
             self._drop_overlay.setGeometry(self.rect())
         self._reposition_info_band()
-        self._reposition_compare_band()

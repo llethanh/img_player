@@ -54,7 +54,7 @@ def refresh_band_layers(app: ImgPlayerApp) -> None:
     the band's compose path then draws the remaining layer at full
     coverage.
     """
-    band = app._window.viewer.compare_band
+    band = app._window.compare_band
     options = available_layer_options(app)
     state: CompareState = app._compare_state
     valid_ids = {opt.layer_id for opt in options}
@@ -89,7 +89,7 @@ def toggle_compare(app: ImgPlayerApp) -> None:
         )
         return
     state.enabled = not state.enabled
-    band = app._window.viewer.compare_band
+    band = app._window.compare_band
     # Sync the transport button so its checked state always
     # reflects ``state.enabled`` regardless of how the toggle was
     # triggered (button click, W shortcut, ✕ on the band).
@@ -108,10 +108,10 @@ def toggle_compare(app: ImgPlayerApp) -> None:
         band.set_mode(state.mode)
         band.set_seam(state.seam)
         band.set_swap_showing_b(state.swap_showing_b)
-        band.setVisible(True)
+        app._window.set_compare_band_visible(True)
         band.raise_()
     else:
-        band.setVisible(False)
+        app._window.set_compare_band_visible(False)
         # Drop the per-layer decoder caches so a re-entry doesn't
         # paint stale pixels (rare, but cheap).
         app._compare_decoder.invalidate()
@@ -148,7 +148,7 @@ def set_mode(app: ImgPlayerApp, mode: str) -> None:
     if state.mode == mode:
         return
     state.mode = mode
-    app._window.viewer.compare_band.set_mode(mode)
+    app._window.compare_band.set_mode(mode)
     app._redisplay_current()
 
 
@@ -165,7 +165,7 @@ def set_seam(app: ImgPlayerApp, seam: float) -> None:
 def set_seam_from_viewport(app: ImgPlayerApp, seam: float) -> None:
     """Drag-on-image → mirror the new seam to the slider too."""
     set_seam(app, seam)
-    app._window.viewer.compare_band.set_seam(app._compare_state.seam)
+    app._window.compare_band.set_seam(app._compare_state.seam)
 
 
 def toggle_swap(app: ImgPlayerApp) -> None:
@@ -177,7 +177,7 @@ def toggle_swap(app: ImgPlayerApp) -> None:
     """
     state = app._compare_state
     state.swap_showing_b = not state.swap_showing_b
-    app._window.viewer.compare_band.set_swap_showing_b(state.swap_showing_b)
+    app._window.compare_band.set_swap_showing_b(state.swap_showing_b)
     app._redisplay_current()
 
 

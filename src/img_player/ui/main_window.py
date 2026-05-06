@@ -38,6 +38,7 @@ from img_player.color.ocio_manager import OCIOManager
 from img_player.comment.store import CommentStore
 from img_player.ui.color_panel import ColorPanel
 from img_player.ui.comment_panel import CommentPanel
+from img_player.ui.compare_band import CompareBand
 from img_player.ui.icons import make_icon
 from img_player.ui.theme import F, G, H, S
 from img_player.ui.timeline import Timeline
@@ -408,6 +409,28 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
     @property
     def viewer(self) -> ViewerWidget:
         return self._viewer
+
+    @property
+    def compare_band(self) -> CompareBand:
+        """Compare-mode toolbar — lives in the menu-bar's right corner
+        widget so it shares its row with File/Edit/View instead of
+        cropping the viewport. Hidden by default."""
+        return self._compare_band
+
+    def set_compare_band_visible(self, on: bool) -> None:
+        """Toggle the compare band's visibility AND force the menu-bar
+        row to recompute its geometry. A raw ``setVisible`` leaves the
+        corner widget's QHBoxLayout with stale size hints — the row
+        ends up the wrong height at startup and doesn't shrink back
+        when compare closes. ``updateGeometry`` + ``adjustSize`` on
+        the corner and the menu bar push the layout to re-flow."""
+        if self._compare_band.isVisible() == bool(on):
+            return
+        self._compare_band.setVisible(bool(on))
+        self._menu_corner.updateGeometry()
+        self._menu_corner.adjustSize()
+        self.menuBar().adjustSize()
+        self.menuBar().updateGeometry()
 
     @property
     def color_panel(self) -> ColorPanel:
@@ -820,6 +843,28 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         menu_bar.setCornerWidget(corner, Qt.Corner.TopRightCorner)
         self._burger_btn = burger
         self._menu_corner = corner
+
+        # --- Compare band — first slot of the right corner widget --------
+        # Used to live as a top-of-viewer overlay, cropping the display
+        # whenever compare mode was on. Re-homed into the menu-bar's
+        # right corner widget — first position, just to the left of
+        # reload/export — so it shares the menu-bar row instead of
+        # consuming viewport pixels. Hidden by default; the compare
+        # handler flips ``set_compare_band_visible`` on toggle. The
+        # explicit setter (instead of a raw ``setVisible``) is
+        # necessary because Qt's QHBoxLayout in the corner widget
+        # caches sizeHints on QMenuBar paint, and a bare visibility
+        # toggle leaves the row at the wrong height — looks "crushed"
+        # at startup and doesn't snap back when compare is closed.
+        # The setter forces ``updateGeometry`` + ``adjustSize`` on the
+        # corner and the menu bar after the toggle so the row re-flows
+        # immediately.
+        self._compare_band = CompareBand(corner)
+        sp = self._compare_band.sizePolicy()
+        sp.setRetainSizeWhenHidden(False)
+        self._compare_band.setSizePolicy(sp)
+        self._compare_band.setVisible(False)
+        wrap_layout.insertWidget(0, self._compare_band)
 
         # --- Help menu ----------------------------------------------------
         help_menu = menu_bar.addMenu("&Help")

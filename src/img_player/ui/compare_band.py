@@ -2,7 +2,7 @@
 
 UI surface for picking layers A / B, the compare mode (swap / vert /
 horiz / opacity) and the seam position. Sits as a child of the
-:class:`ViewerWidget` so it floats above the GL viewport in absolute
+:class:`MainWindow` so it floats above the GL viewport in absolute
 coords; visibility is toggled by ``app.py`` based on
 ``CompareState.enabled``.
 
@@ -16,7 +16,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QRectF, QSize, Qt, Signal
+from PySide6.QtGui import QBrush, QColor, QMouseEvent, QPainter, QPen
 from PySide6.QtWidgets import (
     QButtonGroup,
     QComboBox,
@@ -24,7 +25,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QSlider,
+    QSizePolicy,
     QWidget,
 )
 
@@ -34,15 +35,22 @@ from img_player.compare.state import (
     MODE_OPACITY,
     MODE_VERTICAL,
 )
-from img_player.ui.theme import G, H, S
+from img_player.ui.icons import make_icon
+from img_player.ui.theme import C, G, H, S
 
 
-# Friendly labels for the three blend modes — kept short so the band
-# stays compact at smaller viewport widths.
-_MODE_LABELS: dict[str, str] = {
-    MODE_VERTICAL: "Vert",
-    MODE_HORIZONTAL: "Horiz",
-    MODE_OPACITY: "Opacity",
+# Tooltips for each mode button — labels live as icons now.
+_MODE_TOOLTIPS: dict[str, str] = {
+    MODE_VERTICAL: "Vertical split",
+    MODE_HORIZONTAL: "Horizontal split",
+    MODE_OPACITY: "Opacity blend",
+}
+
+# Maps each mode token to the icon template name.
+_MODE_ICONS: dict[str, str] = {
+    MODE_VERTICAL: "compare_vert",
+    MODE_HORIZONTAL: "compare_horiz",
+    MODE_OPACITY: "opacity",
 }
 
 
@@ -54,8 +62,137 @@ class _LayerOption:
     name: str
 
 
+# ============================================================================
+# SeamBar — replacement for QSlider, looks like a progress bar with %
+# ============================================================================
+
+
+class SeamBar(QWidget):  # type: ignore[misc]
+    """Click/drag horizontal bar showing the seam position 0..1.
+
+    Visually a "loading bar": dark track, orange fill from the left
+    to the current value, centred percentage label rendered with the
+    inverse colour over the fill so the digits stay legible across
+    the boundary. Cleaner read than a thumb-on-track slider for the
+    A/B-wipe use case and plays better with the rest of the design
+    system (no native QSlider chrome to fight).
+    """
+
+    seam_changed = Signal(float)
+
+    BAR_W = 140
+    BAR_H = G.INPUT_H
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setFixedSize(self.BAR_W, self.BAR_H)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setSizePolicy(
+            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed,
+        )
+        self._value = 0.5
+        self._dragging = False
+
+    # ---- Public API ---------------------------------------------------
+
+    def value(self) -> float:
+        return self._value
+
+    def set_value(self, value: float) -> None:
+        clamped = max(0.0, min(1.0, float(value)))
+        if clamped == self._value:
+            return
+        self._value = clamped
+        self.update()
+
+    # ---- Mouse --------------------------------------------------------
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._dragging = True
+            self._update_from_x(event.position().x())
+            event.accept()
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if self._dragging:
+            self._update_from_x(event.position().x())
+            event.accept()
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._dragging = False
+            event.accept()
+
+    def _update_from_x(self, x: float) -> None:
+        if self.width() <= 0:
+            return
+        new = max(0.0, min(1.0, float(x) / float(self.width())))
+        if new != self._value:
+            self._value = new
+            self.update()
+            self.seam_changed.emit(new)
+
+    # ---- Paint --------------------------------------------------------
+
+    def paintEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        del event
+        from PySide6.QtGui import QPainterPath
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        rect = QRectF(0, 0, self.width(), self.height())
+        radius = float(G.RADIUS_MD)
+        track_rect = rect.adjusted(0.5, 0.5, -0.5, -0.5)
+
+        # Track (full width, dark fill).
+        painter.setPen(QPen(C.BORDER_DEFAULT, 1))
+        painter.setBrush(QBrush(C.BG_SURFACE))
+        painter.drawRoundedRect(track_rect, radius, radius)
+
+        # Filled portion (orange + bright outline matching the layer
+        # cache-bar idiom). Clipped to the rounded track so the fill
+        # keeps the corner radius on the left edge.
+        fill_w = max(0.0, rect.width() * self._value)
+        if fill_w > 0:
+            painter.save()
+            track_path = QPainterPath()
+            track_path.addRoundedRect(track_rect, radius, radius)
+            painter.setClipPath(track_path)
+            fill_rect = QRectF(rect.left(), rect.top(), fill_w, rect.height())
+            # Solid orange fill.
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QBrush(C.ACCENT))
+            painter.drawRect(fill_rect)
+            # Bright outline tracing the entire fill (= same idiom
+            # the layer cache-bar uses to lift the warm fill off the
+            # dark track). The clip-path crops the strokes that
+            # would land outside the track's rounded shape, so the
+            # outline naturally follows the left rounded corners
+            # and stops dead at the seam on the right.
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QPen(C.ACCENT_BRIGHT, 1.0))
+            painter.drawRect(fill_rect.adjusted(0.5, 0.5, -0.5, -0.5))
+            painter.restore()
+
+        # "Split" label centred. Warm cream so it stays legible
+        # across the boundary between the orange fill and the dark
+        # unfilled remainder.
+        painter.setPen(QPen(QColor("#FFE5C0")))
+        font = painter.font()
+        font.setBold(True)
+        font.setPixelSize(11)
+        painter.setFont(font)
+        painter.drawText(
+            rect, Qt.AlignmentFlag.AlignCenter, "Split",
+        )
+
+
+# ============================================================================
+# CompareBand — toolbar widget
+# ============================================================================
+
+
 class CompareBand(QFrame):  # type: ignore[misc]
-    """Floating band: ``[A ▼]  [Swap | Vert | Horiz | Opacity]  ──●── 50%  ✕``."""
+    """``[A ▼]  ⇄  [B ▼]  [Vert] [Horiz] [Opacity]  ▰▰▰░░ 50%  A↔B  ✕``."""
 
     # User picked a different layer in dropdown A or B. The app
     # writes the new id into CompareState and triggers a redraw.
@@ -75,25 +212,37 @@ class CompareBand(QFrame):  # type: ignore[misc]
     # User clicked ⇄ — permute A and B.
     swap_layers_requested = Signal()
 
-    BAND_HEIGHT = G.INPUT_H + 8
+    BAND_HEIGHT = G.INPUT_H + 4
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("compareBand")
         self.setFrameShape(QFrame.Shape.NoFrame)
-        # Solid dark background slightly transparent so a hint of
-        # image colour shows through at the band edges (helps the
-        # user remember the band sits ON the viewer, not next to it).
+        # Transparent — the band lives inside the menu bar's corner
+        # widget now, so it should inherit the menu-bar background
+        # rather than draw its own raised panel. Applies the global
+        # QPushButton / QComboBox styles uniformly with the rest of
+        # the corner controls.
         self.setStyleSheet(
-            "QFrame#compareBand { "
-            "background: rgba(15, 17, 21, 230); "
-            f"border-bottom: 1px solid {H.BORDER_DEFAULT}; "
+            "QFrame#compareBand { background: transparent; }"
+            # Mode buttons (object-named below) — pull the accent
+            # fill on :checked so they read as "active button" rather
+            # than the dim default-checked state which looks like a
+            # tab. Same pattern the TC pill in the timeline gutter
+            # uses.
+            "QPushButton#cmpMode:checked {"
+            f"  background-color: {H.ACCENT};"
+            f"  color: {H.BG_DEEP};"
+            f"  border: 1px solid {H.ACCENT_BRIGHT};"
+            "}"
+            "QPushButton#cmpMode:checked:hover {"
+            f"  background-color: {H.ACCENT_BRIGHT};"
             "}"
         )
         self.setFixedHeight(self.BAND_HEIGHT)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(S.SM, 4, S.SM, 4)
+        layout.setContentsMargins(0, 2, 0, 2)
         layout.setSpacing(S.SM)
 
         # ---- Layer A dropdown ----
@@ -120,49 +269,48 @@ class CompareBand(QFrame):  # type: ignore[misc]
         layout.addWidget(self._combo_b)
 
         # ---- Mode buttons (mutually exclusive) ----
+        # Icon buttons — text labels were ambiguous at small widths
+        # and didn't convey the mode visually. Each icon is a small
+        # SVG drawn from ``icons.py`` (compare_vert / compare_horiz
+        # / opacity). Object-named so the local stylesheet can
+        # target ``:checked`` without bleeding into every other
+        # QPushButton in the band.
         self._mode_group = QButtonGroup(self)
         self._mode_group.setExclusive(True)
         self._mode_buttons: dict[str, QPushButton] = {}
+        _icon_color = "#FFE5C0"  # warm cream — readable on the band's bg
         for mode in COMPARE_MODES:
-            btn = QPushButton(_MODE_LABELS[mode])
+            btn = QPushButton()
+            btn.setObjectName("cmpMode")
+            btn.setIcon(make_icon(_MODE_ICONS[mode], color=_icon_color))
+            btn.setIconSize(QSize(18, 18))
             btn.setCheckable(True)
-            btn.setFixedHeight(G.INPUT_H)
+            btn.setFixedSize(G.INPUT_H + 8, G.INPUT_H)
+            btn.setToolTip(_MODE_TOOLTIPS[mode])
             btn.clicked.connect(lambda _checked, m=mode: self.mode_picked.emit(m))
             self._mode_group.addButton(btn)
             self._mode_buttons[mode] = btn
             layout.addWidget(btn)
 
-        # ---- Seam slider ----
-        self._seam_slider = QSlider(Qt.Orientation.Horizontal)
-        self._seam_slider.setRange(0, 100)
-        self._seam_slider.setValue(50)
-        self._seam_slider.setFixedWidth(120)
-        self._seam_slider.valueChanged.connect(self._on_seam_changed)
-        layout.addWidget(self._seam_slider)
-        self._seam_readout = QLabel("50%")
-        self._seam_readout.setFixedWidth(36)
-        self._seam_readout.setAlignment(
-            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
-        )
-        layout.addWidget(self._seam_readout)
+        # ---- Seam bar (custom progress-style indicator) ----
+        self._seam_bar = SeamBar()
+        self._seam_bar.set_value(0.5)
+        self._seam_bar.seam_changed.connect(self.seam_changed.emit)
+        layout.addWidget(self._seam_bar)
 
         # ---- Solo B toggle (always visible) ----
         # Checkable: when down, ``swap_showing_b`` is True and the
         # compose path returns full B regardless of the blend mode.
         # When up, the picked blend mode + slider apply normally.
-        # Useful for A/B-spot-checking subtle differences without
-        # leaving the current wipe configuration.
         self._swap_btn = QPushButton("A↔B")
         self._swap_btn.setCheckable(True)
+        self._swap_btn.setObjectName("cmpMode")
         self._swap_btn.setFixedHeight(G.INPUT_H)
         self._swap_btn.setToolTip(
             "Show full B (override mode) — click again to return to the blend",
         )
         self._swap_btn.clicked.connect(self.swap_toggled.emit)
         layout.addWidget(self._swap_btn)
-
-        # Push the close button to the far right.
-        layout.addStretch(1)
 
         # ---- ✕ close ----
         self._close_btn = QPushButton("✕")
@@ -204,9 +352,6 @@ class CompareBand(QFrame):  # type: ignore[misc]
         btn.blockSignals(True)
         btn.setChecked(True)
         btn.blockSignals(False)
-        # Slider + Solo-B toggle are always available regardless of
-        # the picked mode (Vert / Horiz / Opacity); no per-mode
-        # gating since the contact-sheet retirement.
 
     def set_swap_showing_b(self, on: bool) -> None:
         """Sync the Solo-B button's checked state from outside."""
@@ -215,14 +360,11 @@ class CompareBand(QFrame):  # type: ignore[misc]
         self._swap_btn.blockSignals(False)
 
     def set_seam(self, seam: float) -> None:
-        """Sync the slider with an externally-changed seam (drag in
+        """Sync the seam bar with an externally-changed seam (drag in
         viewport, keyboard nudge, session load). Clamped to [0, 1]."""
-        clamped = max(0.0, min(1.0, float(seam)))
-        value = int(round(clamped * 100))
-        self._seam_slider.blockSignals(True)
-        self._seam_slider.setValue(value)
-        self._seam_slider.blockSignals(False)
-        self._seam_readout.setText(f"{value}%")
+        self._seam_bar.blockSignals(True)
+        self._seam_bar.set_value(seam)
+        self._seam_bar.blockSignals(False)
 
     # ------------------------------------------------------------------ Internals
 
@@ -235,8 +377,3 @@ class CompareBand(QFrame):  # type: ignore[misc]
         layer_id = self._combo_b.itemData(index)
         if isinstance(layer_id, str):
             self.layer_b_picked.emit(layer_id)
-
-    def _on_seam_changed(self, value: int) -> None:
-        # QSlider emits int 0..100 → normalise to 0.0..1.0.
-        self._seam_readout.setText(f"{value}%")
-        self.seam_changed.emit(value / 100.0)

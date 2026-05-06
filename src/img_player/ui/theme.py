@@ -202,7 +202,8 @@ QMainWindow {{
 QMenuBar {{
     background-color: {h.BG_RAISED};
     color: {h.TEXT_PRIMARY};
-    padding: 1px 0;
+    padding: 2px 0 1px 0;
+    min-height: 30px;
     border-bottom: 1px solid {h.BORDER_SUBTLE};
     spacing: 2px;
 }}
@@ -359,8 +360,8 @@ QPushButton {{
     color: {h.TEXT_PRIMARY};
     border: 1px solid {h.BORDER_DEFAULT};
     border-radius: {g.RADIUS_MD}px;
-    padding: 2px {s.MD}px;
-    min-height: {g.BTN_TRANSPORT_H}px;
+    padding: 0 {s.MD}px;
+    min-height: 0;
 }}
 
 QPushButton:hover {{
