@@ -819,6 +819,12 @@ class ImgPlayerApp:
         self._window.zoom_requested.connect(self._on_zoom_requested)
         self._window.exposure_step.connect(self._window.color_panel.bump_exposure)
         self._window.color_panel.color_params_changed.connect(self._on_color_params)
+        self._window.color_panel.unmarked_exr_save_requested.connect(
+            self._on_unmarked_exr_save,
+        )
+        self._window.color_panel.unmarked_exr_clear_requested.connect(
+            self._on_unmarked_exr_clear,
+        )
 
     def _wire_annotations(self) -> None:
         """Annotation toolbar / overlay / store wiring + transport buttons."""
@@ -2010,6 +2016,30 @@ class ImgPlayerApp:
         target = seq.first_frame if direction < 0 else seq.last_frame
         self._controller.seek(target)
 
+    def _on_unmarked_exr_save(self, source: str, view: str) -> None:
+        """User clicked "Save as EXR default" in the Color panel.
+
+        Persists the pair to preferences and refreshes the panel's
+        status row. Future sequences without colorspace tags will
+        auto-pick this pair via :meth:`_guess_source_colorspace`.
+        """
+        self._prefs.unmarked_exr_source = source
+        self._prefs.unmarked_exr_view = view
+        self._window.color_panel.set_unmarked_exr_default(source, view)
+        self._window.set_status(
+            f"EXR default pinned: {source} / {view}",
+        )
+
+    def _on_unmarked_exr_clear(self) -> None:
+        """Drop the pinned EXR default — auto-detection reverts to the
+        industry-standard linear assumption for unmarked EXRs."""
+        self._prefs.unmarked_exr_source = None
+        self._prefs.unmarked_exr_view = None
+        self._window.color_panel.set_unmarked_exr_default(None, None)
+        self._window.set_status(
+            "EXR default cleared — using industry default (linear)",
+        )
+
     def _on_color_params(
         self, src: str, display: str, view: str, exposure: float, gamma: float
     ) -> None:
@@ -2766,6 +2796,15 @@ class ImgPlayerApp:
             extension=seq.extension,
             available_colorspaces=self._ocio.list_colorspaces(),
             scene_linear_role=self._ocio.role("scene_linear"),
+            unmarked_exr_source=self._prefs.unmarked_exr_source,
+        )
+        # When the unmarked-EXR override fires, also pin the matching
+        # view (if the user paired one). Without this the source would
+        # change but the view would stay on whatever the auto-classifier
+        # picks — defeating half the override's purpose.
+        used_unmarked_exr_override = (
+            source_result.colorspace is not None
+            and "user override" in source_result.reason
         )
         if source_result.colorspace is not None:
             self._window.color_panel.set_source_colorspace(source_result.colorspace)
@@ -2785,18 +2824,34 @@ class ImgPlayerApp:
             current_display = self._window.color_panel._display_combo.currentText()
             if current_display:
                 available_views = self._ocio.list_views(current_display)
-                view_result = detect_view(
-                    source_colorspace=source_result.colorspace,
-                    available_views=available_views,
-                    default_view=self._ocio.default_view(current_display),
+                # If the source was set by the unmarked-EXR override AND
+                # the user paired a view with it, honour that pairing.
+                # Otherwise fall through to the standard category-based
+                # picker.
+                view_override = (
+                    self._prefs.unmarked_exr_view
+                    if used_unmarked_exr_override
+                    else None
                 )
-                if view_result.colorspace is not None:
-                    self._window.color_panel._view_combo.setCurrentText(view_result.colorspace)
-                    view_msg = f" → view: {view_result.colorspace} ({view_result.reason})"
+                if view_override and view_override in available_views:
+                    self._window.color_panel._view_combo.setCurrentText(view_override)
+                    view_msg = f" → view: {view_override} (user override)"
                     log.info(
-                        "auto-detect: view = %s (%s)",
-                        view_result.colorspace, view_result.reason,
+                        "auto-detect: view = %s (user override)", view_override,
                     )
+                else:
+                    view_result = detect_view(
+                        source_colorspace=source_result.colorspace,
+                        available_views=available_views,
+                        default_view=self._ocio.default_view(current_display),
+                    )
+                    if view_result.colorspace is not None:
+                        self._window.color_panel._view_combo.setCurrentText(view_result.colorspace)
+                        view_msg = f" → view: {view_result.colorspace} ({view_result.reason})"
+                        log.info(
+                            "auto-detect: view = %s (%s)",
+                            view_result.colorspace, view_result.reason,
+                        )
 
         # Surface the combined choice in the status bar (left side).
         if source_result.colorspace is not None:
@@ -2913,6 +2968,13 @@ def _apply_preferences_to_window(app: ImgPlayerApp) -> None:
 
     if prefs.view and display_name and prefs.view in set(app._ocio.list_views(display_name)):
         app._window.color_panel._view_combo.setCurrentText(prefs.view)
+
+    # Seed the unmarked-EXR override status row so the user sees what's
+    # currently pinned without having to open / re-pick anything.
+    app._window.color_panel.set_unmarked_exr_default(
+        prefs.unmarked_exr_source,
+        prefs.unmarked_exr_view,
+    )
 
     # FPS — push through the controller so transport + timeline pick up
     # the value via state_changed (keeps the FPS combo / timeline TC in sync).

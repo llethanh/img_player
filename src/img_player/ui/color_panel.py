@@ -8,19 +8,34 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
+    QHBoxLayout,
+    QLabel,
     QPushButton,
     QVBoxLayout,
     QWidget,
 )
 
 from img_player.color.ocio_manager import OCIOManager
-from img_player.ui.theme import S
+from img_player.ui.theme import H, S
 
 
 class ColorPanel(QWidget):  # type: ignore[misc]
-    """Emits ``color_params_changed(src, display, view, exposure, gamma)`` on any change."""
+    """Emits ``color_params_changed(src, display, view, exposure, gamma)`` on any change.
+
+    Also exposes the unmarked-EXR override controls: a "Save current as
+    EXR default" button + a status row showing what's currently pinned.
+    The actual pref read/write goes through ``unmarked_exr_save_requested``
+    / ``unmarked_exr_clear_requested`` so the panel doesn't reach into
+    :class:`Preferences` directly — keeps the panel a leaf widget that
+    only knows about OCIO names and signals.
+    """
 
     color_params_changed = Signal(str, str, str, float, float)
+    # User clicked "Save current as EXR default" — the app stores the
+    # current source + view as the unmarked-EXR prefs.
+    unmarked_exr_save_requested = Signal(str, str)  # (source, view)
+    # User clicked "Clear" on the pinned EXR default.
+    unmarked_exr_clear_requested = Signal()
 
     def __init__(self, manager: OCIOManager, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -54,6 +69,31 @@ class ColorPanel(QWidget):  # type: ignore[misc]
         self._reset_btn = QPushButton("Reset exposure / gamma")
         self._reset_btn.clicked.connect(self._reset_adjustments)
 
+        # Unmarked-EXR override row — lets the user pin the current
+        # source + view as the auto-detector default for EXRs that
+        # carry no colorspace tag. The status label tracks the pinned
+        # pair so the user can see at a glance what's active without
+        # opening a preferences dialog.
+        self._unmarked_exr_status = QLabel("EXR default: industry (linear)")
+        self._unmarked_exr_status.setStyleSheet(
+            f"color: {H.TEXT_SECONDARY}; font-size: 11px;",
+        )
+        self._unmarked_exr_save_btn = QPushButton("Save as EXR default")
+        self._unmarked_exr_save_btn.setToolTip(
+            "Pin the current source + view as the auto-detector default "
+            "for EXR files that have no colorspace tag.",
+        )
+        self._unmarked_exr_save_btn.clicked.connect(self._on_save_unmarked_exr)
+        self._unmarked_exr_clear_btn = QPushButton("Clear")
+        self._unmarked_exr_clear_btn.setToolTip(
+            "Drop the pinned EXR default — auto-detection reverts to "
+            "the industry-standard linear assumption.",
+        )
+        self._unmarked_exr_clear_btn.clicked.connect(
+            self.unmarked_exr_clear_requested.emit,
+        )
+        self._unmarked_exr_clear_btn.setEnabled(False)
+
         self._src_combo.currentTextChanged.connect(self._notify)
         self._display_combo.currentTextChanged.connect(self._on_display_changed)
         self._view_combo.currentTextChanged.connect(self._notify)
@@ -70,10 +110,23 @@ class ColorPanel(QWidget):  # type: ignore[misc]
         group = QGroupBox("Color management")
         group.setLayout(form)
 
+        # Two-row footer: save/clear buttons, then the status hint.
+        # Buttons share a row so they read as related actions; the
+        # status sits below in muted text so it never competes for
+        # attention with the main combos above.
+        exr_btn_row = QHBoxLayout()
+        exr_btn_row.setContentsMargins(0, 0, 0, 0)
+        exr_btn_row.setSpacing(S.SM)
+        exr_btn_row.addWidget(self._unmarked_exr_save_btn)
+        exr_btn_row.addWidget(self._unmarked_exr_clear_btn)
+        exr_btn_row.addStretch(1)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(S.SM, S.SM, S.SM, S.SM)
         layout.addWidget(group)
         layout.addWidget(self._reset_btn)
+        layout.addLayout(exr_btn_row)
+        layout.addWidget(self._unmarked_exr_status)
         layout.addStretch(1)
 
     # -------------------------------------------------------------- Public helpers
@@ -102,6 +155,27 @@ class ColorPanel(QWidget):  # type: ignore[misc]
         """Force an emission of ``color_params_changed`` with current values."""
         self._notify()
 
+    def set_unmarked_exr_default(
+        self, source: str | None, view: str | None,
+    ) -> None:
+        """Update the EXR-default status row from outside.
+
+        The app calls this on boot (to reflect what's stored in prefs)
+        and after the save / clear signals fire (to confirm the new
+        state). ``None`` for either side means "no override pinned" —
+        the auto-detector falls back to its industry default.
+        """
+        if source and view:
+            self._unmarked_exr_status.setText(
+                f"EXR default: {source} / {view}",
+            )
+            self._unmarked_exr_clear_btn.setEnabled(True)
+        else:
+            self._unmarked_exr_status.setText(
+                "EXR default: industry (linear)",
+            )
+            self._unmarked_exr_clear_btn.setEnabled(False)
+
     # -------------------------------------------------------------- Internals
 
     def _reset_adjustments(self) -> None:
@@ -110,6 +184,13 @@ class ColorPanel(QWidget):  # type: ignore[misc]
         self._gamma_spin.setValue(1.0)
         self._emit_enabled = True
         self._notify()
+
+    def _on_save_unmarked_exr(self) -> None:
+        src = self._src_combo.currentText()
+        view = self._view_combo.currentText()
+        if not src or not view:
+            return
+        self.unmarked_exr_save_requested.emit(src, view)
 
     def _refresh_views(self, display: str) -> None:
         self._view_combo.blockSignals(True)

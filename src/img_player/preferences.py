@@ -136,6 +136,44 @@ class Preferences:
         else:
             self._s.remove("color/view")
 
+    # ---- Default profile for unmarked EXRs ---------------------------
+    # Studios that bake their display transform into EXR (or write EXR
+    # without a colorspace tag) need a project-wide override so the
+    # auto-detector doesn't silently fall through to the EXR-as-linear
+    # convention. These prefs are consulted by ``detect_source_colorspace``
+    # only when the EXR has no explicit tag *and* no chromaticities;
+    # tagged files keep working without surprises.
+
+    @property
+    def unmarked_exr_source(self) -> str | None:
+        """Source colorspace to apply on EXRs without any colorspace
+        signal in their metadata. ``None`` means "use the standard EXR
+        scene_linear fallback" (industry default)."""
+        raw = self._s.value("color/unmarked_exr_source")
+        return str(raw) if raw else None
+
+    @unmarked_exr_source.setter
+    def unmarked_exr_source(self, value: str | None) -> None:
+        if value:
+            self._s.setValue("color/unmarked_exr_source", value)
+        else:
+            self._s.remove("color/unmarked_exr_source")
+
+    @property
+    def unmarked_exr_view(self) -> str | None:
+        """View to pair with :attr:`unmarked_exr_source` on tag-less EXRs.
+        Only consulted when the source override fired (= the file would
+        have hit the EXR scene_linear fallback)."""
+        raw = self._s.value("color/unmarked_exr_view")
+        return str(raw) if raw else None
+
+    @unmarked_exr_view.setter
+    def unmarked_exr_view(self, value: str | None) -> None:
+        if value:
+            self._s.setValue("color/unmarked_exr_view", value)
+        else:
+            self._s.remove("color/unmarked_exr_view")
+
     # ------------------------------------------------------------------ Window geometry
 
     @property

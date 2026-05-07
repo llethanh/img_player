@@ -170,11 +170,6 @@ def read_header(path: Path | str) -> oiio.ImageSpec:
 # priority order: explicit colorspace tags first (most reliable), then
 # chromaticities (gamut signature), finally OIIO's own normalisation.
 _COLOR_METADATA_ATTRS: tuple[str, ...] = (
-    # Set by OCIO-aware renderers / pipelines.
-    "colorSpaceName",
-    # Nuke writes this when it bakes a colorspace into an EXR.
-    "nuke/input/colorspace",
-    "nuke/input/colourspace",  # British spelling shows up too
     # ICC profile bakers tend to set these.
     "ICCProfile:cprt",
     "ICCProfile:desc",
@@ -187,15 +182,37 @@ _COLOR_METADATA_ATTRS: tuple[str, ...] = (
 )
 
 
+# Substrings that flag an attribute as "carries a colorspace name".
+# Generic on purpose: covers Nuke (``nuke/input/colorspace``), Arnold
+# (``exr/arnold/color_space``), V-Ray, Renderman, Houdini, custom
+# pipelines, and anything else that follows the convention of putting
+# ``colorspace`` / ``color_space`` / ``colourspace`` in the attr name.
+# Trades whack-a-mole for a broader sweep. The auto-detector is the
+# one that decides priority among the matches it gets.
+_COLOR_KEY_PATTERNS: tuple[str, ...] = (
+    "colorspace",   # most renderers (camelCase or lowercase)
+    "color_space",  # snake_case variants (Arnold, etc.)
+    "colourspace",  # British spelling occasionally shows up
+)
+
+
 def read_color_metadata(path: Path | str) -> dict[str, object]:
     """Return whatever colour-related attributes the file's header
     advertises. Cheap — opens the file but doesn't decode pixels.
 
-    The returned dict's keys are the OIIO attribute names from
-    :data:`_COLOR_METADATA_ATTRS`. Missing attributes are simply
-    absent (not present as ``None``). The values come straight from
-    OIIO so they may be strings, tuples of floats, or other types
-    depending on the attribute.
+    Two sweeps:
+
+    1. **Hardcoded standard attrs** (ICC, OIIO classification,
+       chromaticities) — fixed names that don't follow the
+       ``...colorspace...`` convention.
+    2. **Pattern sweep over every header attribute** — any name whose
+       lowercased form contains ``colorspace`` / ``color_space`` /
+       ``colourspace``. Catches renderer-specific tags (Nuke, Arnold,
+       V-Ray, Houdini…) without us having to enumerate them
+       individually.
+
+    Values come straight from OIIO so they may be strings, tuples of
+    floats, or other types depending on the attribute.
     """
     path = Path(path)
     inp = oiio.ImageInput.open(str(path))
@@ -212,6 +229,23 @@ def read_color_metadata(path: Path | str) -> dict[str, object]:
             value = spec.getattribute(attr)
             if value is not None:
                 meta[attr] = value
+        # Sweep all extra attribs for anything carrying a colorspace
+        # name. ``extra_attribs`` is OIIO's catch-all bag for
+        # renderer-emitted metadata that doesn't have a standard slot.
+        for param in getattr(spec, "extra_attribs", ()):
+            try:
+                name = param.name
+                value = param.value
+            except AttributeError:
+                continue
+            if not isinstance(name, str) or value is None:
+                continue
+            lower = name.lower()
+            if any(pat in lower for pat in _COLOR_KEY_PATTERNS):
+                # Don't clobber an entry the hardcoded pass already
+                # placed (its name might be the canonical form OIIO
+                # uses for ``getattribute``).
+                meta.setdefault(name, value)
         return meta
     finally:
         inp.close()

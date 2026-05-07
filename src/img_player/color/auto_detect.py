@@ -152,6 +152,7 @@ def detect_source_colorspace(
     available_colorspaces: Iterable[str],
     *,
     scene_linear_role: str | None = None,
+    unmarked_exr_source: str | None = None,
 ) -> DetectionResult:
     """Pick a source colorspace based on file metadata + extension.
 
@@ -167,21 +168,49 @@ def detect_source_colorspace(
     ``"linear"`` — which is too greedy: it would match
     ``Linear AdobeRGB`` etc. on the way to ``Linear Rec.709``.
 
+    ``unmarked_exr_source``, when set, overrides the EXR
+    extension fallback for files that have no colorspace tag and no
+    chromaticities. Use it for studio pipelines that bake their
+    display transform into EXRs (i.e. the file isn't really linear).
+    Has no effect on tagged files — those still get their real
+    metadata-driven detection.
+
     Returns a :class:`DetectionResult`. ``colorspace`` is ``None`` if
     no signal could be turned into an existing OCIO name.
     """
     available = list(available_colorspaces)
 
     # 1. Explicit tag (highest priority — the file is telling us).
-    for key in ("colorSpaceName", "nuke/input/colorspace", "nuke/input/colourspace"):
-        raw = metadata.get(key)
-        if isinstance(raw, str) and raw:
-            cs = _find_colorspace(raw, available)
-            if cs is not None:
-                return DetectionResult(cs, f"file metadata: {key}={raw!r}")
-            # The file claims a colorspace that isn't in our config —
-            # surface that, the user might want to fix their config.
-            return DetectionResult(None, f"file metadata claims {raw!r} but it is not in the config")
+    # Generic sweep over every metadata key whose name carries a
+    # colorspace marker (``colorspace`` / ``color_space`` /
+    # ``colourspace``) — covers Nuke, Arnold, V-Ray, Renderman,
+    # Houdini, custom pipelines, etc., without us having to
+    # enumerate the renderer-specific naming convention. The reader
+    # already pre-filters by the same pattern so this dict only
+    # contains plausible candidates.
+    #
+    # Two filters on top of the pattern match:
+    #   - skip ``oiio:ColorSpace`` here — it's normalised by step 2
+    #     where the alias map gives us a cleaner answer.
+    #   - skip keys that look display-side (``displaycolorspace``,
+    #     ``output_colorspace``…) so we don't accidentally pin the
+    #     view's destination as the source.
+    for key, raw in metadata.items():
+        if not isinstance(raw, str) or not raw:
+            continue
+        lower = key.lower()
+        if "colorspace" not in lower and "color_space" not in lower and "colourspace" not in lower:
+            continue
+        if lower == "oiio:colorspace":
+            continue
+        if "display" in lower or "output" in lower:
+            continue
+        cs = _find_colorspace(raw, available)
+        if cs is not None:
+            return DetectionResult(cs, f"file metadata: {key}={raw!r}")
+        # The file claims a colorspace that isn't in our config —
+        # surface that, the user might want to fix their config.
+        return DetectionResult(None, f"file metadata claims {raw!r} but it is not in the config")
 
     # 2. OIIO's normalised tag.
     oiio_cs = metadata.get("oiio:ColorSpace")
@@ -209,6 +238,15 @@ def detect_source_colorspace(
     # 4. Extension fallback.
     ext = extension.lower()
     if ext == ".exr":
+        # User-defined override for tag-less EXRs takes priority over
+        # the industry-standard linear assumption — for pipelines that
+        # write display-baked EXRs without a colorspace tag, the
+        # studio default is what the user sees on every load.
+        if unmarked_exr_source and unmarked_exr_source in available:
+            return DetectionResult(
+                unmarked_exr_source,
+                f"EXR default — user override ({unmarked_exr_source})",
+            )
         # Prefer the OCIO scene_linear role if we have it — that's
         # what the active config considers "linear scene-referred".
         # Then try the literal "scene_linear" name (some configs
