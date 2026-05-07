@@ -1111,6 +1111,15 @@ class MasterFrameCache:
             return stripped or None
         if base is None:
             return None  # reader default already RGBA
+        # A 4-channel group already includes its own alpha as the last
+        # entry — that's how ``group_channels`` packs RGBA-shaped layers
+        # (bare ``RGBA``, ``albedo.R/G/B/A``, etc.). Don't append the
+        # bare ``A`` on top: that would make a 5-channel buffer the
+        # cache compositor can't handle (``_ensure_rgba`` raises). Only
+        # the 3-channel "RGB without alpha" case needs the implicit
+        # bare-A pickup so the over-blend has an opacity to work with.
+        if len(base) >= 4:
+            return base
         if "A" in base:
             return base
         return base + ["A"]
