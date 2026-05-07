@@ -1233,7 +1233,7 @@ class MasterFrameCache:
             return base
         if "A" in base:
             return base
-        return base + ["A"]
+        return [*base, "A"]
 
     def _submit_composite(
         self, master_frame: int, layers: list, priority: int,

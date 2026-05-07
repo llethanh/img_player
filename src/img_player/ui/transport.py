@@ -92,11 +92,10 @@ class TransportBar(QWidget):  # type: ignore[misc]
     # User typed a frame / timecode in the FrameDisplay and pressed
     # Enter. Carries the absolute frame index.
     frame_seek_requested  = Signal(int)
-    # Full channel selection (active + tiles + layout mode). The
-    # checkable channel menu emits this whenever the user toggles a
-    # radio or checkbox, so the controller can switch between single
-    # and contact-sheet modes without having to interpret raw channel
-    # lists. Carries a :class:`ChannelSelection`.
+    # Channel selection (active group). Emitted whenever the user
+    # picks a different radio in the channel menu — the cache uses
+    # the carried :class:`ChannelSelection` to invalidate the right
+    # decode plan.
     channel_selection_changed = Signal(object)
     # Zoom — either ``None`` for fit-to-window, or a float factor
     # (1.0 = 100 %, 0.5 = 50 %, 2.0 = 200 %).
@@ -405,13 +404,11 @@ class TransportBar(QWidget):  # type: ignore[misc]
         )
 
         # --- Channel selector ----------------------------------------------
-        # Multichannel EXR + contact-sheet support: a QToolButton that
-        # opens the :class:`ChannelMenu` popup. The button label
-        # summarises the current selection at a glance:
-        #   * "RGB"             → single mode on RGB
-        #   * "albedo"          → single mode on albedo
-        #   * "RGB +2"          → contact sheet, RGB + 2 other tiles
-        # The popup itself owns the per-row radio + checkbox state.
+        # Multichannel EXR support: a QToolButton that opens the
+        # :class:`ChannelMenu` popup. The button label is the active
+        # group name (e.g. "RGB" / "albedo" / "Z"). Up / Down arrows
+        # cycle through groups while the button has focus — see
+        # :class:`_ChannelToolButton`.
         self._channel_menu = ChannelMenu(self)
         self._channel_menu.selection_changed.connect(self._on_channel_selection_changed)
         self._channel_button = _ChannelToolButton(self._channel_menu)

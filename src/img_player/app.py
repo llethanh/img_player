@@ -187,8 +187,9 @@ class ImgPlayerApp:
         # as the ``flick.ico`` baked into the .exe by PyInstaller.
         # Resolved by Path arithmetic from the package — same pattern
         # ``cache.missing_frame`` uses for its bundled font.
-        from PySide6.QtGui import QIcon
         from pathlib import Path as _Path
+
+        from PySide6.QtGui import QIcon
         ico_path = (
             _Path(__file__).resolve().parent
             / "assets" / "icons" / "flick.ico"
@@ -361,12 +362,11 @@ class ImgPlayerApp:
         self._scrub_debounce.timeout.connect(self._apply_pending_seek)
 
     def _init_channel_state(self) -> None:
-        """Channel-selection bookkeeping (depends on prefs being loaded).
+        """Channel-selection + compare-mode bookkeeping.
 
-        The contact-sheet feature was removed in v1.2 (multi-tile grid
-        of channels). Only the single-channel ``active`` selection
-        survives — kept here as the app-level fallback used by
-        ``_set_channel_selection`` until the first layer focuses.
+        ``_channel_selection`` is the app-level fallback for the
+        active channel group, used until the first layer focuses
+        (the per-layer ``Layer.channel_selection`` then takes over).
         """
         self._channel_selection: ChannelSelection | None = None
         # Compare-mode (two-layer A/B overlay) state + decoder. The

@@ -21,8 +21,8 @@ import pytest
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QLabel, QWidget
 
+from img_player.preferences import _qbool
 from img_player.save_frame_handler import (
-    _coerce_bool,
     _QT_FORMAT_FOR_EXT,
     _write_image,
     capture_viewer,
@@ -245,7 +245,7 @@ class TestWriteImage:
 
 
 # ============================================================================
-# _coerce_bool
+# _qbool
 # ============================================================================
 
 
@@ -271,7 +271,7 @@ class TestCoerceBool:
     def test_coercion(self, value: object, expected: object) -> None:
         if expected == "DEFAULT":
             # Default of True so we can distinguish "fell through" from "False".
-            assert _coerce_bool(value, True) is True
-            assert _coerce_bool(value, False) is False
+            assert _qbool(value, True) is True
+            assert _qbool(value, False) is False
         else:
-            assert _coerce_bool(value, not bool(expected)) is expected
+            assert _qbool(value, not bool(expected)) is expected

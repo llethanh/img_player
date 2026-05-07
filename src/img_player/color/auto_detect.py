@@ -75,7 +75,7 @@ def _chromaticities_match(
 ) -> bool:
     if len(measured) != len(expected):
         return False
-    return all(abs(m - e) <= _CHROMATICITY_TOLERANCE for m, e in zip(measured, expected))
+    return all(abs(m - e) <= _CHROMATICITY_TOLERANCE for m, e in zip(measured, expected, strict=False))
 
 
 def _identify_gamut(chromaticities: tuple[float, ...]) -> str | None:

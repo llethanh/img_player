@@ -10,6 +10,7 @@ turns them into:
 
 from __future__ import annotations
 
+import itertools
 import json
 import math
 import platform
@@ -100,7 +101,7 @@ def build_report(
 ) -> dict[str, Any]:
     """Distill samples + context into a structured report dict."""
     # Inter-tick gaps tell us the *real* fps the play loop achieves.
-    inter_tick_ms = [b.t_ms - a.t_ms for a, b in zip(ticks[:-1], ticks[1:])]
+    inter_tick_ms = [b.t_ms - a.t_ms for a, b in itertools.pairwise(ticks)]
     effective_fps = (
         1000.0 / statistics.fmean(inter_tick_ms) if inter_tick_ms else float("nan")
     )
@@ -115,7 +116,7 @@ def build_report(
 
     upload_us = [p.upload_us for p in paints]
     paint_us = [p.paint_us for p in paints]
-    inter_paint_ms = [b.t_ms - a.t_ms for a, b in zip(paints[:-1], paints[1:])]
+    inter_paint_ms = [b.t_ms - a.t_ms for a, b in itertools.pairwise(paints)]
     effective_paint_fps = (
         1000.0 / statistics.fmean(inter_paint_ms) if inter_paint_ms else float("nan")
     )

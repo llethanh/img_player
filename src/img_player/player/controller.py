@@ -481,7 +481,7 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
             self._play_start_frame = self._state.current_frame
         elapsed = self._clock() - self._play_start_clock
         d = self._state.direction
-        target_offset = int(round(d * elapsed * self._state.fps))
+        target_offset = round(d * elapsed * self._state.fps)
         wall_target = self._play_start_frame + target_offset
         cur = self._state.current_frame
         # Idle tick: clock fired before a full frame interval elapsed.

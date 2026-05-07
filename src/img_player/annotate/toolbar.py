@@ -572,14 +572,14 @@ class AnnotationToolbar(QWidget):
         self._current_size = size
         self._size_slider.blockSignals(True)
         try:
-            self._size_slider.setValue(int(round(size)))
+            self._size_slider.setValue(round(size))
         finally:
             self._size_slider.blockSignals(False)
         # Same reason as in set_current_color — keep the preview in
         # sync.
         if hasattr(self, "_stroke_preview"):
             self._stroke_preview.set_size(size)
-        self._size_label.setText(f"{int(round(size))}px")
+        self._size_label.setText(f"{round(size)}px")
         self.size_changed.emit(size)
 
     # ------------------------------------------------------------------ UI build

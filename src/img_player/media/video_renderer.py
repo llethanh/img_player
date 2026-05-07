@@ -126,7 +126,7 @@ class _ThreadedDecoder:
                 else np.zeros((1, 1, 3), dtype=np.uint8)
 
     def _idx_for(self, t_seconds: float) -> int:
-        return int(round(t_seconds * self.fps))
+        return round(t_seconds * self.fps)
 
     def _t_for(self, idx: int) -> float:
         # +half-frame so the requested time falls firmly inside the

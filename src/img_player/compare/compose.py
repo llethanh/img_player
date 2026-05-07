@@ -86,7 +86,7 @@ def compose(
         # interactive seam-drag, where every mouse-move triggers
         # one of these per frame.
         h, w = a.shape[:2]
-        split = int(round(w * max(0.0, min(1.0, float(seam)))))
+        split = round(w * max(0.0, min(1.0, float(seam))))
         out = np.empty_like(a)
         if split > 0:
             out[:, :split] = a[:, :split]
@@ -97,7 +97,7 @@ def compose(
         return out
     if mode == MODE_HORIZONTAL:
         h, w = a.shape[:2]
-        split = int(round(h * max(0.0, min(1.0, float(seam)))))
+        split = round(h * max(0.0, min(1.0, float(seam))))
         out = np.empty_like(a)
         if split > 0:
             out[:split] = a[:split]

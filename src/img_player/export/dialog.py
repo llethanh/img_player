@@ -689,7 +689,7 @@ class ExportDialog(QDialog):  # type: ignore[misc]
             return
         if self._aspect_ratio <= 0:
             return
-        new_h = max(2, int(round(value / self._aspect_ratio)))
+        new_h = max(2, round(value / self._aspect_ratio))
         self._aspect_lock_busy = True
         try:
             self._height_spin.setValue(new_h)
@@ -706,7 +706,7 @@ class ExportDialog(QDialog):  # type: ignore[misc]
             return
         if self._aspect_ratio <= 0:
             return
-        new_w = max(2, int(round(value * self._aspect_ratio)))
+        new_w = max(2, round(value * self._aspect_ratio))
         self._aspect_lock_busy = True
         try:
             self._width_spin.setValue(new_w)

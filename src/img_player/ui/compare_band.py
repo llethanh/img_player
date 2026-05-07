@@ -38,7 +38,6 @@ from img_player.compare.state import (
 from img_player.ui.icons import make_icon
 from img_player.ui.theme import C, G, H, S
 
-
 # Sizing knobs for the layer dropdowns. The combo's preferred width
 # follows the longest currently-listed name (via Qt's
 # ``setMinimumContentsLength``), clamped between a sensible floor

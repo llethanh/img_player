@@ -88,7 +88,7 @@ class CompareState:
             and self.layer_b_id is not None
         )
 
-    def with_seam(self, value: float) -> "CompareState":
+    def with_seam(self, value: float) -> CompareState:
         """Return a new state with ``seam`` clamped to [0, 1]."""
         clamped = max(0.0, min(1.0, float(value)))
         return CompareState(
@@ -113,7 +113,7 @@ class CompareState:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, object]) -> "CompareState":
+    def from_dict(cls, data: dict[str, object]) -> CompareState:
         """Reverse of :meth:`to_dict`. Unknown / malformed values fall
         back to defaults — a stale session never crashes the load.
 

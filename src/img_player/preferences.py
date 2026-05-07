@@ -17,6 +17,28 @@ _APP = "img_player"
 _RECENT_LIMIT = 10
 
 
+def _qbool(raw: object, default: bool = False) -> bool:
+    """Coerce a ``QSettings.value()`` return into a :class:`bool`.
+
+    QSettings on Windows returns ``int`` 0/1 from REG_DWORD-stored
+    values, while on macOS/Linux .conf files round-trip booleans as
+    the strings ``"true"``/``"false"``. This helper folds both into
+    a real Python bool, with ``default`` taking over when the key is
+    missing (raw is ``None``). Centralised so the five callers below
+    stop reimplementing the same little ``isinstance(raw, str)``
+    cascade.
+    """
+    if raw is None:
+        return default
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        return raw.strip().lower() in ("true", "1", "yes", "on")
+    if isinstance(raw, (int, float)):
+        return bool(raw)
+    return default
+
+
 class Preferences:
     """Typed, app-shaped wrapper around QSettings.
 
@@ -238,9 +260,7 @@ class Preferences:
         close. The Ctrl+T action mirrors this in the menu state.
         """
         raw = self._s.value("view/display_timecode", False)
-        if isinstance(raw, str):
-            return raw.lower() in ("true", "1", "yes")
-        return bool(raw)
+        return _qbool(raw)
 
     @display_timecode.setter
     def display_timecode(self, value: bool) -> None:
@@ -277,9 +297,7 @@ class Preferences:
         layout — saveState doesn't see it anymore.
         """
         raw = self._s.value("view/side_panel_visible", True)
-        if isinstance(raw, str):
-            return raw.lower() in ("true", "1", "yes")
-        return bool(raw)
+        return _qbool(raw)
 
     @side_panel_visible.setter
     def side_panel_visible(self, value: bool) -> None:
@@ -339,9 +357,7 @@ class Preferences:
     def annotation_toolbar_visible(self) -> bool:
         """Whether to show the toolbar at startup. Default: hidden."""
         raw = self._s.value("annotation_toolbar/visible", False)
-        if isinstance(raw, str):
-            return raw.lower() in ("true", "1", "yes")
-        return bool(raw)
+        return _qbool(raw)
 
     @annotation_toolbar_visible.setter
     def annotation_toolbar_visible(self, value: bool) -> None:
@@ -355,9 +371,7 @@ class Preferences:
         away. Default: ``False`` (= visible) so first-run users see
         the new feature."""
         raw = self._s.value("layer_panel/collapsed", False)
-        if isinstance(raw, str):
-            return raw.lower() in ("true", "1", "yes")
-        return bool(raw)
+        return _qbool(raw)
 
     @layer_panel_collapsed.setter
     def layer_panel_collapsed(self, value: bool) -> None:
@@ -431,9 +445,7 @@ class Preferences:
         otherwise have to press G after every restart. Default off:
         a fresh user lands on the persistent (saving) mode."""
         raw = self._s.value("ephemeral/mode_enabled", False)
-        if isinstance(raw, str):
-            return raw.lower() in ("true", "1", "yes")
-        return bool(raw)
+        return _qbool(raw)
 
     @ephemeral_mode_enabled.setter
     def ephemeral_mode_enabled(self, value: bool) -> None:

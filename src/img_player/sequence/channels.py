@@ -107,7 +107,7 @@ def group_channels(raw: Iterable[str]) -> list[ChannelGroup]:
     if all(s in bare_lower for s in _RGB_SUBS):
         chans = tuple(bare_lower[s] for s in _RGB_SUBS)
         if "a" in bare_lower:
-            chans = chans + (bare_lower["a"],)
+            chans = (*chans, bare_lower["a"])
             groups.append(ChannelGroup("RGBA", chans))
         else:
             groups.append(ChannelGroup("RGB", chans))
@@ -121,7 +121,7 @@ def group_channels(raw: Iterable[str]) -> list[ChannelGroup]:
         if all(s in subs for s in _RGB_SUBS):
             chans = tuple(subs[s] for s in _RGB_SUBS)
             if "a" in subs:
-                chans = chans + (subs["a"],)
+                chans = (*chans, subs["a"])
             groups.append(ChannelGroup(layer, chans))
             # Remove the consumed sub-channels so they don't
             # re-appear individually below.
@@ -133,7 +133,7 @@ def group_channels(raw: Iterable[str]) -> list[ChannelGroup]:
     # original order.
     for layer in layer_order:
         subs = by_layer[layer]
-        for sub_name, original in subs.items():
+        for _sub_name, original in subs.items():
             groups.append(ChannelGroup(original, (original,)))
 
     # 4. Bare leftovers (Z, masks…). Often the most useful ones for

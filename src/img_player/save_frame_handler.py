@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 
 from PySide6.QtGui import QImage, QImageWriter
 
+from img_player.preferences import _qbool
 from img_player.ui.save_frame_dialog import SaveFrameDialog, SaveFrameSettings
 
 if TYPE_CHECKING:
@@ -74,8 +75,8 @@ def open_save_frame_dialog(app: ImgPlayerApp) -> None:
     last = app._prefs.save_frame_settings
     suggested_dir = Path(str(last.get("output_dir") or seq.directory))
     last_format = str(last.get("format") or "png").lower()
-    last_with_annotations = _coerce_bool(last.get("with_annotations"), True)
-    last_bake_compare = _coerce_bool(last.get("bake_compare"), True)
+    last_with_annotations = _qbool(last.get("with_annotations"), True)
+    last_bake_compare = _qbool(last.get("bake_compare"), True)
 
     # Whether the live A/B compare overlay is actually active right
     # now. Drives the visibility of the "Bake compare overlay" row in
@@ -272,14 +273,3 @@ def _write_image(image: QImage, settings: SaveFrameSettings) -> bool:
     return bool(ok)
 
 
-def _coerce_bool(value: object, default: bool) -> bool:
-    """QSettings can return strings on some platforms — normalise."""
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() in {"true", "1", "yes", "on"}
-    if isinstance(value, (int, float)):
-        return bool(value)
-    return default

@@ -198,9 +198,9 @@ class Layer:
         # absolute fallback = 1 (so the dataclass invariant holds).
         n_frames = metadata.frame_count
         if n_frames is None and metadata.duration_seconds and metadata.fps:
-            n_frames = max(1, int(round(
+            n_frames = max(1, round(
                 metadata.duration_seconds * float(metadata.fps),
-            )))
+            ))
         if n_frames is None or n_frames < 1:
             n_frames = 1
         # mtime captured once — the per-frame mtime exists for the

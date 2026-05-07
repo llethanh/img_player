@@ -346,7 +346,7 @@ class FrameRenderer:
             arr = np.repeat(arr, 3, axis=2)
             c = 3
         if c == 3:
-            alpha = np.ones(arr.shape[:2] + (1,), dtype=arr.dtype)
+            alpha = np.ones((*arr.shape[:2], 1), dtype=arr.dtype)
             arr = np.concatenate([arr, alpha], axis=2)
         elif c > 4:
             arr = arr[..., :4]

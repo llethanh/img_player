@@ -184,7 +184,7 @@ def probe_video(path: Path | str) -> VideoMetadata:
         # Backfill frame_count from duration × fps when the container
         # didn't report it (common with mp4 streamed through ffmpeg).
         if frame_count is None and duration_seconds and fps:
-            frame_count = max(1, int(round(duration_seconds * float(fps))))
+            frame_count = max(1, round(duration_seconds * float(fps)))
 
         has_audio = bool(audio_streams)
         audio_codec: str | None = None

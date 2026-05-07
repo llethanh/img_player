@@ -43,8 +43,15 @@ _SECTIONS: list[tuple[str, list[tuple[str, str]]]] = [
     (
         "Channels",
         [
-            ("Shift + C", "Toggle contact sheet (restore last tile selection)"),
-            ("Double-click on a tile", "Isolate the channel under the cursor"),
+            ("Up / Down", "Step through channel groups (focus the channel button first)"),
+        ],
+    ),
+    (
+        "Compare",
+        [
+            ("W", "Toggle two-layer compare overlay"),
+            ("Ctrl + W", "Swap A and B layers in the compare band"),
+            ("Right-click + drag", "Move the seam (cursor position in image space)"),
         ],
     ),
     (

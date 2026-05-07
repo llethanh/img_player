@@ -909,6 +909,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         stay reflected.
         """
         from PySide6.QtWidgets import QMenu
+
         from img_player.ui.info_band import SEGMENT_KEYS, SEGMENT_LABELS
         ib_btn = self._info_band_btn
         band = self._viewer.info_band
