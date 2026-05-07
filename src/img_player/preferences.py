@@ -471,11 +471,13 @@ class Preferences:
             "apply_display_transform",
             "bake_annotations",
             "copy_sidecar",
+            "bake_compare",
             "jpg_quality",
             "exr_compression",
             "video_crf",
             "prores_profile",
             "h26x_preset",
+            "missing_frame_policy",
         )
         out: dict[str, object] = {}
         for key in keys:

@@ -20,7 +20,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from img_player.color.ocio_manager import OCIOManager
-from img_player.export.renderer import FrameRenderer, RenderContext
+from img_player.export.renderer import (
+    CompareRenderContext,
+    FrameRenderer,
+    RenderContext,
+)
 from img_player.export.settings import ExportSettings
 from img_player.export.writers import BaseWriter, build_writer
 from img_player.sequence.channels import ChannelSelection
@@ -61,6 +65,7 @@ class ExportEngine:
         view: str | None,
         sidecar_source: Path | None = None,
         channel_selection: ChannelSelection | None = None,
+        compare: CompareRenderContext | None = None,
     ) -> None:
         self._settings = settings
         self._sequence = sequence
@@ -79,11 +84,17 @@ class ExportEngine:
                 display=display,
                 view=view,
             )
+        # Compare overlay only honoured when the user ticked the
+        # bake-compare option AND the caller passed a live snapshot.
+        # Either condition flipping off → None → renderer falls back
+        # to the single-sequence path.
+        compare_ctx = compare if settings.bake_compare else None
         ctx = RenderContext(
             sequence=sequence,
             annotation_store=annotation_store if settings.bake_annotations else None,
             ocio_cpu_processor=ocio_proc,
             channel_selection=channel_selection,
+            compare=compare_ctx,
         )
         self._renderer = FrameRenderer(ctx, settings)
         self._sidecar_source = sidecar_source

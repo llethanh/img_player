@@ -75,6 +75,7 @@ class ExportDialog(QDialog):  # type: ignore[misc]
         source_width: int,
         source_height: int,
         source_fps: float,
+        compare_active: bool = False,
         initial_settings: ExportSettings | None = None,
         parent: QWidget | None = None,
     ) -> None:
@@ -113,6 +114,11 @@ class ExportDialog(QDialog):  # type: ignore[misc]
         self._source_fps = max(1.0, float(source_fps))
         self._source_in = int(source_in_frame)
         self._source_out = int(source_out_frame)
+        # Whether the live A/B compare overlay is currently active.
+        # Drives the visibility of the "Bake compare overlay" option:
+        # surfacing it when no A/B is set up would be confusing
+        # (nothing to bake), so we hide the row entirely in that case.
+        self._compare_active = bool(compare_active)
 
         # Build the working ``ExportSettings`` we mutate as the user
         # tweaks fields. Seed from ``initial_settings`` if any.
@@ -294,6 +300,28 @@ class ExportDialog(QDialog):  # type: ignore[misc]
         ann_layout.addWidget(self._copy_sidecar_chk)
         root.addWidget(ann_box)
 
+        # --- Compare overlay ----------------------------------------
+        # Only meaningful when the live compare overlay is active —
+        # otherwise the export has nothing to bake. Hide the box
+        # entirely in the inactive case so the dialog stays compact
+        # for the common single-sequence export.
+        cmp_box = QGroupBox("Compare overlay")
+        cmp_layout = QVBoxLayout(cmp_box)
+        self._bake_compare_chk = QCheckBox(
+            "Bake A/B compare overlay (wipe / opacity / swap)"
+        )
+        cmp_layout.addWidget(self._bake_compare_chk)
+        cmp_hint = QLabel(
+            "Reproduces the live wipe / blend in the export. Without "
+            "this the export reads the active sequence's raw pixels."
+        )
+        cmp_hint.setStyleSheet("color: #8A8A8E; font-size: 11px;")
+        cmp_hint.setWordWrap(True)
+        cmp_layout.addWidget(cmp_hint)
+        cmp_box.setVisible(self._compare_active)
+        root.addWidget(cmp_box)
+        self._compare_box = cmp_box
+
         # --- Missing frames -----------------------------------------
         # Three radio buttons for the three policies. Default keeps
         # the legacy abort-on-missing behaviour so a half-empty
@@ -469,6 +497,11 @@ class ExportDialog(QDialog):  # type: ignore[misc]
         self._bake_chk.setChecked(s.bake_annotations)
         self._copy_sidecar_chk.setChecked(s.copy_sidecar)
         self._copy_sidecar_chk.setEnabled(s.bake_annotations)
+        # Compare overlay — respect the persisted pref so the user's
+        # last choice (checked or unchecked) survives between exports
+        # and between app launches, same contract as the other
+        # checkboxes above.
+        self._bake_compare_chk.setChecked(bool(s.bake_compare))
         # Missing-frame policy
         if s.missing_frame_policy == MissingFramePolicy.BLACK:
             self._missing_radio_black.setChecked(True)
@@ -542,6 +575,14 @@ class ExportDialog(QDialog):  # type: ignore[misc]
             apply_display_transform=self._display_xform_chk.isChecked(),
             bake_annotations=self._bake_chk.isChecked(),
             copy_sidecar=self._copy_sidecar_chk.isChecked(),
+            # Only emit bake_compare=True when the row is actually
+            # surfaced; ``_compare_active`` False forces it off so
+            # an old pref value doesn't try to use a non-existent
+            # compare state.
+            bake_compare=(
+                self._compare_active
+                and self._bake_compare_chk.isChecked()
+            ),
             jpg_quality=int(self._jpg_quality_spin.value()),
             exr_compression=str(self._exr_compression_combo.currentText()),
             video_crf=int(self._video_crf_spin.value()),

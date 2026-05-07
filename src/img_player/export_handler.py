@@ -29,6 +29,7 @@ def open_export_dialog(app: ImgPlayerApp) -> None:
     from img_player.export.dialog import ExportDialog
     from img_player.export.engine import ExportEngine
     from img_player.export.progress_dialog import ExportProgressDialog
+    from img_player.export.renderer import CompareRenderContext
     from img_player.export.worker import ExportWorker
 
     seq = app._controller.sequence
@@ -41,6 +42,14 @@ def open_export_dialog(app: ImgPlayerApp) -> None:
     state = app._controller.state
     in_f = state.in_frame if state.in_frame is not None else seq.first_frame
     out_f = state.out_frame if state.out_frame is not None else seq.last_frame
+
+    # Snapshot the live compare overlay (if any) so the dialog can
+    # decide whether to surface the bake-compare option, and the
+    # engine can reproduce the exact A/B blend the user has on screen.
+    compare_state = getattr(app, "_compare_state", None)
+    compare_active = bool(
+        compare_state is not None and compare_state.is_active(),
+    )
 
     # Restore last-used settings (per-key fall back to the
     # ExportSettings dataclass defaults).
@@ -59,6 +68,7 @@ def open_export_dialog(app: ImgPlayerApp) -> None:
         source_width=seq.width or 1920,
         source_height=seq.height or 1080,
         source_fps=state.fps,
+        compare_active=compare_active,
         initial_settings=initial,
         parent=app._window,
     )
@@ -70,6 +80,30 @@ def open_export_dialog(app: ImgPlayerApp) -> None:
         app._prefs.export_settings = settings.to_prefs_dict()
     except Exception:
         log.exception("[export] failed to persist last-used settings")
+
+    # Compare overlay snapshot for the engine. Resolved here so the
+    # renderer doesn't reach back into the app singleton — it just
+    # holds direct refs to the picked layers + the captured blend
+    # state, which can't drift mid-export. Set to ``None`` if the
+    # user didn't tick bake_compare or compare went stale between
+    # dialog open and accept.
+    compare_ctx = None
+    if settings.bake_compare and compare_active and app._layer_stack is not None:
+        layer_a = app._layer_stack.find(compare_state.layer_a_id)
+        layer_b = app._layer_stack.find(compare_state.layer_b_id)
+        if layer_a is not None and layer_b is not None:
+            compare_ctx = CompareRenderContext(
+                layer_a=layer_a,
+                layer_b=layer_b,
+                mode=compare_state.mode,
+                seam=compare_state.seam,
+                swap_showing_b=compare_state.swap_showing_b,
+            )
+        else:
+            log.warning(
+                "[export] bake_compare requested but layer A or B "
+                "not found in the stack; falling back to single sequence",
+            )
 
     # Build the engine + worker + progress dialog and wire them.
     engine = ExportEngine(
@@ -86,6 +120,7 @@ def open_export_dialog(app: ImgPlayerApp) -> None:
         # renderer reads this once at construction — subsequent live
         # changes during the export don't affect the run.
         channel_selection=app._channel_selection,
+        compare=compare_ctx,
     )
     worker = ExportWorker(engine, parent=app._window)
     progress = ExportProgressDialog(

@@ -35,6 +35,28 @@ log = logging.getLogger(__name__)
 
 
 @dataclass
+class CompareRenderContext:
+    """Snapshot of the live A/B compare overlay for the export.
+
+    Captured at export-dialog accept time so the export reproduces
+    exactly what the user sees: same A/B layers, same blend mode
+    (vert / horiz / opacity), same seam value, same swap toggle.
+
+    The renderer reads each layer's pixels at the master frame via
+    its own ``Layer.sequence`` (path map + per-layer channel
+    selection), then blends through ``compare.compose.compose``.
+    Falls back to single-layer rendering if either layer no longer
+    covers the frame at export time (e.g. trimmed mid-export).
+    """
+
+    layer_a: object  # img_player.layers.Layer — kept untyped to avoid a circular import
+    layer_b: object  # img_player.layers.Layer
+    mode: str
+    seam: float
+    swap_showing_b: bool
+
+
+@dataclass
 class RenderContext:
     """All long-lived inputs for the renderer.
 
@@ -53,6 +75,12 @@ class RenderContext:
     # screen — single channel or AOV. ``None`` falls back to the
     # legacy behaviour: read the default RGB(A) channels per frame.
     channel_selection: ChannelSelection | None = None
+    # When set, the renderer takes the A/B compare path: decode
+    # ``compare.layer_a`` and ``compare.layer_b`` independently at
+    # the master frame, blend through ``compare.compose``, then
+    # continue with OCIO / resize / annotations as usual. ``None``
+    # falls back to the single-sequence read.
+    compare: CompareRenderContext | None = None
 
 
 class FrameRenderer:
@@ -100,6 +128,23 @@ class FrameRenderer:
         hole in the sequence.
         """
         out_w, out_h = output_size
+
+        # Compare path: blend layer A + layer B per the captured
+        # CompareState before any of the existing OCIO / resize /
+        # annotation steps. Each contributor brings its own channel
+        # selection and is decoded independently — same semantics as
+        # the live overlay. Falls back to the single-sequence path
+        # below if either side can't produce pixels at this frame
+        # (= layer trimmed away after the export started).
+        if self._ctx.compare is not None:
+            arr = self._render_compare(source_frame, out_w, out_h)
+            if arr is not None:
+                return self._post_compose(
+                    arr, source_frame, out_w, out_h,
+                )
+            # Fallthrough — at least one side is out of range, we
+            # render the active sequence's frame normally.
+
         if source_frame not in self._frame_paths:
             policy = self._settings.missing_frame_policy
             if policy == MissingFramePolicy.ABORT:
@@ -131,20 +176,37 @@ class FrameRenderer:
         # Always operate in 4-channel RGBA in our pipeline. Unpadded
         # source becomes RGBA with alpha=1.
         arr = self._ensure_rgba(arr)
+        return self._post_compose(arr, source_frame, out_w, out_h)
 
-        # ----- 2. OCIO display transform if requested ----------------
+    # ------------------------------------------------------------------ Compose-and-finalise tail
+
+    def _post_compose(
+        self,
+        arr: np.ndarray,
+        source_frame: int,
+        out_w: int,
+        out_h: int,
+    ) -> np.ndarray:
+        """Apply OCIO, resize, annotation bake, and dtype convert.
+
+        Shared tail for both the single-frame read path and the
+        compare-mode A/B compose path — keeps the colour and resize
+        rules identical regardless of where the input pixels came
+        from.
+        """
+        # ----- OCIO display transform if requested -----------------
         if (
             self._settings.apply_display_transform
             and self._ctx.ocio_cpu_processor is not None
         ):
             arr = self._apply_ocio(arr)
 
-        # ----- 3. Resize -------------------------------------------
+        # ----- Resize ---------------------------------------------
         src_h, src_w = arr.shape[:2]
         if (src_w, src_h) != (out_w, out_h):
             arr = self._resize(arr, out_w, out_h)
 
-        # ----- 4. Convert to the bake-ready dtype ------------------
+        # ----- Annotation bake ------------------------------------
         # We bake into a uint8 QImage. The post-bake array is in the
         # writer's target dtype.
         # For uint8-target formats (PNG/JPG/video): clamp + scale
@@ -161,8 +223,87 @@ class FrameRenderer:
             if strokes:
                 arr = self._bake_strokes(arr, strokes, source_frame, out_w, out_h)
 
-        # ----- 5. Final dtype conversion ---------------------------
+        # ----- Final dtype conversion -----------------------------
         return self._to_writer_dtype(arr)
+
+    # ------------------------------------------------------------------ Compare A/B path
+
+    def _render_compare(
+        self, master_frame: int, out_w: int, out_h: int,
+    ) -> np.ndarray | None:
+        """Decode A and B at ``master_frame`` and blend them through
+        the live :func:`compare.compose.compose` helper.
+
+        ``master_frame`` follows the export-loop iteration index,
+        which mirrors master-timeline coordinates (the dialog's
+        in/out bounds come from the controller's master-frame state).
+        Each layer contributes its own channel selection so AOVs
+        previewed in compare are reproduced verbatim in the export.
+
+        Returns ``None`` when either layer can't produce pixels at
+        this frame — the caller falls back to the single-sequence
+        path so the export never silently swaps a black screen for a
+        missing slice.
+        """
+        del out_w, out_h  # output sizing is handled in _post_compose
+        ctx = self._ctx.compare
+        if ctx is None:
+            return None
+        a_arr = self._read_layer_frame(ctx.layer_a, master_frame)
+        if a_arr is None:
+            return None
+        b_arr = self._read_layer_frame(ctx.layer_b, master_frame)
+        if b_arr is None:
+            return None
+        # Compose path expects float buffers; both layer reads are
+        # already float32 (as_half=False below).
+        from img_player.compare.compose import compose
+        composed = compose(
+            a_arr,
+            b_arr,
+            mode=ctx.mode,
+            seam=ctx.seam,
+            swap_showing_b=ctx.swap_showing_b,
+            # The viewer's accent-orange seam line is a UI affordance;
+            # the user wants the EXPORT to reflect what they see, so
+            # keep it on by default. (If a future setting wants to
+            # hide it for a clean print export, we can plumb that.)
+            draw_seam_line=True,
+        )
+        # ``compose`` returns the same dtype as A; ensure float32
+        # RGBA for the rest of the pipeline.
+        return self._ensure_rgba(composed)
+
+    def _read_layer_frame(self, layer, master_frame: int) -> np.ndarray | None:
+        """OIIO read of ``layer`` at the given master frame.
+
+        Mirrors :class:`img_player.compare.decode.CompareDecoder`'s
+        image-sequence path but stays self-contained so the export
+        worker doesn't have to share state with the live
+        ``CompareDecoder`` (which is keyed on the live video source
+        manager).
+        """
+        if not layer.covers(master_frame):
+            return None
+        source_frame = layer.source_frame_at(master_frame)
+        path = None
+        for fi in layer.sequence.frames:
+            if fi.frame_number == source_frame:
+                path = fi.path
+                break
+        if path is None:
+            return None
+        sel = layer.channel_selection
+        channels = list(sel.active.channels) if sel is not None else None
+        try:
+            arr = read_frame(path, channels=channels, as_half=False)
+        except Exception:
+            log.warning(
+                "[export-compare] decode failed for layer=%s master=%d",
+                layer.id, master_frame, exc_info=True,
+            )
+            return None
+        return self._ensure_rgba(arr)
 
     # ------------------------------------------------------------------ Helpers
 

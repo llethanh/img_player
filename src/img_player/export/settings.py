@@ -319,6 +319,15 @@ class ExportSettings:
     # is "view-only".
     copy_sidecar: bool = False
 
+    # ---- Compare overlay -----------------------------------------
+    # When True (and the app's CompareState is active at export
+    # time), each frame is composed as the live A/B overlay (vert /
+    # horiz wipe / opacity blend / swap-showing-B) before OCIO and
+    # resize. The export reproduces what the user sees on screen
+    # rather than the active sequence's raw pixels — useful for
+    # delivering a wipe-comparison reel to a director.
+    bake_compare: bool = False
+
     # ---- Missing-frame handling -----------------------------------
     # Default = ABORT to match the legacy behaviour: an incomplete
     # sequence shouldn't silently produce a corrupt-looking export
@@ -421,6 +430,7 @@ class ExportSettings:
             "apply_display_transform": self.apply_display_transform,
             "bake_annotations": self.bake_annotations,
             "copy_sidecar": self.copy_sidecar,
+            "bake_compare": self.bake_compare,
             "jpg_quality": self.jpg_quality,
             "exr_compression": self.exr_compression,
             "video_crf": self.video_crf,
@@ -472,6 +482,28 @@ class ExportSettings:
                 return default
             return s
 
+        def _safe_bool(v: object, default: bool) -> bool:
+            """Coerce a QSettings round-trip value to bool.
+
+            QSettings on Windows stores booleans as the strings
+            ``"true"`` / ``"false"`` (or sometimes ``"0"``/``"1"``).
+            A naive ``bool(v)`` then returns ``True`` for *any*
+            non-empty string — including ``"false"`` — so unchecked
+            options re-check themselves on the next dialog open.
+            Parse strings explicitly here.
+            """
+            if isinstance(v, bool):
+                return v
+            if isinstance(v, (int, float)):
+                return bool(v)
+            if isinstance(v, str):
+                s = v.strip().lower()
+                if s in ("true", "1", "yes", "on"):
+                    return True
+                if s in ("false", "0", "no", "off", ""):
+                    return False
+            return default
+
         return cls(
             output_dir=Path(str(data.get("output_dir", ""))),
             start_frame=_safe_int(data.get("start_frame", 1), 1),
@@ -481,9 +513,12 @@ class ExportSettings:
             width=_opt_int(data.get("width", 0)),
             height=_opt_int(data.get("height", 0)),
             fps=_opt_float(data.get("fps", 0.0)),
-            apply_display_transform=bool(data.get("apply_display_transform", True)),
-            bake_annotations=bool(data.get("bake_annotations", True)),
-            copy_sidecar=bool(data.get("copy_sidecar", False)),
+            apply_display_transform=_safe_bool(
+                data.get("apply_display_transform"), True,
+            ),
+            bake_annotations=_safe_bool(data.get("bake_annotations"), True),
+            copy_sidecar=_safe_bool(data.get("copy_sidecar"), False),
+            bake_compare=_safe_bool(data.get("bake_compare"), False),
             jpg_quality=_safe_int(data.get("jpg_quality", 95), 95),
             exr_compression=_safe_str(
                 data.get("exr_compression", "zip"), "zip", EXR_COMPRESSIONS,
