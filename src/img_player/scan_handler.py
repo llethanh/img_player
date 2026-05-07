@@ -193,7 +193,23 @@ def add_layer(app: ImgPlayerApp, path: Path) -> None:
         # restore, annotations sidecar and friends all run.
         if app._controller.sequence is None:
             log.info("[add-layer] empty interface → routing to open_path")
-            apply_scan_result(app, path, result)
+            # Forward the already-picked ``seq`` (single SequenceInfo)
+            # — passing the raw multi-seq ``result`` list here would
+            # have apply_scan_result run the picker a SECOND time,
+            # which is the bug the user reported as "the dialog
+            # reopens after I click Load Selected".
+            apply_scan_result(app, path, seq)
+            # Re-add any extra sequences the user also ticked in the
+            # picker as additional top-of-stack layers (apply_scan_result
+            # only handles the primary sequence on this branch).
+            for extra in extras:
+                extra2 = app._enrich_with_header(extra)
+                extra_layer = Layer.from_image(
+                    extra2,
+                    default_still_hold=_default_still_hold(app._layer_stack),
+                    offset=extra2.first_frame,
+                )
+                app._layer_stack.add(extra_layer)
             return
         # Header probe so the new layer carries width / height /
         # channel info — same enrichment the main load path uses.

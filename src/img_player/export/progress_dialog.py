@@ -84,28 +84,58 @@ class ExportProgressDialog(QDialog):  # type: ignore[misc]
             f"Speed: {avg_fps:.1f} fps · ETA: {self._format_eta(eta_s)}"
         )
 
+    # Shared styling for the three terminal states. Same big bold
+    # font on the main label, only the colour + glyph changes:
+    # green for success, orange for cancel, red for failure. The
+    # consistency makes the panel's outcome obvious at a glance.
+    _STYLE_DONE = "color: #5DC46C; font-weight: 700; font-size: 14px;"
+    _STYLE_CANCELED = "color: #E8901C; font-weight: 700; font-size: 14px;"
+    _STYLE_FAILED = "color: #E84A4A; font-weight: 700; font-size: 14px;"
+
     def on_finished(self, output_path: str, frames: int, duration_s: float) -> None:
+        # Force the bar to 100 % in case the last update_progress
+        # call hadn't reached ``self._total`` yet — otherwise the
+        # bar reads as "still crunching" alongside the "done" label.
+        self._progress.setValue(self._progress.maximum())
         self._main_label.setText(
-            f"Done — {frames} frames in {duration_s:.1f} s"
+            f"✅  Done — {frames} frames in {duration_s:.1f} s"
         )
+        self._main_label.setStyleSheet(self._STYLE_DONE)
+        self._stats_label.setText("")
         self._path_label.setText(f"Saved to: {output_path}")
-        self._cancel_btn.setText("Close")
-        self._cancel_btn.clicked.disconnect()
-        self._cancel_btn.clicked.connect(self.accept)
+        self._reset_close_button(connect_to=self.accept)
 
     def on_failed(self, message: str) -> None:
-        self._main_label.setText(f"Export failed: {message}")
-        self._main_label.setStyleSheet("color: #E84A4A; font-weight: 600;")
-        self._cancel_btn.setText("Close")
-        self._cancel_btn.clicked.disconnect()
-        self._cancel_btn.clicked.connect(self.reject)
+        self._main_label.setText(f"❌  Export failed: {message}")
+        self._main_label.setStyleSheet(self._STYLE_FAILED)
+        self._stats_label.setText("")
+        self._reset_close_button(connect_to=self.reject)
 
     def on_canceled(self, output_path: str, frames: int) -> None:
         del output_path
-        self._main_label.setText(f"Canceled after {frames} frames")
+        self._main_label.setText(f"⚠  Canceled after {frames} frames")
+        self._main_label.setStyleSheet(self._STYLE_CANCELED)
+        self._stats_label.setText("")
+        self._reset_close_button(connect_to=self.reject)
+
+    def _reset_close_button(self, *, connect_to) -> None:  # type: ignore[no-untyped-def]
+        """Flip the cancel button into its terminal "Close" state.
+
+        Re-enables the button (``_request_cancel`` may have disabled
+        it while the worker was winding down) and rewires its
+        ``clicked`` signal to ``connect_to`` (= the dialog's
+        ``accept`` / ``reject`` slot, depending on outcome). Ensures
+        the user can always close the dialog after a cancel /
+        finish / fail rather than being stuck with a greyed
+        button.
+        """
+        self._cancel_btn.setEnabled(True)
         self._cancel_btn.setText("Close")
-        self._cancel_btn.clicked.disconnect()
-        self._cancel_btn.clicked.connect(self.reject)
+        try:
+            self._cancel_btn.clicked.disconnect()
+        except (TypeError, RuntimeError):
+            pass
+        self._cancel_btn.clicked.connect(connect_to)
 
     # ------------------------------------------------------------------ Cancel
 

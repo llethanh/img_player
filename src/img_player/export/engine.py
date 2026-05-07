@@ -118,6 +118,25 @@ class ExportEngine:
         notices and returns. Idempotent."""
         self._cancel = True
 
+    def discard_partial_output(self) -> None:
+        """Delete whatever the writer wrote before cancellation.
+
+        Called by the export orchestrator when the user opts to
+        discard partial files in the cancel-confirmation dialog.
+        Safe to call after :meth:`run` returned with
+        ``canceled=True`` — the writer was just closed cleanly
+        there, so its file list / output path is still valid.
+        Video writers always discard regardless (a mid-encode
+        container is unreadable anyway); the prompt happens for
+        image-sequence writers only.
+        """
+        if self._writer is None:
+            return
+        try:
+            self._writer.abort()
+        except Exception:  # pragma: no cover — defensive
+            log.exception("[export] discard_partial_output failed")
+
     def run(
         self,
         progress_cb: Callable[[int, int, float], None] | None = None,
@@ -156,7 +175,13 @@ class ExportEngine:
                 if self._cancel:
                     log.info("[export] canceled at frame %d / %d",
                              i, settings.total_frames)
-                    self._writer.abort()
+                    # Close the writer cleanly so partial files stay
+                    # readable on disk. The orchestrator decides
+                    # whether to keep or discard them via
+                    # :meth:`discard_partial_output` after asking the
+                    # user — auto-deleting here would steal that
+                    # choice.
+                    self._writer.close()
                     return EngineResult(
                         output_path=self._writer.output_path(),
                         frames_written=frames_written,

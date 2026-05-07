@@ -137,6 +137,13 @@ def open_export_dialog(app: ImgPlayerApp) -> None:
     # to stop. The progress dialog itself stays open until the
     # worker reaches its end-state and emits canceled.
     progress.cancel_button.clicked.connect(worker.cancel)
+    # Cancel cleanup: the engine no longer auto-deletes partial
+    # output (so we can ask the user). For image sequences we prompt
+    # keep / discard; for video the partial container is always
+    # corrupt so we discard silently.
+    worker.canceled.connect(
+        lambda _p, n: _handle_cancel_cleanup(app, engine, settings, n),
+    )
     # Final status message on success / failure / cancel.
     worker.finished_ok.connect(app._on_export_finished)
     worker.failed.connect(lambda msg: app._window.set_status(f"Export failed: {msg}"))
@@ -152,3 +159,62 @@ def open_export_dialog(app: ImgPlayerApp) -> None:
         f"Exporting {settings.total_frames} frames → {settings.output_dir}"
     )
     progress.exec()
+
+
+def _handle_cancel_cleanup(
+    app: ImgPlayerApp,
+    engine,  # type: ignore[no-untyped-def]
+    settings,  # type: ignore[no-untyped-def]
+    frames_written: int,
+) -> None:
+    """After a cancel, decide whether to keep or delete the partial output.
+
+    Image-sequence exports: prompt the user (a half-finished folder
+    of frames is sometimes useful — early-look on a long render).
+    Video exports: silently discard, mid-encode containers are
+    typically unreadable so there's nothing to keep.
+
+    The engine already closed the writer cleanly when it noticed the
+    cancel flag; this function only decides whether to invoke
+    :meth:`engine.discard_partial_output` to delete the files.
+    """
+    from PySide6.QtWidgets import QMessageBox
+
+    if frames_written <= 0:
+        # Nothing on disk worth prompting about — silently discard
+        # any zero-byte stub the writer may have opened.
+        engine.discard_partial_output()
+        return
+
+    if not settings.is_image_sequence:
+        # Video container — partial encode is corrupt anyway.
+        engine.discard_partial_output()
+        app._window.set_status(
+            f"Export canceled after {frames_written} frames (partial video discarded)",
+        )
+        return
+
+    # Image sequence — let the user decide.
+    box = QMessageBox(app._window)
+    box.setWindowTitle("Export canceled")
+    box.setIcon(QMessageBox.Icon.Question)
+    box.setText(
+        f"Export canceled after {frames_written} frames.\n\n"
+        f"Garder les {frames_written} frame(s) déjà écrite(s) "
+        f"dans {settings.output_dir} ?",
+    )
+    keep_btn = box.addButton("Garder", QMessageBox.ButtonRole.AcceptRole)
+    discard_btn = box.addButton(
+        "Supprimer", QMessageBox.ButtonRole.DestructiveRole,
+    )
+    box.setDefaultButton(keep_btn)
+    box.exec()
+    if box.clickedButton() is discard_btn:
+        engine.discard_partial_output()
+        app._window.set_status(
+            f"Export canceled — {frames_written} partial frames deleted",
+        )
+    else:
+        app._window.set_status(
+            f"Export canceled — {frames_written} partial frames kept",
+        )
