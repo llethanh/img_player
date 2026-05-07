@@ -867,6 +867,10 @@ class ImgPlayerApp:
         # comes back where the user left it next session.
         tb.mode_changed.connect(self._on_toolbar_mode_changed)
         tb.floating_pos_changed.connect(self._on_toolbar_floating_pos_changed)
+        # ✕ close button on the toolbar — same effect as the
+        # transport's annotation toggle, so the user has a "this
+        # panel takes too much space" exit right next to the pin.
+        tb.close_requested.connect(self._toggle_toolbar_visible)
         # Store → timeline + transport: when the set of annotated
         # frames changes, the timeline repaints its markers and the
         # transport's prev/next-annotation buttons re-enable
@@ -1465,10 +1469,13 @@ class ImgPlayerApp:
                 self._window.annotation_dock.show()
             self._window.set_status("Annotations : toolbar visible (D pour masquer)")
         self._prefs.annotation_toolbar_visible = not was_visible
-        # Reflect the new state on the transport's ✏ button so the
-        # checkable visual matches reality whether the user toggled
-        # via D, the toolbar's hide-on-pen-off, or the button itself.
+        # Reflect the new state on the transport's ✏ button AND the
+        # fullscreen bar's twin so the checkable visual matches
+        # reality whether the user toggled via D, the toolbar's
+        # hide-on-pen-off, the transport button, the fs button, or
+        # the toolbar's ✕ close.
         self._window.transport.set_annotation_toggle_active(not was_visible)
+        self._window.set_fs_annotation_toggle_active(not was_visible)
 
     def _on_annotation_prev(self) -> None:
         """``[`` or transport prev button — seek to the highest

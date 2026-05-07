@@ -75,6 +75,43 @@ class TestSelectionEmissions:
         assert sel.active.label == "Z"
 
 
+class TestCycleActive:
+    """``cycle_active`` powers the channel button's Up / Down arrow
+    keyboard navigation. Steps through ``_groups`` with wrap-around
+    and emits the same ``selection_changed`` signal as a radio click."""
+
+    def test_cycle_down_picks_next_group(
+        self, menu: ChannelMenu, qtbot,
+    ) -> None:
+        # Default active = "RGB" (first group). +1 → "albedo".
+        with qtbot.waitSignal(menu.selection_changed, timeout=200) as sig:
+            menu.cycle_active(+1)
+        assert menu.active_label == "albedo"
+        assert sig.args[0].active.label == "albedo"
+
+    def test_cycle_up_picks_previous_group_with_wrap(
+        self, menu: ChannelMenu, qtbot,
+    ) -> None:
+        # From "RGB" (idx 0), -1 wraps to the last group ("N").
+        with qtbot.waitSignal(menu.selection_changed, timeout=200) as sig:
+            menu.cycle_active(-1)
+        assert menu.active_label == "N"
+        assert sig.args[0].active.label == "N"
+
+    def test_cycle_no_op_when_only_one_group(self, qtbot) -> None:
+        m = ChannelMenu()
+        qtbot.addWidget(m)
+        m.set_groups([ChannelGroup(label="solo", channels=("R",))])
+        with qtbot.assertNotEmitted(m.selection_changed):
+            m.cycle_active(+1)
+
+    def test_cycle_silent_when_no_groups(self, qtbot) -> None:
+        m = ChannelMenu()
+        qtbot.addWidget(m)
+        with qtbot.assertNotEmitted(m.selection_changed):
+            m.cycle_active(+1)
+
+
 class TestEmpty:
     def test_empty_groups_no_selection(self, qtbot) -> None:
         m = ChannelMenu()

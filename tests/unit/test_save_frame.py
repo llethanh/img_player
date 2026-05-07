@@ -217,6 +217,7 @@ class TestWriteImage:
             path=tmp_path / f"out.{ext}",
             fmt=ext,
             with_annotations=False,
+            bake_compare=True,
         )
         ok = _write_image(img, settings)
         assert ok is True
@@ -231,6 +232,7 @@ class TestWriteImage:
             path=nested / "x.png",
             fmt="png",
             with_annotations=False,
+            bake_compare=True,
         )
         assert _write_image(img, settings)
         assert (nested / "x.png").exists()

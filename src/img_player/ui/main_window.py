@@ -1315,12 +1315,21 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self._fullscreen = True
 
         # Hide every chrome surface — the viewer is the only thing
-        # the user sees outside the auto-show bar.
-        self.menuBar().hide()
+        # the user sees outside the auto-show bar. ``menuWidget()``
+        # rather than ``menuBar()``: we replaced the menu slot with a
+        # custom QWidget (top_bar built in ``_build_menu``); calling
+        # ``menuBar()`` here would auto-create a fresh empty QMenuBar
+        # AND install it in the slot, evicting top_bar permanently.
+        self.menuWidget().hide()
         self._transport.hide()
         if self._master_timeline_panel is not None:
             self._master_timeline_panel.hide()
         self._side_dock.hide()
+        # Remember the annotation dock's pre-fullscreen visibility so
+        # ``exit_fullscreen`` can restore it. Without this snapshot
+        # the dock stays hidden after the fullscreen round-trip,
+        # silently dropping the user's annotation toolbar.
+        self._fs_annotation_dock_was_visible = self._annotation_dock.isVisible()
         self._annotation_dock.hide()
         if self.statusBar() is not None:
             self.statusBar().hide()
@@ -1376,13 +1385,19 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             mtp._axis_gutter_layout.insertWidget(1, frame_display)
             self._master_timeline_panel.show()
 
-        self.menuBar().show()
+        # ``menuWidget()`` rather than ``menuBar()`` for the same
+        # reason as in ``enter_fullscreen`` — we set top_bar via
+        # ``setMenuWidget``, and ``menuBar()`` would replace it.
+        self.menuWidget().show()
         self._transport.show()
         self._side_dock.show()
-        # Annotation dock: only show if the user had it visible before
-        # — we don't track that explicitly, but Qt's saveState / our
-        # restore logic put it where it should be naturally on next
-        # window-state restore. Leaving it whatever it was is fine.
+        # Restore the annotation dock if it was visible before
+        # going fullscreen. The snapshot is taken in
+        # ``enter_fullscreen``; defaults to False on the very first
+        # exit of an already-fullscreen window (= ``False`` matches
+        # the dock's own startup default).
+        if getattr(self, "_fs_annotation_dock_was_visible", False):
+            self._annotation_dock.show()
         if self.statusBar() is not None:
             self.statusBar().show()
 
@@ -1441,7 +1456,21 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
 
         # The timeline is reparented in here on ``enter_fullscreen``
         # at index 0 with stretch=1 so it fills the bar's width. The
-        # exit button below sits to its right at fixed size.
+        # annotation toggle + exit button below sit to its right at
+        # fixed size.
+
+        # Annotation toggle — same effect as the transport bar's
+        # ✏️ button (route through the existing
+        # ``annotation_toggle_clicked`` signal so app.py's wiring
+        # toggles the toolbar visibility uniformly). Checkable so
+        # the down-state mirrors the toolbar's open / closed state.
+        annot_btn = QPushButton("✏️")
+        annot_btn.setFixedSize(G.BTN_TRANSPORT_W, G.BTN_TRANSPORT_H)
+        annot_btn.setToolTip("Afficher / masquer la toolbar d'annotation (D)")
+        annot_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        annot_btn.setCheckable(True)
+        annot_btn.clicked.connect(self._transport.annotation_toggle_clicked.emit)
+        layout.addWidget(annot_btn)
 
         exit_btn = QPushButton()
         exit_btn.setFixedSize(G.BTN_TRANSPORT_W, G.BTN_TRANSPORT_H)
@@ -1454,7 +1483,13 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
 
         self._fs_bar = bar
         self._fs_bar_layout = layout
+        self._fs_annot_btn = annot_btn
         self._fs_exit_btn = exit_btn
+        # Sync the fs annotation button to the toolbar's current
+        # visibility on entry — without this the button's checked
+        # state would lag behind reality (= shows "off" while the
+        # toolbar is still visible from before fullscreen entry).
+        self._sync_fs_annotation_button()
 
         # Hide-with-delay timer: armed when the cursor leaves the hot
         # zone, fires after ``_FS_HIDE_DELAY_MS``, hides the bar.
@@ -1464,6 +1499,47 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self._fs_hide_timer.timeout.connect(
             lambda: self._fs_bar and self._fs_bar.hide(),
         )
+
+    def set_fs_annotation_toggle_active(self, active: bool) -> None:
+        """Sync the fullscreen bar's annotation toggle checked state.
+
+        Called by ``app._toggle_toolbar_visible`` so the fs button
+        and the transport's ✏ button stay in lock-step regardless
+        of whether the user toggled via D, the transport, the fs
+        bar, or the toolbar's own ✕ close button. No-op when the
+        fs bar hasn't been built yet (= we've never entered
+        fullscreen this session).
+        """
+        btn = getattr(self, "_fs_annot_btn", None)
+        if btn is None:
+            return
+        if btn.isChecked() == bool(active):
+            return
+        btn.blockSignals(True)
+        try:
+            btn.setChecked(bool(active))
+        finally:
+            btn.blockSignals(False)
+
+    def _sync_fs_annotation_button(self) -> None:
+        """Match the fs annotation button to the live toolbar state.
+        Used on fs-bar build so the initial check reflects reality."""
+        # Late import to avoid a circular import via app.py.
+        # ``_annotation_toolbar`` doesn't live on MainWindow; the
+        # transport's button mirrors it though, so we read from there.
+        transport = getattr(self, "_transport", None)
+        btn = getattr(self, "_fs_annot_btn", None)
+        if transport is None or btn is None:
+            return
+        try:
+            active = transport.is_annotation_toggle_active()
+        except Exception:
+            active = False
+        btn.blockSignals(True)
+        try:
+            btn.setChecked(bool(active))
+        finally:
+            btn.blockSignals(False)
 
     def _position_fs_bar(self) -> None:
         """Resize the floating bar to span the window's bottom."""

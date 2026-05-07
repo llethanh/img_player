@@ -176,6 +176,28 @@ class ChannelMenu(QMenu):  # type: ignore[misc]
     def active_label(self) -> str:
         return self._active_label
 
+    def cycle_active(self, delta: int) -> None:
+        """Move the active radio by ``delta`` positions in the group
+        list (wrap-around). Emits ``selection_changed``.
+
+        Used by the channel button's keyboard handler so the user
+        can step through channel groups with the arrow keys without
+        opening the popup. ``delta=-1`` = previous group (Up arrow);
+        ``delta=+1`` = next group (Down arrow).
+        """
+        if not self._groups:
+            return
+        labels = [g.label for g in self._groups]
+        try:
+            idx = labels.index(self._active_label)
+        except ValueError:
+            idx = 0
+        new_label = labels[(idx + int(delta)) % len(labels)]
+        if new_label == self._active_label:
+            return
+        self._set_active_silent(new_label)
+        self._emit_selection()
+
     # ------------------------------------------------------------------ Internals
 
     def _set_active_silent(self, label: str) -> None:

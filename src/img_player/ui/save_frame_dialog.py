@@ -224,12 +224,14 @@ class SaveFrameDialog(QDialog):
             path=path,
             fmt=ext,
             with_annotations=self._annotations_check.isChecked(),
-            # ``bake_compare`` only carries meaning when the row is
-            # surfaced; with compare inactive, force-true so the
-            # field stays a stable "no special handling" default in
-            # the persisted prefs.
-            bake_compare=(
-                self._bake_compare_check.isChecked()
-                if self._compare_active else True
-            ),
+            # Always read the checkbox's actual state, even when the
+            # row is hidden (= compare wasn't active when the dialog
+            # opened). The hidden-but-initialised checkbox carries
+            # the user's last-saved choice through __init__'s
+            # ``setChecked(last_bake_compare)`` call, so reading it
+            # here keeps the persisted pref stable across "open Save
+            # Frame while compare is off" sessions. Forcing True
+            # here would silently overwrite the user's preference
+            # every time the dialog ran without the row visible.
+            bake_compare=self._bake_compare_check.isChecked(),
         )

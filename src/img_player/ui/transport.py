@@ -43,6 +43,34 @@ _LOOP_LABELS = {
 }
 
 
+class _ChannelToolButton(QToolButton):  # type: ignore[misc]
+    """``QToolButton`` whose Up / Down arrows step through the
+    channel groups while the button has keyboard focus.
+
+    Lets the user pick a channel by clicking the button (= focus
+    grabbed via ``ClickFocus``), then nudge the active radio
+    without re-opening the menu. Focus is preserved across menu
+    close via the parent's ``aboutToHide`` wiring so the arrows
+    keep working until the user clicks somewhere else.
+    """
+
+    def __init__(self, menu: ChannelMenu, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._menu_ref = menu
+
+    def keyPressEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        key = event.key()
+        if key == Qt.Key.Key_Up:
+            self._menu_ref.cycle_active(-1)
+            event.accept()
+            return
+        if key == Qt.Key.Key_Down:
+            self._menu_ref.cycle_active(+1)
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
 class TransportBar(QWidget):  # type: ignore[misc]
     """Emits high-level intents — the controller applies the logic."""
 
@@ -384,23 +412,42 @@ class TransportBar(QWidget):  # type: ignore[misc]
         #   * "albedo"          → single mode on albedo
         #   * "RGB +2"          → contact sheet, RGB + 2 other tiles
         # The popup itself owns the per-row radio + checkbox state.
-        self._channel_button = QToolButton()
+        self._channel_menu = ChannelMenu(self)
+        self._channel_menu.selection_changed.connect(self._on_channel_selection_changed)
+        self._channel_button = _ChannelToolButton(self._channel_menu)
         self._channel_button.setFixedHeight(G.INPUT_H)
         self._channel_button.setMinimumWidth(96)
         self._channel_button.setToolTip(
-            "Channel to display — click to open the channel menu "
-            "(check multiple to enable contact-sheet)"
+            "Channel to display — click to open the menu, then use "
+            "Up / Down arrows to step through groups while focused"
         )
         self._channel_button.setText("RGB")
         # InstantPopup (vs MenuButtonPopup) — the whole button area
         # opens the menu, no mini arrow split. Cohérent with the loop
         # button's visual: one bordered button = one click action.
         self._channel_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        # ClickFocus so the button can grab keyboard focus on a click,
+        # which lets ``_ChannelToolButton.keyPressEvent`` see Up/Down
+        # afterwards. ``aboutToHide`` re-grabs focus when the menu
+        # closes via Close button so arrows still work without
+        # re-clicking the button.
         self._channel_button.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
-
-        self._channel_menu = ChannelMenu(self._channel_button)
-        self._channel_menu.selection_changed.connect(self._on_channel_selection_changed)
+        # Visual cue when focused — the orange ACCENT outline mirrors
+        # the rest of the warm UI palette and makes "arrows will
+        # navigate channels" obvious.
+        self._channel_button.setStyleSheet(
+            "QToolButton:focus { "
+            f"  border: 1px solid {H.ACCENT}; "
+            "}"
+        )
         self._channel_button.setMenu(self._channel_menu)
+        # Re-claim focus when the menu closes via the footer Close
+        # button, so the user can keep stepping with arrows after
+        # a popup interaction. Click-outside still moves focus to
+        # whatever was clicked (= the user's explicit intent).
+        self._channel_menu.aboutToHide.connect(
+            lambda: self._channel_button.setFocus(Qt.FocusReason.OtherFocusReason),
+        )
 
         # Track the current ChannelSelection so the button label can
         # be derived without re-querying the menu.
@@ -663,6 +710,12 @@ class TransportBar(QWidget):  # type: ignore[misc]
         """Enable / disable the 🔄 reload button (same gating as
         Export — needs a loaded sequence to mean anything)."""
         self._reload_btn.setEnabled(bool(enabled))
+
+    def is_annotation_toggle_active(self) -> bool:
+        """Read the ✏ button's current checked state — used by the
+        fullscreen bar to mirror the toolbar's visibility on its
+        own annotation toggle."""
+        return bool(self._annotation_toggle_btn.isChecked())
 
     def set_annotation_toggle_active(self, active: bool) -> None:
         """Reflect the toolbar's visibility on the ✏ button.

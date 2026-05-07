@@ -293,6 +293,11 @@ class AnnotationToolbar(QWidget):
     mode_changed = Signal(object)
     """Emits :class:`ToolbarMode` when the pin toggles float ⇄ dock."""
 
+    close_requested = Signal()
+    """Emits when the user clicks the ✕ close button — the app hides
+    the annotation toolbar entirely. Same effect as the menu /
+    transport button that opens-and-closes it."""
+
     floating_pos_changed = Signal(int, int)
     """Emits ``(x, y)`` when the user finishes dragging the toolbar in
     float mode. App.py persists the position to preferences."""
@@ -586,15 +591,29 @@ class AnnotationToolbar(QWidget):
         layout.setContentsMargins(6, 6, 6, 6)
         layout.setSpacing(6)
 
-        # --- Pin button (top of the toolbar, alone, centred). Emoji
-        # 📌 — the user prefers the colorful native glyph here over
-        # a custom monochrome SVG.
+        # --- Pin + close row (top of the toolbar, side-by-side).
+        # 📌 picks the dock vs float behaviour, ✕ hides the toolbar
+        # entirely (same effect as toggling it off from the
+        # transport bar / menu). Both share a horizontal row so
+        # they read as the toolbar's "global" control cluster.
         self._pin_btn = QToolButton(self)
         self._pin_btn.setText("📌")
         self._pin_btn.setToolTip("Bascule float ⇄ dock")
         self._pin_btn.setFixedSize(26, 22)
         self._pin_btn.clicked.connect(self._on_pin_clicked)
-        layout.addWidget(self._pin_btn, alignment=Qt.AlignmentFlag.AlignHCenter)
+        self._close_btn = QToolButton(self)
+        self._close_btn.setText("✕")
+        self._close_btn.setToolTip("Fermer la barre d'annotation")
+        self._close_btn.setFixedSize(26, 22)
+        self._close_btn.clicked.connect(self.close_requested.emit)
+        pin_row = QHBoxLayout()
+        pin_row.setContentsMargins(0, 0, 0, 0)
+        pin_row.setSpacing(4)
+        pin_row.addStretch(1)
+        pin_row.addWidget(self._pin_btn)
+        pin_row.addWidget(self._close_btn)
+        pin_row.addStretch(1)
+        layout.addLayout(pin_row)
         layout.addWidget(self._separator())
 
         # --- Ephemeral mode toggle (v0.4.1). Sits right under the pin
