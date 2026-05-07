@@ -83,6 +83,15 @@ def _ensure_rgba(arr: np.ndarray) -> np.ndarray:
             (arr.shape[0], arr.shape[1], 1), dtype=arr.dtype,
         )
         return np.ascontiguousarray(np.concatenate([rgb, a], axis=2))
+    if arr.shape[2] == 2:
+        # Luminance + alpha (some grayscale-with-mask formats, or a
+        # 1-channel pass that picked up an A on the way through). Show
+        # the lum as monochrome RGB and keep the second channel as
+        # the alpha — matches how the GL viewport already presents
+        # broadcasted single-channel reads.
+        lum = arr[..., 0:1]
+        rgb = np.broadcast_to(lum, (arr.shape[0], arr.shape[1], 3))
+        return np.ascontiguousarray(np.concatenate([rgb, arr[..., 1:2]], axis=2))
     raise ValueError(f"Unsupported channel count: {arr.shape[2]}")
 
 
@@ -1119,6 +1128,14 @@ class MasterFrameCache:
         # the 3-channel "RGB without alpha" case needs the implicit
         # bare-A pickup so the over-blend has an opacity to work with.
         if len(base) >= 4:
+            return base
+        # Single-channel masks / depth passes (Z, normal.X, mattes…)
+        # are displayed as monochrome by the reader and the compositor
+        # treats them as fully opaque via the 1-channel branch in
+        # ``_ensure_rgba``. Appending the bare A would yield a
+        # 2-channel buffer the compositor can't handle, and conceptually
+        # a one-channel pass has no opacity to blend through anyway.
+        if len(base) == 1:
             return base
         if "A" in base:
             return base
