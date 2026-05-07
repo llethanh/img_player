@@ -27,7 +27,7 @@ Default check state
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, QObject, Qt
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QDialog,
@@ -111,8 +111,17 @@ class SequencePickerDialog(QDialog):  # type: ignore[misc]
             # Click-anywhere-on-the-row toggles the checkbox: a small
             # affordance that makes the picker feel native (Qt's
             # default requires a precise hit on the indicator
-            # rectangle, which is fiddly for fast users).
-            self._list.itemClicked.connect(self._toggle_item_check)
+            # rectangle, which is fiddly for fast users — and with
+            # ``NoSelection`` it doesn't even toggle on the indicator
+            # itself, which is the original bug).
+            #
+            # We bypass Qt's flaky native toggle entirely: an
+            # eventFilter on the viewport intercepts every press on a
+            # checkable row, toggles the state ourselves, and
+            # consumes the event. A single source of truth, works the
+            # same whether the click lands on the indicator or
+            # elsewhere on the row.
+            self._list.viewport().installEventFilter(self)
         outer.addWidget(self._list, 1)
 
         if multi:
@@ -249,14 +258,13 @@ class SequencePickerDialog(QDialog):  # type: ignore[misc]
 
     # ------------------------------------------------------------------ Helpers
 
-    def _toggle_item_check(self, item: QListWidgetItem) -> None:
-        """Click anywhere on a sequence row → toggle its check state.
+    def _toggle_item(self, item: QListWidgetItem) -> None:
+        """Flip the check state of a sequence row.
 
-        Headers / separators / empty markers all carry ``None`` in
+        Headers / separators / empty markers carry ``None`` in
         ``_ROLE_SEQ`` and are silently ignored.
         """
-        seq = item.data(_ROLE_SEQ)
-        if seq is None:
+        if item.data(_ROLE_SEQ) is None:
             return
         new = (
             Qt.CheckState.Unchecked
@@ -264,6 +272,38 @@ class SequencePickerDialog(QDialog):  # type: ignore[misc]
             else Qt.CheckState.Checked
         )
         item.setCheckState(new)
+
+    # ------------------------------------------------------------------ Event filter
+
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:  # type: ignore[override]
+        """Single point of truth for click-to-toggle in multi mode.
+
+        Catches every left-button press on a checkable row, toggles
+        the state ourselves, and **consumes the event** so Qt's
+        native (and unreliable under ``NoSelection``) handler
+        doesn't get a second say. Clicks on headers / separators
+        fall through untouched.
+        """
+        if (
+            obj is self._list.viewport()
+            and event.type() == QEvent.Type.MouseButtonPress
+            and event.button() == Qt.MouseButton.LeftButton
+        ):
+            # QMouseEvent on PySide6 — ``position()`` returns a QPointF
+            # (Qt 6 API); fall back to ``pos()`` for safety on older
+            # bindings.
+            pos = (
+                event.position().toPoint()
+                if hasattr(event, "position") else event.pos()
+            )
+            item = self._list.itemAt(pos)
+            if (
+                item is not None
+                and bool(item.flags() & Qt.ItemFlag.ItemIsUserCheckable)
+            ):
+                self._toggle_item(item)
+                return True  # eat the event — we own the toggle
+        return super().eventFilter(obj, event)
 
     def _set_all_checked(self, checked: bool) -> None:
         state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
