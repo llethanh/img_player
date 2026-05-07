@@ -152,7 +152,9 @@ def _apply_chromatic_aberration(
 # ------------------------------------------------------------
 # Qt overlay (corner crosshairs, central text, vignette)
 # ------------------------------------------------------------
-def _draw_overlay(pixmap: QPixmap, w: int, h: int) -> None:
+def _draw_overlay(
+    pixmap: QPixmap, w: int, h: int, filename: str | None = None,
+) -> None:
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
@@ -212,6 +214,32 @@ def _draw_overlay(pixmap: QPixmap, w: int, h: int) -> None:
         "SEQUENCE ERROR  ·  FRAME NOT FOUND",
     )
 
+    # Filename label — rendered just below the central box when the
+    # caller provided one. Monospace so digits line up across frames,
+    # smaller than the subtitle so it doesn't compete with the main
+    # "MISSING FRAME" label. Drawn on its own translucent strip for
+    # readability against any checker shade.
+    if filename:
+        name_fs = max(min(w * 0.022, h * 0.04), 10)
+        font_name = QFont("Consolas")
+        font_name.setStyleHint(QFont.StyleHint.Monospace)
+        font_name.setPixelSize(int(name_fs))
+        font_name.setWeight(QFont.Weight.Medium)
+        painter.setFont(font_name)
+        # Strip background — width matches the central box so the label
+        # visually anchors to it.
+        strip_h = name_fs * 1.8
+        strip_y = by + bh + name_fs * 0.6
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(8, 8, 8, 140))
+        painter.drawRoundedRect(QRectF(bx, strip_y, bw, strip_h), 2, 2)
+        painter.setPen(QColor(255, 255, 255, 220))
+        painter.drawText(
+            QRectF(bx, strip_y, bw, strip_h),
+            int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter),
+            filename,
+        )
+
     # Vignette
     grad = QRadialGradient(w / 2, h / 2, max(w, h) * 0.72)
     grad.setColorAt(0,    QColor(0, 0, 0, 0))
@@ -227,8 +255,15 @@ def _draw_overlay(pixmap: QPixmap, w: int, h: int) -> None:
 # ------------------------------------------------------------
 # Public API
 # ------------------------------------------------------------
-def generate_missing_frame(width: int, height: int) -> QPixmap:
-    """Generate a 'Missing Frame' QPixmap at the requested size."""
+def generate_missing_frame(
+    width: int, height: int, filename: str | None = None,
+) -> QPixmap:
+    """Generate a 'Missing Frame' QPixmap at the requested size.
+
+    When ``filename`` is provided, it's painted below the central
+    box so the user can see *which* file is missing without having
+    to dig through logs.
+    """
     width = max(2, int(width))
     height = max(2, int(height))
 
@@ -248,15 +283,17 @@ def generate_missing_frame(width: int, height: int) -> QPixmap:
     pixmap = QPixmap.fromImage(img)
 
     # 4. Qt overlay
-    _draw_overlay(pixmap, width, height)
+    _draw_overlay(pixmap, width, height, filename)
     return pixmap
 
 
-def generate_missing_frame_rgba_float(width: int, height: int) -> np.ndarray:
+def generate_missing_frame_rgba_float(
+    width: int, height: int, filename: str | None = None,
+) -> np.ndarray:
     """Same as :func:`generate_missing_frame` but returns the result as
     an ``H×W×4`` float32 RGBA array in [0, 1] — the format the GL
     viewport / multi-layer compositor consumes directly."""
-    pixmap = generate_missing_frame(width, height)
+    pixmap = generate_missing_frame(width, height, filename)
     qimg = pixmap.toImage().convertToFormat(QImage.Format.Format_RGBA8888)
     w = qimg.width()
     h = qimg.height()

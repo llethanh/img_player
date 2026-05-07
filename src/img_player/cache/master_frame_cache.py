@@ -41,8 +41,22 @@ from img_player.cache.missing_placeholder import get_missing_placeholder
 from img_player.cache.worker_pool import WorkerPool
 from img_player.io.reader import FrameReadError, read_frame
 from img_player.layers import Layer, LayerStack
+from img_player.sequence.models import SequenceInfo
 
 log = logging.getLogger(__name__)
+
+
+def _expected_filename(seq: SequenceInfo, frame_number: int) -> str:
+    """Reconstruct the filename a missing slot *would* have on disk.
+
+    Uses the sequence's ``base_name`` + observed zero-pad width +
+    ``extension``. Mirrors the convention the scanner uses to detect
+    holes, so the displayed name matches what the user expects to
+    find on disk.
+    """
+    pad = max(0, int(seq.padding))
+    digits = f"{frame_number:0{pad}d}" if pad > 0 else str(frame_number)
+    return f"{seq.base_name}{digits}{seq.extension}"
 
 
 _DEFAULT_BUDGET_BYTES = 8 * 1024**3
@@ -635,6 +649,7 @@ class MasterFrameCache:
                 placeholder = get_missing_placeholder(
                     layer.sequence.width or 512,
                     layer.sequence.height or 512,
+                    filename=_expected_filename(layer.sequence, source_frame),
                 )
                 key = (master_frame, self._signature_at(master_frame))
                 self._frames[key] = placeholder
@@ -905,7 +920,6 @@ class MasterFrameCache:
             paths = self._path_index[layer.id]
             ph_w = layer.sequence.width or 512
             ph_h = layer.sequence.height or 512
-            placeholder = get_missing_placeholder(ph_w, ph_h)
             for master_frame in range(layer.master_start, layer.master_end + 1):
                 with self._lock:
                     sig = self._signature_at(master_frame)
@@ -920,6 +934,15 @@ class MasterFrameCache:
                     # from the layer above and isn't actually missing.
                     topmost = self._stack.topmost_visible_at(master_frame)
                     if topmost is None or topmost.id == layer.id:
+                        # Per-frame placeholder so the user sees which
+                        # filename is missing on the overlay. Built
+                        # outside the lock — QPainter is slow-ish.
+                        placeholder = get_missing_placeholder(
+                            ph_w, ph_h,
+                            filename=_expected_filename(
+                                layer.sequence, source_frame,
+                            ),
+                        )
                         with self._lock:
                             self._frames[key] = placeholder
                             self._missing.add(key)
@@ -1436,7 +1459,10 @@ class MasterFrameCache:
                 "decode failed master=%d path=%s: %s",
                 master_frame, path, err,
             )
-            placeholder = get_missing_placeholder(placeholder_w, placeholder_h)
+            placeholder = get_missing_placeholder(
+                placeholder_w, placeholder_h,
+                filename=getattr(path, "name", None) or str(path),
+            )
             with self._lock:
                 self._decode_errors += 1
                 if epoch != self._epoch:

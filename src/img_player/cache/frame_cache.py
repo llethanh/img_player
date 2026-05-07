@@ -18,6 +18,17 @@ from img_player.sequence.models import SequenceInfo
 
 log = logging.getLogger(__name__)
 
+
+def _expected_filename(seq: SequenceInfo, frame_number: int) -> str:
+    """Reconstruct the filename a missing slot *would* have on disk.
+
+    Mirrors the scanner's naming convention so the placeholder
+    overlay matches what the user expects to find on disk.
+    """
+    pad = max(0, int(seq.padding))
+    digits = f"{frame_number:0{pad}d}" if pad > 0 else str(frame_number)
+    return f"{seq.base_name}{digits}{seq.extension}"
+
 _DEFAULT_BUDGET_BYTES = 8 * 1024**3  # 8 GB
 _DEFAULT_NUM_WORKERS = 4
 # Eviction multiplier for frames that lie *behind* the playhead in the
@@ -116,30 +127,37 @@ class FrameCache:
         to mark them; we do it here.
         """
         self._pool.clear()
-        # Build the placeholder before grabbing the lock — placeholder
-        # creation goes through QPainter (slow-ish) and we don't want
-        # to hold the cache lock during that.
-        placeholder = get_missing_placeholder(
-            sequence.width or 512, sequence.height or 512,
-        )
+        # Resolve the missing-slot list outside the lock — building
+        # per-frame filename-overlay placeholders goes through
+        # QPainter (slow-ish) and we don't want to hold the cache
+        # lock during that. Each missing slot now gets its own
+        # buffer so the user can see which file is missing on the
+        # overlay; for typically-sparse VFX sequences the memory
+        # cost is negligible.
+        ph_w = sequence.width or 512
+        ph_h = sequence.height or 512
+        paths_by_frame = {f.frame_number: f.path for f in sequence.frames}
+        missing_placeholders: dict[int, np.ndarray] = {}
+        for fnum in range(sequence.first_frame, sequence.last_frame + 1):
+            if fnum not in paths_by_frame:
+                missing_placeholders[fnum] = get_missing_placeholder(
+                    ph_w, ph_h,
+                    filename=_expected_filename(sequence, fnum),
+                )
         with self._lock:
             self._frames.clear()
             self._missing_frames.clear()
             self._bytes_used = 0
             self._sequence = sequence
-            self._paths_by_frame = {f.frame_number: f.path for f in sequence.frames}
+            self._paths_by_frame = paths_by_frame
             self._mtimes_by_frame = {
                 f.frame_number: f.mtime for f in sequence.frames
             }
             self._current_frame = sequence.first_frame
-            # Pre-mark every hole in the range as missing so the
-            # placeholder is served on first access (no stall).
-            for fnum in range(sequence.first_frame, sequence.last_frame + 1):
-                if fnum not in self._paths_by_frame:
-                    self._frames[fnum] = placeholder
-                    self._missing_frames.add(fnum)
-                    # Don't bump bytes_used — every missing slot
-                    # aliases the same shared buffer.
+            for fnum, placeholder in missing_placeholders.items():
+                self._frames[fnum] = placeholder
+                self._missing_frames.add(fnum)
+                self._bytes_used += placeholder.nbytes
             self._epoch += 1
 
     def detach(self) -> None:
@@ -181,12 +199,17 @@ class FrameCache:
         * **Path exists, mtime unchanged** → keep as is.
         """
         self._pool.clear()
-        # Build the placeholder up front so we don't hold the lock
-        # around QPainter (only triggered if the cache wasn't
-        # already primed for this resolution).
-        placeholder = get_missing_placeholder(
-            new_sequence.width or 512, new_sequence.height or 512,
-        )
+        # Per-frame placeholders: each missing slot gets its own
+        # overlay with the expected filename. Built outside the
+        # lock — QPainter is slow-ish.
+        ph_w = new_sequence.width or 512
+        ph_h = new_sequence.height or 512
+
+        def _placeholder_for(fnum: int) -> np.ndarray:
+            return get_missing_placeholder(
+                ph_w, ph_h,
+                filename=_expected_filename(new_sequence, fnum),
+            )
         kept = dropped = 0
         with self._lock:
             old_mtimes = self._mtimes_by_frame
@@ -205,19 +228,26 @@ class FrameCache:
                 was_placeholder = fnum in old_missing
                 if not has_path:
                     # File missing on disk → install / keep
-                    # placeholder + flag.
+                    # placeholder + flag. Each placeholder now carries
+                    # its own filename overlay, so even "was already a
+                    # placeholder" needs a fresh build only when the
+                    # slot didn't have one yet (we keep existing ones
+                    # — the filename hasn't changed).
                     if cur is None:
-                        self._frames[fnum] = placeholder
-                        # Shared buffer; don't bump bytes_used.
+                        new_ph = _placeholder_for(fnum)
+                        self._frames[fnum] = new_ph
+                        self._bytes_used += new_ph.nbytes
                     elif not was_placeholder:
                         # Was real data → drop and replace with
-                        # placeholder. Bytes accounting follows the
-                        # original alloc (placeholders are shared
-                        # so they don't count).
+                        # placeholder. Subtract the old alloc, add
+                        # the placeholder's alloc.
                         self._bytes_used -= cur.nbytes
-                        self._frames[fnum] = placeholder
+                        new_ph = _placeholder_for(fnum)
+                        self._frames[fnum] = new_ph
+                        self._bytes_used += new_ph.nbytes
                         dropped += 1
-                    # else: was already a placeholder; keep aliased.
+                    # else: was already a placeholder for this same
+                    # filename; keep as is (no rebuild).
                     self._missing_frames.add(fnum)
                     continue
 
@@ -225,8 +255,13 @@ class FrameCache:
                 if was_placeholder:
                     # Slot used to be missing; file just came
                     # back → drop the placeholder so a fresh
-                    # decode picks up the real pixels.
-                    self._frames.pop(fnum, None)
+                    # decode picks up the real pixels. Per-frame
+                    # placeholders carry their own bytes_used
+                    # contribution since the filename overlay was
+                    # added, so we have to refund here.
+                    old_ph = self._frames.pop(fnum, None)
+                    if old_ph is not None:
+                        self._bytes_used -= old_ph.nbytes
                     continue
                 if cur is None:
                     # Not cached, not previously missing → nothing
@@ -249,8 +284,10 @@ class FrameCache:
                     new_sequence.first_frame <= fnum <= new_sequence.last_frame
                 ):
                     arr = self._frames.pop(fnum)
-                    if fnum not in old_missing:
-                        self._bytes_used -= arr.nbytes
+                    # Per-frame placeholders contribute to bytes_used
+                    # too now (each carries its own filename overlay),
+                    # so we always subtract.
+                    self._bytes_used -= arr.nbytes
                     dropped += 1
 
             self._sequence = new_sequence
@@ -425,7 +462,7 @@ class FrameCache:
             # continue across the hole. Sized to the sequence's known
             # resolution when available, otherwise a 512×512 default —
             # the GL viewport rescales it to fit the current zoom.
-            placeholder = self._build_missing_placeholder()
+            placeholder = self._build_missing_placeholder(path)
             with self._lock:
                 self._decode_errors += 1
                 # Same epoch + race guards as the success path: drop
@@ -465,13 +502,18 @@ class FrameCache:
             self._bytes_used += arr.nbytes
             self._evict_if_over_budget()
 
-    def _build_missing_placeholder(self) -> np.ndarray:
+    def _build_missing_placeholder(
+        self, failing_path: Path | None = None,
+    ) -> np.ndarray:
         """Return the checkerboard "missing" placeholder, sized to
-        the sequence resolution when known."""
+        the sequence resolution when known. When ``failing_path`` is
+        provided, its basename is baked into the overlay so the user
+        sees which file failed to decode."""
         seq = self._sequence
         w = (seq.width if seq is not None and seq.width else 512)
         h = (seq.height if seq is not None and seq.height else 512)
-        return get_missing_placeholder(w, h)
+        fname = failing_path.name if failing_path is not None else None
+        return get_missing_placeholder(w, h, filename=fname)
 
     def shrink_budget(self, new_bytes: int) -> None:
         """Reduce the budget at runtime and force an immediate eviction.

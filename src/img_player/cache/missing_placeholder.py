@@ -24,10 +24,32 @@ _cache: dict[tuple[int, int], np.ndarray] = {}
 _cache_lock = Lock()
 
 
-def get_missing_placeholder(width: int, height: int) -> np.ndarray:
-    """Return a HxWx4 float32 RGBA placeholder. Memoised by (w, h)."""
+def get_missing_placeholder(
+    width: int, height: int, filename: str | None = None,
+) -> np.ndarray:
+    """Return a HxWx4 float32 RGBA placeholder.
+
+    The base placeholder (no filename) is memoised by (w, h) — every
+    "missing slot" in the cache aliases the same shared buffer, so
+    hundreds of holes cost a single ndarray.
+
+    When ``filename`` is provided the result is built per call (no
+    memoisation): the filename is baked into the overlay so the user
+    can see *which* file is missing directly on the placeholder. Each
+    such call allocates a fresh ndarray (~33 MB at 1920×1080), so
+    callers pay one buffer per missing frame. For typical sparse
+    sequences this is negligible; for pathological cases (thousands
+    of missing frames) the memory cost is real — call sites that
+    don't have a meaningful filename should pass ``None`` to keep
+    the shared-buffer behaviour.
+    """
     width = max(2, int(width))
     height = max(2, int(height))
+    if filename:
+        # Per-frame variant — never cached. Stripping to basename keeps
+        # the overlay readable; callers that already passed a basename
+        # are no-ops here.
+        return generate_missing_frame_rgba_float(width, height, filename)
     key = (width, height)
     with _cache_lock:
         cached = _cache.get(key)
