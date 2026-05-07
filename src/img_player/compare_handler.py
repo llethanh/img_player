@@ -136,6 +136,16 @@ def set_layer_a(app: ImgPlayerApp, layer_id: str) -> None:
     state.layer_a_id = layer_id
     app._compare_decoder.invalidate(layer_id)
     app._redisplay_current()
+    # Defensively re-push the compare uniforms + re-feed the band
+    # so the seam visually stays put across a layer change. Without
+    # this, a transient decode miss inside ``render_compare`` (e.g.
+    # the new layer has a sparse hole at the current master frame)
+    # routes through ``gl.clear_compare()``, which zeroes
+    # ``uCompareMode`` in the shader → the wipe / seam line vanish
+    # even though ``state.seam`` is preserved. Pushing the uniforms
+    # here re-engages compare with the right mode + seam regardless
+    # of which branch ``render_compare`` took.
+    _resync_compare_ui(app)
 
 
 def set_layer_b(app: ImgPlayerApp, layer_id: str) -> None:
@@ -145,6 +155,25 @@ def set_layer_b(app: ImgPlayerApp, layer_id: str) -> None:
     state.layer_b_id = layer_id
     app._compare_decoder.invalidate(layer_id)
     app._redisplay_current()
+    _resync_compare_ui(app)
+
+
+def _resync_compare_ui(app: ImgPlayerApp) -> None:
+    """Force GL uniforms + band widgets back in sync with
+    ``CompareState`` after a state-only mutation (layer pick, swap).
+
+    Cheap: one int + one float on the GL side, three blockSignals
+    setters on the band side. Idempotent — calling it when already
+    in sync is a no-op as far as the user can see.
+    """
+    state = app._compare_state
+    band = app._window.compare_band
+    band.set_mode(state.mode)
+    band.set_seam(state.seam)
+    band.set_swap_showing_b(state.swap_showing_b)
+    if state.is_active():
+        gl = app._window.viewer.gl
+        gl.set_compare_state(_compare_shader_mode(state), state.seam)
 
 
 def set_mode(app: ImgPlayerApp, mode: str) -> None:
@@ -198,6 +227,7 @@ def swap_layers(app: ImgPlayerApp) -> None:
     state.layer_a_id, state.layer_b_id = state.layer_b_id, state.layer_a_id
     refresh_band_layers(app)
     app._redisplay_current()
+    _resync_compare_ui(app)
 
 
 def _push_uniforms(app: ImgPlayerApp) -> None:

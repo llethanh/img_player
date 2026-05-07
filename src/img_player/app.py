@@ -2080,6 +2080,19 @@ class ImgPlayerApp:
         # Stop any ongoing playback first; ticking a detached cache
         # would just spin no-ops.
         self._controller.pause()
+        # Exit compare mode if it was active. Without this the
+        # CompareBand stays visible after the wipe, pointing at
+        # ids that are about to be invalidated by the layer-stack
+        # reset below — and the user has no obvious way to dismiss
+        # the band since File → New conceptually resets the project.
+        if self._compare_state.enabled:
+            self._compare_state.enabled = False
+            self._compare_state.layer_a_id = None
+            self._compare_state.layer_b_id = None
+            self._compare_decoder.invalidate()
+            self._window.viewer.gl.clear_compare()
+            self._window.transport.set_compare_checked(False)
+            self._window.set_compare_band_visible(False)
         # File → New is a project-load entry point too — re-tune the
         # cache budget so the next project opened from this empty
         # state benefits from any RAM the user has freed in the

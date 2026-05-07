@@ -130,9 +130,54 @@ if conda_bin.is_dir():
     # tied to the ``av`` package itself (build-specific layouts).
     av_bins += collect_dynamic_libs("av")
 
-# PySide6 has its own opinionated layout that PyInstaller's official hook
-# already handles (Qt6Core, Qt6Gui, Qt6OpenGL, qwindows platform plugin,
-# etc.) — nothing extra needed here.
+# PySide6 has its own opinionated layout that PyInstaller's official
+# hook usually handles. BUT under the conda-forge install (which is
+# our supported env), the Qt6 + Shiboken DLLs live in
+# ``$CONDA_PREFIX/Library/bin/`` rather than next to the
+# ``PySide6/__init__.py`` — and the official hook only walks the
+# package directory. Result: the bundle ships ``QtCore.cp311-...pyd``
+# but no ``Qt6Core.dll``, no ``shiboken6.cp311-...dll`` → the .exe
+# fails at startup with "DLL load failed while importing Shiboken".
+# Pull every Qt6*.dll + the pyside6/shiboken6 runtime from
+# ``Library/bin/`` ourselves to fix it.
+pyside_bins: list[tuple[str, str]] = []
+if conda_bin.is_dir():
+    _qt_prefixes = (
+        "qt6",
+        "shiboken6.",
+        "pyside6.",
+        "pyside6qml.",
+        # Qt6 transitive deps shipped under Library/bin (zstd, double-
+        # conversion, harfbuzz, freetype, brotli, pcre2, icudt/icuuc/
+        # icuin, libssl/libcrypto). The PyInstaller PE walker would
+        # normally chase these from Qt6Core.dll itself, but since the
+        # DLLs aren't where it expects, the chase never starts.
+        "double-conversion",
+        "harfbuzz",
+        "freetype",
+        "brotli",
+        "pcre2",
+        "icudt", "icuuc", "icuin", "icuio", "icutu",
+        "libssl", "libcrypto",
+        "zstd",
+        "libpng", "libjpeg", "tiff",
+        "zlib",
+    )
+    for f in conda_bin.glob("*.dll"):
+        name = f.name.lower()
+        if any(name.startswith(p.lower()) for p in _qt_prefixes):
+            pyside_bins.append((str(f), "."))
+    # Qt platform / style / image-format plugins live under
+    # Library/plugins/ in the conda layout. PyInstaller's PySide6
+    # hook expects them under PySide6/plugins/ — bundle them by hand
+    # to the path Qt looks them up at runtime
+    # (``_internal/PySide6/plugins/<group>/``).
+    qt_plugins_root = Path(sys.prefix) / "Library" / "plugins"
+    if qt_plugins_root.is_dir():
+        for plugin_dll in qt_plugins_root.rglob("*.dll"):
+            rel = plugin_dll.relative_to(qt_plugins_root).parent
+            dest = f"PySide6/plugins/{rel.as_posix()}" if str(rel) != "." else "PySide6/plugins"
+            pyside_bins.append((str(plugin_dll), dest))
 
 
 # ----------------------------------------------------------------------- Hidden imports
@@ -169,7 +214,7 @@ block_cipher = None
 a = Analysis(  # noqa: F821 — Analysis is injected by PyInstaller
     ["src/img_player/__main__.py"],
     pathex=[str(PROJECT_ROOT / "src")],
-    binaries=oiio_bins + ocio_bins + av_bins,
+    binaries=oiio_bins + ocio_bins + av_bins + pyside_bins,
     datas=shader_datas + font_datas + icon_datas + ocio_datas + oiio_datas + sd_datas,
     hiddenimports=hidden,
     hookspath=[],
