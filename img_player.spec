@@ -114,6 +114,47 @@ except ImportError:
 # the codec backends, libOpenColorIO, expat, yaml-cpp, etc.
 oiio_bins = collect_dynamic_libs("OpenImageIO")
 ocio_bins = collect_dynamic_libs("PyOpenColorIO")
+# Same conda-forge layout trap as PyAV / PySide6 below: under
+# miniforge Windows, ``OpenImageIO.cp311-…pyd`` ships without the
+# native libs it links against (``OpenImageIO.dll``,
+# ``OpenImageIO_Util.dll``, ``Imath-*.dll``, ``OpenEXR-*.dll`` …) —
+# they live in ``$CONDA_PREFIX\Library\bin\``. PyInstaller's
+# ``collect_dynamic_libs`` only walks the package directory, so the
+# bundle ships the Python binding without its C++ runtime →
+# ``ImportError: DLL load failed while importing OpenImageIO`` the
+# moment ``__main__`` boots. Mirror the av_bins / pyside_bins
+# pattern: enumerate the known prefixes and pull them ourselves.
+import sys as _sys_for_oiio
+_oiio_extra_bins: list[tuple[str, str]] = []
+_conda_bin_for_oiio = Path(_sys_for_oiio.prefix) / "Library" / "bin"
+if _conda_bin_for_oiio.is_dir():
+    _oiio_dll_prefixes = (
+        "openimageio",
+        "openimageio_util",
+        "imath",
+        "openexr",
+        "openexrcore",
+        "ilmthread",
+        "iex",
+        # OIIO links a wide set of codec backends on conda-forge.
+        # Most overlap with pyside_bins (libpng / libjpeg / tiff),
+        # but the OIIO-specific ones live here so the bundle stays
+        # self-contained even if the Qt DLL list shrinks later.
+        "libheif",
+        "libde265",
+        "libraw",
+        "libwebpdemux",
+        "libwebpmux",
+        "openjp2",
+        "jasper",
+        "lz4",
+        "snappy",
+    )
+    for _f in _conda_bin_for_oiio.glob("*.dll"):
+        _name = _f.name.lower()
+        if any(_name.startswith(p.lower()) for p in _oiio_dll_prefixes):
+            _oiio_extra_bins.append((str(_f), "."))
+oiio_bins = oiio_bins + _oiio_extra_bins
 # PyAV (conda-forge build) does NOT ship FFmpeg next to the ``av``
 # package — the DLLs live in the conda env's ``Library/bin/`` and
 # ``collect_dynamic_libs("av")`` returns nothing. We have to grab
@@ -376,15 +417,18 @@ def _build_splash_png() -> Path:
     return out_path
 
 
-# PyInstaller's Splash uses Tcl/Tk shared libs; on miniforge Windows
-# the DLLs live under ``Library\bin\`` and PyInstaller 6.20+'s strict
-# Tcl/Tk compatibility check (TclTkInfo) can't always locate them,
-# bricking the build with "Could not determine the path to Tcl
-# and/or Tk shared library". Splash is opt-in via env var so the
-# default build always succeeds; ``src/img_player/splash.py`` makes
-# the runtime ``pyi_splash`` import a graceful no-op when the bundle
-# ships without one — every milestone helper degrades to silent.
-_BUILD_SPLASH = os.environ.get("FLICK_BUILD_SPLASH", "").lower() in ("1", "true", "yes")
+# PyInstaller's Splash uses Tcl/Tk shared libs. On miniforge Windows
+# they live in ``$CONDA_PREFIX\Library\bin\``, which is on PATH only
+# when the env is activated (``conda activate img_player``). The
+# companion ``build_exe.bat`` prepends that directory before invoking
+# PyInstaller so the strict TclTkInfo check finds the DLLs and the
+# build picks up the splash transparently.
+#
+# If a future env layout breaks the Tcl/Tk lookup again, set
+# ``FLICK_BUILD_SPLASH=0`` to drop the splash and unblock the build —
+# ``src/img_player/splash.py`` already turns the runtime
+# ``pyi_splash`` calls into no-ops when the bundle ships without one.
+_BUILD_SPLASH = os.environ.get("FLICK_BUILD_SPLASH", "1").lower() not in ("0", "false", "no")
 
 if _BUILD_SPLASH:
     splash_png_path = _build_splash_png()

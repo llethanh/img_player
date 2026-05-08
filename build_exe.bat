@@ -80,6 +80,18 @@ REM (pushd already done at the top of the file.)
 if exist build  rmdir /s /q build
 if exist dist   rmdir /s /q dist
 
+REM ---- Make sure conda env's Library\bin is on PATH -------------------
+REM PyInstaller 6.20+'s strict TclTkInfo check loads ``tcl86t.dll`` /
+REM ``tk86t.dll`` to verify Splash() compatibility. Under miniforge
+REM Windows those live in ``%CONDA_PREFIX%\Library\bin``, which is
+REM normally added by ``conda activate`` — but non-interactive batch
+REM activation occasionally skips it, so the build then errors out
+REM with "Could not determine the path to Tcl and/or Tk shared
+REM library". Belt-and-suspenders: prepend it ourselves.
+if defined CONDA_PREFIX (
+    if exist "%CONDA_PREFIX%\Library\bin" set "PATH=%CONDA_PREFIX%\Library\bin;%PATH%"
+)
+
 REM ---- Run PyInstaller -------------------------------------------------
 echo.
 echo [build_exe] Running PyInstaller (this takes a few minutes)...
