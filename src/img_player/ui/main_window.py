@@ -691,6 +691,16 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self._save_frame_act.triggered.connect(self.save_frame_requested.emit)
         file_menu.addAction(self._save_frame_act)
 
+        # File → Preferences… (Ctrl+,) — application-wide settings
+        # dialog. Currently hosts the OCIO Color Management section;
+        # designed as a sidebar+stack layout so future preferences
+        # categories (Playback, Cache, …) drop in without restructuring.
+        file_menu.addSeparator()
+        self._preferences_act = QAction("Open &Preferences…", self)
+        self._preferences_act.setShortcut(QKeySequence("Ctrl+,"))
+        self._preferences_act.triggered.connect(self._open_preferences)
+        file_menu.addAction(self._preferences_act)
+
         # NB: explicit Quit action removed — the OS-default close
         # button (X) and Alt+F4 / Cmd+Q already cover the gesture, and
         # the in-app Ctrl+Q shortcut was unreliable on Windows (Qt's
@@ -946,6 +956,22 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         """Push image dimensions to the bottom info band."""
         w, h = self._viewer.gl.image_size()
         self._viewer.info_band.set_image_size(w, h)
+
+    def _open_preferences(self) -> None:
+        """File → Open Preferences… — application-wide settings dialog.
+
+        ``Preferences`` is a thin QSettings wrapper, so instantiating
+        a fresh one here is essentially free and avoids threading the
+        prefs object through MainWindow's already-long constructor.
+        OCIO config changes need a restart (the GPU shader, color
+        panel and cached processors all bind to the boot-time config),
+        which the dialog itself communicates via an in-page banner.
+        """
+        from img_player.preferences import Preferences
+        from img_player.ui.preferences_dialog import PreferencesDialog
+
+        dialog = PreferencesDialog(Preferences(), self)
+        dialog.exec()
 
     def _on_info_band_btn_context_menu(self, pos) -> None:  # type: ignore[no-untyped-def]
         """Right-click on the ⓘ pill — per-segment visibility menu.

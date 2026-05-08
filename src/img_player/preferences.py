@@ -189,6 +189,37 @@ class Preferences:
     # only when the EXR has no explicit tag *and* no chromaticities;
     # tagged files keep working without surprises.
 
+    # ---- OCIO config source ----------------------------------------
+    # User-visible override of how the OCIO config is resolved at
+    # boot. ``"default"`` forces the library's built-in (ignoring
+    # ``$OCIO``); ``"env"`` keeps the historical behaviour of reading
+    # ``$OCIO``; ``"custom"`` loads ``ocio_config_path``. Changes
+    # require a restart — the GPU shader, color panel and cached
+    # processors are all keyed on the active config.
+
+    @property
+    def ocio_config_mode(self) -> str:
+        raw = self._s.value("color/ocio_config_mode", "default")
+        return raw if raw in ("default", "env", "custom") else "default"
+
+    @ocio_config_mode.setter
+    def ocio_config_mode(self, value: str) -> None:
+        if value not in ("default", "env", "custom"):
+            value = "default"
+        self._s.setValue("color/ocio_config_mode", value)
+
+    @property
+    def ocio_config_path(self) -> str | None:
+        raw = self._s.value("color/ocio_config_path")
+        return str(raw) if raw else None
+
+    @ocio_config_path.setter
+    def ocio_config_path(self, value: str | None) -> None:
+        if value:
+            self._s.setValue("color/ocio_config_path", str(value))
+        else:
+            self._s.remove("color/ocio_config_path")
+
     @property
     def unmarked_exr_source(self) -> str | None:
         """Source colorspace to apply on EXRs without any colorspace
