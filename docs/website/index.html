@@ -1566,8 +1566,10 @@ footer a:hover { color: var(--accent); }
 
     <article class="release">
       <div class="release-meta">
-        <span class="ver">v1.4.0 <em style="color: var(--text-secondary); font-size: 12px; font-style: normal;">(unreleased)</em></span>
-        <span class="date">2026-05-08</span>
+        <span class="ver">
+          <a href="https://github.com/llethanh/img_player/releases/tag/v1.4.0" style="color: inherit; text-decoration: none;">v1.4.0</a>
+        </span>
+        <span class="date">2026-05-09</span>
         <span class="tagline">Preferences dialog, OCIO hot-reload, splash refactor.</span>
       </div>
       <div class="release-body">
@@ -1581,7 +1583,8 @@ footer a:hover { color: var(--accent); }
         <h4>Fixes</h4>
         <ul>
           <li class="fix">Cache-fill bar on channel rows starts a few pixels before the label's first character (in the radio↔label gutter) so the orange wash never crashes flush against the leftmost glyph.</li>
-          <li class="fix">Build chain — bundle build now produces a working EXE on miniforge Windows: <code>tkinter</code> excluded again (saves ~5 MB), Tcl/Tk PATH workaround dropped, OIIO / OpenEXR / Imath DLLs explicitly pulled from <code>$CONDA_PREFIX\Library\bin\</code> so the bundle is no longer missing them at startup.</li>
+          <li class="fix"><strong>Sparse-sequence load freeze</strong> — dropping a sequence with many missing frames (typical of comp picks where only kept frames are rendered) used to freeze the UI for ~10 s on a 4 K range with ~50 holes. The cache was building a fresh 33 MB filename-baked placeholder per gap; switched to the shared memoised placeholder for sparse gaps (the per-frame variant is kept for runtime decode failures where the user actually benefits from seeing which path is bad). Drop time falls to ~2 s, matching the contiguous-sequence baseline.</li>
+          <li class="fix">Build chain — bundle build now produces a working EXE on miniforge Windows: <code>tkinter</code> excluded again (saves ~5 MB), Tcl/Tk PATH workaround dropped, OIIO / OpenEXR / Imath DLLs explicitly pulled from <code>$CONDA_PREFIX\Library\bin\</code> so the bundle is no longer missing them at startup. <code>build_exe.bat</code> auto-zips the bundle to <code>dist\FlickPlayer_v&lt;version&gt;.zip</code> for portable distribution — atomic transfer, no install needed on the target machine.</li>
         </ul>
       </div>
     </article>
