@@ -304,7 +304,7 @@ def _build_splash_png() -> Path:
     out_dir = PROJECT_ROOT / "build" / "splash"
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "splash.png"
-    width, height = 480, 240
+    width, height = 480, 260
     img = Image.new("RGB", (width, height), color=(20, 22, 26))  # BG_DEEP
     draw = ImageDraw.Draw(img)
 
@@ -363,10 +363,10 @@ def _build_splash_png() -> Path:
         version, fill=(138, 138, 142), font=version_font,  # TEXT_SECONDARY
     )
     # Bottom band reserved for ``pyi_splash.update_text`` — leave it
-    # empty here, the bootloader paints over it at runtime. We just
-    # draw a thin separator line so the live status reads as a
-    # distinct row rather than floating arbitrarily.
-    draw.line([(40, 200), (width - 40, 200)], fill=(56, 56, 60), width=1)
+    # empty here, the bootloader paints over it at runtime. No
+    # separator line: the bootloader's font baseline sits ~6 px
+    # higher than PIL's, so a static line drawn here would land
+    # right under the ascenders of the live status text.
     img.save(out_path, "PNG")
     return out_path
 
@@ -376,12 +376,14 @@ splash_png_path = _build_splash_png()
 # The splash is 480 px wide; anchoring at x=40 leaves ~400 px of
 # usable width — fits "Initialising OpenColorIO…" and friends with
 # room to spare without needing centred-text gymnastics that
-# ``pyi_splash`` doesn't natively support.
+# ``pyi_splash`` doesn't natively support. y=222 sits the status
+# clearly under the version with breathing room and clears the
+# bootloader's ~6 px baseline shift versus PIL.
 splash = Splash(  # noqa: F821
     str(splash_png_path),
     binaries=a.binaries,
     datas=a.datas,
-    text_pos=(40, 215),
+    text_pos=(40, 240),
     text_size=11,
     text_color="white",
     text_default="Loading…",

@@ -146,6 +146,14 @@ header nav a:hover { color: var(--text-primary); }
     0 0 120px var(--hero-glow);
 }
 .hero-shot { display: block; width: 100%; height: auto; }
+.mockup-shot {
+    display: block;
+    width: 100%;
+    height: auto;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    background: var(--surface-1);
+}
 
 /* ============================================================ Sections */
 section {
@@ -199,6 +207,32 @@ section .lede {
 }
 .feature-detail.reverse { direction: rtl; }
 .feature-detail.reverse > * { direction: ltr; }
+/* Stacked feature: full-width mockup on top, copy below */
+.feature-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-xl);
+  margin-bottom: var(--s-2xl);
+}
+.feature-stack .copy { max-width: 920px; margin: 0 auto; }
+.feature-stack .copy h2 { font-size: 28px; margin-bottom: var(--s-md); }
+.feature-stack .copy-twoup {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--s-2xl);
+  align-items: start;
+}
+.feature-stack .copy-twoup .copy { max-width: none; margin: 0; }
+.mockup-wide { width: 100%; }
+/* Mockup whose image is capped to roughly the height of the adjacent copy block */
+.mockup-fit { align-self: center; }
+.mockup-fit .mockup-shot {
+  width: auto;
+  max-width: 100%;
+  max-height: 480px;
+  margin: 0 auto;
+  object-fit: contain;
+}
 .feature-detail .copy h2 { font-size: 28px; margin-bottom: var(--s-md); }
 .feature-detail .copy p {
   color: var(--text-secondary);
@@ -962,6 +996,7 @@ footer a:hover { color: var(--accent); }
   .hero h1 { font-size: 56px; }
   .feature-detail { grid-template-columns: 1fr; gap: var(--s-md); }
   .feature-detail.reverse { direction: ltr; }
+  .feature-stack .copy-twoup { grid-template-columns: 1fr; gap: var(--s-md); }
   .kbd-table { grid-template-columns: 1fr; }
   .release { grid-template-columns: 1fr; gap: var(--s-md); }
   header nav { display: none; }
@@ -984,11 +1019,11 @@ footer a:hover { color: var(--accent); }
   <nav>
     <a href="#features">Features</a>
     <a href="#layers">Layers</a>
-    <a href="#timeline">Timeline</a>
+    <a href="#cache">Cache</a>
+    <a href="#compare">Compare</a>
     <a href="#annotations">Annotations</a>
-    <a href="#comments">Comments</a>
+    <a href="#color">Color</a>
     <a href="#export">Export</a>
-    <a href="#shortcuts">Shortcuts</a>
     <a href="#changelog">Changelog</a>
   </nav>
 </header>
@@ -997,11 +1032,12 @@ footer a:hover { color: var(--accent); }
 <section class="hero">
   <h1>Flick Player</h1>
   <p class="tag">
-    A <em>VFX-grade image sequence &amp; video viewer</em>. Open EXR / DPX / TIFF / PNG
+    A <em>VFX-grade image sequence &amp; video viewer</em>. Drop EXR / DPX / TIFF / PNG
     dailies <em>or</em> mp4 / mov / ProRes / DNxHR clips with synced audio,
     stack <em>multiple layers</em>, trim them on the master timeline, review in real
-    OCIO color, annotate with the pen — ship the result as a video or a baked
-    sequence. All from one fast desktop app.
+    OCIO color, <em>compare two takes</em> with a wipe / opacity overlay, annotate with
+    the pen, comment per frame — ship the result as video or a baked sequence.
+    Background <em>channel pre-cache</em> means switching AOVs is instant.
   </p>
   <div class="ctas">
     <a class="btn btn-primary" href="#download">Download for Windows</a>
@@ -1029,35 +1065,56 @@ footer a:hover { color: var(--accent); }
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 3v9l6 3"/></svg>
       </div>
       <h3>Real-time playback</h3>
-      <p>Async RAM cache + OpenGL viewport. Smooth scrubbing on 4K EXRs at 24 fps. Worker pool auto-tunes to your CPU.</p>
+      <p>Async RAM cache + OpenGL viewport. Smooth scrubbing on 4K EXRs at 24 fps. Worker pool auto-tunes to your CPU + GPU.</p>
     </div>
     <div class="feature-card">
       <div class="icon">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="14" width="6" height="6" rx="1"/><rect x="9" y="9" width="6" height="6" rx="1"/><rect x="15" y="4" width="6" height="6" rx="1"/></svg>
       </div>
-      <h3>Multi-layer stack</h3>
-      <p>Stack takes, mattes, plate &amp; comp side by side — image sequences <em>and</em> video clips together. Reorder by drag, trim each layer's IN/OUT on the timeline, slide its offset.</p>
+      <h3>Stack &amp; mount</h3>
+      <p>Drop multiple sequences to compose a layered review. Reorder by drag, trim IN/OUT on the timeline, slide each layer's offset. Image sequences <em>and</em> video clips mix together.</p>
+    </div>
+    <div class="feature-card">
+      <div class="icon">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="12" y1="3" x2="12" y2="21"/></svg>
+      </div>
+      <h3>A/B compare</h3>
+      <p>Two layers, four modes: vertical wipe, horizontal wipe, opacity blend, solo-B. Drag the seam live — pure shader, no re-decode. Bake the wipe into your export too.</p>
+    </div>
+    <div class="feature-card">
+      <div class="icon">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 7 6 7 6 17 9 17"/><polyline points="9 7 12 7 12 17 15 17"/><polyline points="15 7 18 7 18 17 21 17"/></svg>
+      </div>
+      <h3>Smart cache</h3>
+      <p>Multi-version key keeps a snapshot per channel selection — switching AOVs back and forth is an instant hit, not a re-decode. Smart reload diffs file mtimes; force reload (Ctrl+Shift+R) drops everything.</p>
+    </div>
+    <div class="feature-card">
+      <div class="icon">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h6l3 -7l3 14l3 -7h3"/></svg>
+      </div>
+      <h3>Background channel pre-cache</h3>
+      <p>Once the active channel is cached, idle workers quietly pre-decode every other group (RGB, albedo, normal, Z…). Per-row progress bar in the channel menu. Suspended during playback so the GIL stays clean.</p>
     </div>
     <div class="feature-card">
       <div class="icon">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="13.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="13" r="2.5"/><circle cx="8" cy="20" r="2.5"/><circle cx="6.5" cy="9" r="2.5"/><line x1="6.5" y1="9" x2="13.5" y2="6.5"/><line x1="13.5" y1="6.5" x2="17.5" y2="13"/><line x1="8" y1="20" x2="6.5" y2="9"/><line x1="8" y1="20" x2="17.5" y2="13"/></svg>
       </div>
       <h3>OCIO color</h3>
-      <p>ACES 2.0 CG built-in. Source / display / view round-trip on the GPU shader — toggling is free.</p>
+      <p>ACES 2.0 CG built-in. Source / display / view round-trip on the GPU shader — toggling is free. Auto-detect from EXR metadata (Nuke, Arnold, V-Ray, Houdini), with a per-pipeline override for unmarked sources.</p>
     </div>
     <div class="feature-card">
       <div class="icon">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 18 L17 6"/><path d="M14 4 L20 10 L17 13 L11 7 Z"/><path d="M3 21 L6 21"/></svg>
       </div>
       <h3>Annotations</h3>
-      <p>Pen / eraser / 7-color palette / per-frame undo. Persistent strokes — <em>and</em> a Google-Meet-style ghost mode.</p>
+      <p>Pen / eraser / 7-color palette / per-frame undo. Persistent strokes — <em>and</em> a Google-Meet-style ghost mode that auto-fades.</p>
     </div>
     <div class="feature-card">
       <div class="icon">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="12" rx="2"/><rect x="6" y="9" width="6" height="6"/><line x1="14" y1="9" x2="18" y2="9"/><line x1="14" y1="12" x2="18" y2="12"/><line x1="14" y1="15" x2="18" y2="15"/></svg>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
       </div>
-      <h3>Multichannel EXR</h3>
-      <p>Channel selector for AOVs, depth, normals, cryptomattes — per layer. Per-channel R/G/B/A mute toggles. Multi-tile contact sheet for side-by-side AOV review.</p>
+      <h3>Comments</h3>
+      <p>Per-frame text threads beside the visual annotations. Author auto-filled from OS user, blue dot on the timeline. Round-trips through the same sidecar JSON.</p>
     </div>
     <div class="feature-card">
       <div class="icon">
@@ -1068,10 +1125,17 @@ footer a:hover { color: var(--accent); }
     </div>
     <div class="feature-card">
       <div class="icon">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 7 6 7 6 17 9 17"/><polyline points="9 7 12 7 12 17 15 17"/><polyline points="15 7 18 7 18 17 21 17"/></svg>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="12" rx="2"/><rect x="6" y="9" width="6" height="6"/><line x1="14" y1="9" x2="18" y2="9"/><line x1="14" y1="12" x2="18" y2="12"/><line x1="14" y1="15" x2="18" y2="15"/></svg>
       </div>
-      <h3>Smart cache</h3>
-      <p>Reload only re-decodes files whose mtime changed. Missing frames serve a rich placeholder so playback never freezes.</p>
+      <h3>Multichannel EXR</h3>
+      <p>Channel selector for AOVs, depth, normals, cryptomattes — per layer. R/G/B mute + solo-alpha view (Nuke / RV convention). Pickable transparency background: checker, black, mid-grey, white.</p>
+    </div>
+    <div class="feature-card">
+      <div class="icon">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v12"/><polyline points="6 10 12 16 18 10"/><path d="M4 20h16"/></svg>
+      </div>
+      <h3>Export</h3>
+      <p>Full-sequence to PNG / JPG / EXR / TIFF or H.264 / H.265 / ProRes / DNxHR / VP9 / FFV1 / v210. Bake annotations and the live A/B compare wipe. Custom output filename. Save Frame As… for one-shot snapshots.</p>
     </div>
     <div class="feature-card">
       <div class="icon">
@@ -1082,125 +1146,57 @@ footer a:hover { color: var(--accent); }
     </div>
     <div class="feature-card">
       <div class="icon">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v12"/><polyline points="6 10 12 16 18 10"/><path d="M4 20h16"/></svg>
-      </div>
-      <h3>Export</h3>
-      <p>PNG / JPG / EXR / TIFF sequences or H.264 / H.265 / ProRes / DNxHR / VP9 / FFV1 / v210 video — annotations baked in.</p>
-    </div>
-    <div class="feature-card">
-      <div class="icon">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
-      </div>
-      <h3>Comments</h3>
-      <p>Per-frame text threads beside the visual annotations. Author auto-filled from OS user, blue dot on the timeline.</p>
-    </div>
-    <div class="feature-card">
-      <div class="icon">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h12l4 4v12H4z"/><path d="M16 4v4h4"/><path d="M8 12h8M8 16h8"/></svg>
       </div>
       <h3>Sessions</h3>
-      <p>Save the full layer stack — sources, offsets, trims, channels, alpha modes, audio mute / solo / gain — to a single <code>.session</code> JSON file. Drop the file back on the viewer to restore everything.</p>
-    </div>
-    <div class="feature-card">
-      <div class="icon">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="14" rx="2"/><line x1="3" y1="10" x2="21" y2="10"/><line x1="8" y1="3" x2="8" y2="6"/><line x1="16" y1="3" x2="16" y2="6"/></svg>
-      </div>
-      <h3>Sidecar JSON</h3>
-      <p>Annotations + comments live in one human-readable JSON file next to the sequence. Travels with the work.</p>
+      <p>Save the full layer stack — sources, offsets, trims, channels, alpha modes, audio gain — to a single <code>.session</code> JSON. Drop the file back on the viewer to restore everything.</p>
     </div>
     <div class="feature-card">
       <div class="icon">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
       </div>
-      <h3>Hardware-adaptive</h3>
-      <p>Auto-tunes cache budget + worker count to your GPU / RAM. PBO upload on discrete GPUs, sync upload on integrated.</p>
+      <h3>Hardware-adaptive RAM</h3>
+      <p>Auto-tunes cache budget + worker count from your GPU / total RAM. Status bar shows live <em>cache used / budget · system free</em> so you can spot pressure without opening Task Manager. Re-tunes on every project open.</p>
     </div>
   </div>
 </section>
 
-<!-- ============================================================ Layers + Trim -->
-<section id="layers">
+
+<!-- ============================================================ Compare -->
+<section id="compare">
   <div class="feature-detail">
     <div class="copy">
-      <h2><span class="accent">Layers</span>, trim and offset.</h2>
+      <h2>Two takes, one <span class="accent">wipe</span>.</h2>
       <p>
-        Drop multiple sequences and Flick Player stacks them. Each layer carries its
-        own offset on the master timeline, its own IN / OUT trim, its own channel
-        selection, its own alpha-composite mode. Drag the body to slide, drag a
-        handle to trim — the right-edge stays put on IN-trims, just like a real NLE.
+        Pick layer A, pick layer B, drop the seam where you want it. The compare
+        overlay lives entirely in the GPU shader — dragging the seam is a uniform
+        update, not a re-decode. Four modes cover every comparison gesture you'd
+        otherwise hop between two viewers for.
       </p>
       <ul>
-        <li><b>Drop on the viewer</b> = replace the focused sequence. <b>Drop on the panel</b> = add as a new layer above.</li>
-        <li><b>Drag the row</b> vertically to reorder. A drop indicator shows where it'll land.</li>
-        <li><b>Trim handles</b> snap to the playhead, master IN/OUT and other layers' edges.</li>
-        <li><b>Ghost overlay</b> (dashed orange) shows source frames hidden by the trim — drag the handle back outwards to reveal them.</li>
-        <li><b>Per-layer T / αS toggles</b> control alpha-over compositing and straight-vs-premultiplied alpha handling.</li>
+        <li><b>Vertical wipe</b> — left half from A, right half from B. The classic plate-vs-comp gesture.</li>
+        <li><b>Horizontal wipe</b> — top from A, bottom from B. Useful when the difference is along a horizon.</li>
+        <li><b>Opacity blend</b> — linear mix at the seam value. 0 = pure A, 1 = pure B.</li>
+        <li><b>Solo B</b> (A↔B button) — temporary "show full B" override without leaving the chosen blend.</li>
+        <li>Right-click drag in the viewport <b>moves the seam</b> live; <code>W</code> toggles compare on/off; <code>Ctrl+W</code> swaps A and B.</li>
+        <li><b>Bake into your export</b> — tick "Bake A/B compare overlay" in the export dialog and the live wipe is reproduced for every frame written to disk.</li>
       </ul>
     </div>
     <div class="mockup">
-      <div class="mockup-label">layer_panel.py · layer_bar.py</div>
-      <div class="layers-mockup">
-        <div class="layer-header">
-          <div class="left">
-            <span class="chevron">▼</span>
-            <span class="title">Layers</span>
-          </div>
-          <span class="count">3</span>
+      <div class="mockup-label">compare/state.py · GPU shader</div>
+      <div style="position: relative; aspect-ratio: 16/9; background: linear-gradient(90deg, #1f2228 0%, #1f2228 50%, #2c2c30 50%, #2c2c30 100%); border-radius: 6px; overflow: hidden; border: 1px solid var(--border-default);">
+        <div style="position: absolute; inset: 0; display: grid; grid-template-columns: 1fr 1fr; align-items: center; justify-items: center; color: var(--text-secondary); font-family: 'JetBrains Mono', monospace; font-size: 11px;">
+          <div>A</div>
+          <div>B</div>
         </div>
-
-        <!-- Row 1 — focused, full-range plate -->
-        <div class="layer-row focused">
-          <span class="layer-num">1</span>
-          <button class="layer-eye">👁</button>
-          <span class="layer-pill t">T</span>
-          <span class="layer-pill as">αS</span>
-          <div class="layer-bar">
-            <div class="track"></div>
-            <!-- Ghost showing the (smaller) trimmed-off head — 5..10% -->
-            <div class="ghost" style="left: 5%; width: 8%;"></div>
-            <div class="fill" style="left: 13%; width: 70%;">
-              <span class="name">QUIC_Q120_SEQ001_SH0040_CMP_…der_Write_primeOnly.####.png</span>
-              <span class="handle left"></span>
-              <span class="handle right"></span>
-            </div>
-            <div class="playhead" style="left: 28%;"></div>
-          </div>
-        </div>
-
-        <!-- Row 2 — middle layer with both head & tail trimmed -->
-        <div class="layer-row">
-          <span class="layer-num">2</span>
-          <button class="layer-eye">👁</button>
-          <span class="layer-pill t checked">T</span>
-          <span class="layer-pill as">αS</span>
-          <div class="layer-bar">
-            <div class="track"></div>
-            <div class="ghost" style="left: 22%; width: 38%;"></div>
-            <div class="fill" style="left: 32%; width: 22%;">
-              <span class="name">QUIC_Q120_SEQ001_SH0040_CMP_…er_Write_RGB_primes.####.png</span>
-              <span class="handle left"></span>
-              <span class="handle right"></span>
-            </div>
-            <div class="playhead" style="left: 28%;"></div>
-          </div>
-        </div>
-
-        <!-- Row 3 — full-coverage placeholder layer -->
-        <div class="layer-row">
-          <span class="layer-num">3</span>
-          <button class="layer-eye off">👁</button>
-          <span class="layer-pill t">T</span>
-          <span class="layer-pill as checked">αS</span>
-          <div class="layer-bar">
-            <div class="track"></div>
-            <div class="fill" style="left: 0%; width: 86%;">
-              <span class="name">CLSH_COC006_SEQ001_SH0010_PLH_#####.png</span>
-              <span class="handle left"></span>
-              <span class="handle right"></span>
-            </div>
-            <div class="playhead" style="left: 28%;"></div>
-          </div>
-        </div>
+        <div style="position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; background: var(--accent); box-shadow: 0 0 8px rgba(232,144,28,0.7);"></div>
+      </div>
+      <div style="display: flex; gap: 6px; margin-top: 10px; align-items: center; flex-wrap: wrap;">
+        <span style="padding: 4px 10px; background: var(--accent); color: var(--bg-deep); border-radius: 4px; font-size: 11px; font-weight: 600;">Vert</span>
+        <span style="padding: 4px 10px; background: var(--bg-raised); color: var(--text-secondary); border: 1px solid var(--border-default); border-radius: 4px; font-size: 11px;">Horiz</span>
+        <span style="padding: 4px 10px; background: var(--bg-raised); color: var(--text-secondary); border: 1px solid var(--border-default); border-radius: 4px; font-size: 11px;">Opacity</span>
+        <span style="padding: 4px 10px; background: var(--bg-raised); color: var(--text-secondary); border: 1px solid var(--border-default); border-radius: 4px; font-size: 11px;">A↔B</span>
+        <span style="margin-left: auto; color: var(--text-disabled); font-family: 'JetBrains Mono', monospace; font-size: 10px;">seam 50%</span>
       </div>
     </div>
   </div>
@@ -1208,55 +1204,71 @@ footer a:hover { color: var(--accent); }
 
 <!-- ============================================================ Timeline -->
 <section id="timeline">
-  <div class="feature-detail reverse">
+  <div class="feature-stack">
+    <div class="mockup mockup-wide">
+      <div class="mockup-label">ui/timeline.py</div>
+      <img src="screenshots/timeline.png" alt="Master timeline with cache fill bar, in/out range markers, annotated frames, comments and playhead" class="mockup-shot">
+    </div>
+    <div class="copy-twoup">
+      <div class="copy">
+        <h2>A <span class="accent">timeline</span> that tells you what's going on.</h2>
+        <p>
+          One bar carries every dimension of the sequence's state — at a glance, you
+          know which frames are cached, which are missing, which fall in a multi-layer
+          gap, where you've left a note, what's in/out range, and where the playhead is.
+        </p>
+        <ul>
+          <li><b>Translucent orange runs</b> = frames in RAM. The bar shows your prefetch high-water mark.</li>
+          <li><b>Mid-grey runs</b> = no layer covers — Flick plays through and the viewport paints a checkerboard.</li>
+          <li><b>Green triangles</b> = annotated frames. <b>Blue dots</b> = frames with comments.</li>
+          <li><b>Ctrl + click</b> sets and drags the in / out points — like Nuke.</li>
+          <li>The cursor scrubs <b>outside</b> the in/out range; playback snaps back inside on press.</li>
+        </ul>
+      </div>
+      <div class="copy" id="layers">
+        <h2><span class="accent">Layers</span>, trim and offset.</h2>
+        <p>
+          Drop multiple sequences and Flick Player stacks them. Each layer carries its
+          own offset on the master timeline, its own IN / OUT trim, its own channel
+          selection, its own alpha-composite mode. Drag the body to slide, drag a
+          handle to trim — the right-edge stays put on IN-trims, just like a real NLE.
+        </p>
+        <ul>
+          <li><b>Drop on the viewer</b> = replace the focused sequence. <b>Drop on the panel</b> = add as a new layer above.</li>
+          <li><b>Drag the row</b> vertically to reorder. A drop indicator shows where it'll land.</li>
+          <li><b>Trim handles</b> snap to the playhead, master IN/OUT and other layers' edges.</li>
+          <li><b>Ghost overlay</b> (dashed orange) shows source frames hidden by the trim — drag the handle back outwards to reveal them.</li>
+          <li><b>Per-layer T / αS toggles</b> control alpha-over compositing and straight-vs-premultiplied alpha handling.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ Cache -->
+<section id="cache">
+  <div class="feature-detail">
     <div class="copy">
-      <h2>A <span class="accent">timeline</span> that tells you what's going on.</h2>
+      <h2>The cache that <span class="accent">remembers</span> your channels.</h2>
       <p>
-        One bar carries every dimension of the sequence's state — at a glance, you
-        know which frames are cached, which are missing, which fall in a multi-layer
-        gap, where you've left a note, what's in/out range, and where the playhead is.
+        Most players treat their RAM cache as a flat <em>master_frame → pixels</em>
+        map. Switch a channel and the whole range invalidates. Flick keys on
+        <em>(master_frame × signature)</em> instead, where the signature captures
+        the chain × channel selection. Switch RGB → albedo → RGB and the second
+        RGB is an instant cache hit, not a 1000-frame re-decode.
       </p>
       <ul>
-        <li><b>Translucent orange runs</b> = frames in RAM. The bar shows your prefetch high-water mark.</li>
-        <li><b>Mid-grey runs</b> = no layer covers — Flick plays through and the viewport paints a checkerboard.</li>
-        <li><b>Green triangles</b> = annotated frames. <b>Blue dots</b> = frames with comments.</li>
-        <li><b>Ctrl + click</b> sets and drags the in / out points — like Nuke.</li>
-        <li>The cursor scrubs <b>outside</b> the in/out range; playback snaps back inside on press.</li>
+        <li><b>Background channel pre-cache</b> — once the active channel is fully cached, idle workers quietly pre-decode the focused layer's other groups (RGB beauty, AOVs, normals, Z…) into their own cache slots. Switching becomes free.</li>
+        <li><b>Per-row progress bars</b> in the channel menu show each group's fill in real time. Same translucent-orange idiom as the timeline cache bar — visible right on the dropdown button while it's closed.</li>
+        <li><b>In/out range first</b> — alt prefetch front-loads frames inside your playback range, then fills the rest of the nav range.</li>
+        <li><b>Suspended during playback</b> so the GIL stays clean — workers can't be preempted mid-decode, so we hold off until you pause. No more 1-2 frame stalls when an alt steals time during a scrub.</li>
+        <li><b>Smart eviction</b> — when RAM gets tight, stale-signature snapshots and hidden-layer contributions go first, then live frames by distance from the playhead. The view you're looking at is always the last to leave.</li>
+        <li><b>Smart reload</b> (<code>Ctrl+R</code>) re-decodes only files whose mtime changed. <b>Force reload</b> (<code>Ctrl+Shift+R</code>) drops everything for the rare case where files were overwritten without an mtime bump.</li>
       </ul>
     </div>
-    <div class="mockup">
-      <div class="mockup-label">ui/timeline.py</div>
-      <div class="tl-host">
-        <div class="tl-row">
-          <div class="tl-gutter">
-            <div class="tc-btn active">TC</div>
-            <div class="tl-frame-display">1041</div>
-          </div>
-          <div class="tl-area">
-            <div class="tl-ticks">
-              <span>1001</span><span>1020</span><span>1040</span>
-              <span>1060</span><span>1080</span><span>1100</span>
-              <span>1120</span><span>1140</span>
-            </div>
-            <div class="tl-comment"  style="left: 50%;"></div>
-            <div class="tl-ann"      style="left: 22%;"></div>
-            <div class="tl-ann"      style="left: 50%;"></div>
-            <div class="tl-ann"      style="left: 73%;"></div>
-            <div class="tl-range">
-              <div class="span"   style="left: 8%; width: 84%;"></div>
-              <div class="marker" style="left: 8%;"></div>
-              <div class="marker" style="left: 92%;"></div>
-            </div>
-            <div class="tl-cache">
-              <div class="fill" style="left: 0%;  width: 36%;"></div>
-              <div class="fill" style="left: 40%; width: 24%;"></div>
-              <div class="gap"  style="left: 36%; width: 4%;"></div>
-              <div class="fill" style="left: 68%; width: 18%;"></div>
-            </div>
-            <div class="tl-playhead" style="left: 41%;"></div>
-          </div>
-        </div>
-      </div>
+    <div class="mockup mockup-fit">
+      <div class="mockup-label">ui/channel_menu.py · per-group cache bar</div>
+      <img src="screenshots/cache channels.png" alt="Channel menu with per-group cache progress bars showing RGBA / albedo / normal / Z fill levels" class="mockup-shot">
     </div>
   </div>
 </section>
@@ -1329,52 +1341,6 @@ footer a:hover { color: var(--accent); }
   </div>
 </section>
 
-<!-- ============================================================ Edit menu -->
-<section id="undo">
-  <div class="feature-detail reverse">
-    <div class="copy">
-      <h2><span class="accent">Undo / Redo</span> for everything you touch.</h2>
-      <p>
-        The Edit menu and the Ctrl+Z / Ctrl+Y shortcuts revert layer add, remove,
-        reorder, drop-replace, IN / OUT trim and body offset edits — atomic per
-        gesture. A multi-step replace (= remove every existing layer + add the new
-        one) collapses to a single undo entry so a misclick is one tap to recover.
-      </p>
-      <ul>
-        <li><b>Layer mutations</b> — add / remove / reorder / toggle visible.</li>
-        <li><b>Drop replace</b> on the viewer area — one undo, restores the previous stack as it was.</li>
-        <li><b>Drop add-layer</b> on the panel area — one undo removes the new top.</li>
-        <li><b>Trim &amp; offset</b> commits emitted on mouse release, so a drag is one undo entry.</li>
-        <li><b>History depth</b> capped at 100; oldest entries fall off without warning.</li>
-      </ul>
-    </div>
-    <div class="mockup">
-      <div class="mockup-label">main_window.py · stack.py</div>
-      <div class="menu-mockup">
-        <div class="menu-bar">
-          <span class="item">File</span>
-          <span class="item active">Edit</span>
-          <span class="item">View</span>
-          <span class="item">Help</span>
-        </div>
-        <div class="menu-row hover">
-          <span>Undo</span>
-          <span class="shortcut">Ctrl+Z</span>
-        </div>
-        <div class="menu-row">
-          <span>Redo</span>
-          <span class="shortcut">Ctrl+Y</span>
-        </div>
-        <div class="menu-sep"></div>
-        <div class="menu-row disabled">
-          <span>Undo (no history)</span>
-          <span class="shortcut">—</span>
-        </div>
-      </div>
-    </div>
-  </div>
-</section>
-
 <!-- ============================================================ OCIO color -->
 <section id="color">
   <div class="feature-detail">
@@ -1384,37 +1350,31 @@ footer a:hover { color: var(--accent); }
         Flick Player ships with the ACES 2.0 CG built-in config. Point it at your
         studio's custom <code>config.ocio</code> via the <code>$OCIO</code> env var
         if you have one. The display transform runs on the fragment shader, so
-        toggling source / display / view is free.
+        toggling source / display / view is free — no cache invalidation, no
+        re-decode.
       </p>
       <ul>
-        <li><b>Auto-detect</b> input colorspace from filename + EXR header attributes.</li>
-        <li><b>Per-image exposure</b> nudge with <code>+</code> / <code>-</code> (±0.25 stops).</li>
-        <li><b>Per-layer channel selection</b> — pick a single AOV / depth / normals layer and view it as RGB.</li>
-        <li><b>RGBA mute</b>: toggle channels off in the shader without invalidating the cache.</li>
+        <li><b>Auto-detect</b> input colorspace from EXR header attributes — the
+            loader sweeps for <code>colorspace</code> / <code>color_space</code>
+            keys written by Nuke, Arnold, V-Ray, Houdini, and matches them
+            against the active config's role and alias table.</li>
+        <li><b>Unmarked-EXR override</b>: when no metadata is found, the Color
+            panel lets you pick the default colorspace per pipeline (ACEScg,
+            scene_linear, Linear Rec.709…) and remembers it across sessions —
+            no more tagging every shot by hand.</li>
+        <li><b>Per-image exposure</b> nudge with <code>+</code> / <code>-</code>
+            (±0.25 stops), plus gamma trim — both live in the shader.</li>
+        <li><b>Per-layer channel selection</b> — pick a single AOV / depth /
+            normals layer and view it as RGB; pre-cached in the background per
+            layer with its own master-frame entry.</li>
+        <li><b>RGBA mute</b>: toggle channels off in the shader without
+            invalidating the cache. Solo-alpha mode swaps a checkerboard
+            background in so transparency reads correctly.</li>
       </ul>
     </div>
-    <div class="mockup">
+    <div class="mockup mockup-fit">
       <div class="mockup-label">color panel</div>
-      <div class="side-panel">
-        <div class="tab-bar">
-          <div class="tab active">Color</div>
-          <div class="tab">Comments</div>
-        </div>
-        <div class="panel-section">
-          <h4>Source colorspace</h4>
-          <div class="panel-row"><span class="label">Auto-detected</span><span class="value">ACEScg</span></div>
-        </div>
-        <div class="panel-section">
-          <h4>Display</h4>
-          <div class="panel-row"><span class="label">Display</span><span class="value">sRGB - Display</span></div>
-          <div class="panel-row"><span class="label">View</span><span class="value">ACES 1.0 - SDR</span></div>
-        </div>
-        <div class="panel-section">
-          <h4>Tone</h4>
-          <div class="panel-row"><span class="label">Exposure</span><span class="value">+0.25</span></div>
-          <div class="panel-row"><span class="label">Gamma</span><span class="value">1.00</span></div>
-        </div>
-      </div>
+      <img src="screenshots/color_management.png" alt="Color side panel with auto-detected source colorspace, EXR default override, display / view selectors and tone controls" class="mockup-shot">
     </div>
   </div>
 </section>
@@ -1488,17 +1448,20 @@ footer a:hover { color: var(--accent); }
       <h2>Export to <span class="accent">anything</span>.</h2>
       <p>
         Send your sequence as an image-per-frame run for the next tool in the pipe,
-        or bake it into one of eight video codecs to ship a review reel. Annotations
-        toggle on / off; the OCIO display transform too. Three policies for sequences
-        with holes, and an aspect-ratio lock for custom resolutions.
+        or bake it into one of eight video codecs to ship a review reel. The live
+        A/B compare wipe bakes through too. Need a single still? <em>File → Save
+        Frame As…</em> snapshots the viewer to PNG / JPG / TIFF / BMP / WebP — same
+        compare and annotation toggles as the full export. Every option persists
+        between sessions.
       </p>
       <ul>
-        <li><b>Range</b>: full sequence, in/out, or custom from / to.</li>
-        <li><b>Resolution</b>: source / 720p / 1080p / 4K UHD / custom (with aspect lock).</li>
-        <li><b>Frame rate</b>: source / 23.976 / 24 / 25 / 29.97 / 30 / 60 / custom.</li>
-        <li><b>Color</b>: bake the OCIO display transform, or keep the linear buffer untouched.</li>
+        <li><b>Custom filename</b>: empty falls back to the source basename, otherwise drives the output (image seq → <code>{stem}.NNNN.ext</code>, video → <code>{stem}.ext</code>). Versioned bundle dirs by default.</li>
+        <li><b>Range</b>: full sequence, in/out, or custom from / to. <b>Resolution</b>: source / 720p / 1080p / 4K UHD / custom (with aspect lock). <b>Frame rate</b>: source / 23.976 / 24 / 25 / 29.97 / 30 / 60 / custom.</li>
+        <li><b>Color</b>: bake the OCIO display transform, or keep the linear buffer untouched (EXR / TIFF passthrough).</li>
         <li><b>Annotations</b>: bake into pixels + optional sidecar JSON copy alongside the export.</li>
+        <li><b>Bake compare overlay</b>: when the live wipe is on, the export reproduces it for every frame. Untick to ship the active sequence's clean composite instead.</li>
         <li><b>Missing-frame policy</b> (see below): never let a hole abort an overnight render again.</li>
+        <li><b>Save Frame As…</b>: one-shot still snapshot of the viewer with the same toggles, perfect for review email attachments.</li>
       </ul>
     </div>
     <div class="mockup">
@@ -1691,6 +1654,48 @@ footer a:hover { color: var(--accent); }
   </p>
 
   <div class="changelog">
+
+    <article class="release">
+      <div class="release-meta">
+        <span class="ver">
+          <a href="https://github.com/llethanh/img_player/releases/tag/v1.3.0" style="color: inherit; text-decoration: none;">v1.3.0</a>
+        </span>
+        <span class="date">2026-05-08</span>
+        <span class="tagline">A/B compare, smart cache, color profiles.</span>
+      </div>
+      <div class="release-body">
+        <h4>New</h4>
+        <ul>
+          <li><strong>A/B compare overlay</strong> — pick two layers and split the viewer with a vertical wipe, horizontal wipe, opacity blend, or solo-B mode. The seam is draggable (right-click + drag), keyboard-nudgeable, and persists across layer picks. Compositing runs on the fragment shader so seam updates are uniform-only — no numpy compose, no cache invalidation.</li>
+          <li><strong>Compare band in the menu bar</strong> — A / B picker pills, mode pills (Vert / Horiz / Opacity / Solo-B), and a swap button live next to the File menu. The band shrinks with the window width and never overlaps menu hit-targets.</li>
+          <li><strong>Smart cache with multi-version key</strong> — the cache key is now <code>(master_frame, signature)</code> where the signature folds in layer id, label, active channel, premult flag, offset and in-frame. Switching channel or stack order keeps the previous version's entries hot for instant flip-back; eviction prefers older versions of off-screen frames first.</li>
+          <li><strong>Background channel pre-cache</strong> — alt-channel reads queued at low priority during idle on every visible layer (top-down stack order), so swapping the active channel on any layer paints in cached frames immediately. Suspended automatically during playback to free the GIL, resumed on pause.</li>
+          <li><strong>Per-row cache progress</strong> — the channel menu shows a dotted progress bar per channel and the layer button mirrors the active channel's coverage. The status bar tracks total RAM headroom.</li>
+          <li><strong>Color metadata sweep</strong> — the loader matches EXR header attributes against Nuke / Arnold / V-Ray / Houdini patterns (substring sweep on <code>colorspace</code>, <code>color_space</code>, role / alias names) before falling back to filename heuristics.</li>
+          <li><strong>Unmarked-EXR override</strong> — pick the default colorspace per pipeline in the Color panel (ACEScg, scene_linear, Linear Rec.709…) for EXRs that ship without metadata; persisted across sessions.</li>
+          <li><strong>Solo-alpha + transparency BG picker</strong> — the alpha-only mute swaps in a checkerboard or a solid background colour so the matte reads correctly against the viewport.</li>
+          <li><strong>Force reload</strong> — Ctrl+Shift+R clears the cache for the active master frame and re-reads from disk, even for frames already resident. Useful when artists overwrite shots in place.</li>
+          <li><strong>Save Frame As…</strong> — File → Save Frame As… snapshots the viewer to PNG / JPG / TIFF / BMP / WebP with the same compare and annotation toggles as the full export.</li>
+          <li><strong>Custom export filename</strong> + <strong>bake compare overlay</strong> — empty falls back to source basename, otherwise drives the output (<code>{stem}.NNNN.ext</code> for sequences, <code>{stem}.ext</code> for video). The live A/B wipe bakes through every frame; untick to ship the active sequence's clean composite.</li>
+          <li><strong>Single-image layers</strong> — drop a still on the viewer and it becomes a layer with adjustable hold duration. Great for slates, refs and frame holds in a comp pass.</li>
+          <li><strong>Versioned bundle directory</strong> — <code>dist/FlickPlayer_v&lt;version&gt;/</code> instead of <code>dist/img_player/</code>, so multiple builds coexist.</li>
+          <li><strong>No console window</strong> — the .exe ships without a stray <code>cmd</code> window. Logs are written to <code>%LOCALAPPDATA%\img_player\flick.log</code> with rotation.</li>
+          <li><strong>Splash screen at startup</strong> — PyInstaller bootloader splash with three status milestones (<em>Configuring logger…</em>, <em>Detecting hardware…</em>, <em>Loading Flick Player…</em>) so cold launch on slow disks doesn't look frozen.</li>
+          <li><strong>Taskbar icon</strong> — Windows AppUserModelID set explicitly so the taskbar shows <code>flick.ico</code> instead of the generic Python feather.</li>
+          <li><strong>Channel arrow navigation</strong> — Up/Down arrows in the channel menu walk through the channel list without leaving the keyboard. Annotation close button + fullscreen polish ship in the same pass.</li>
+          <li><strong>Missing-frame placeholder bakes the filename</strong> — the rich error graphic now writes the missing frame's expected filename into the overlay, so reviewers can spot which frame to re-render.</li>
+        </ul>
+        <h4>Fixes</h4>
+        <ul>
+          <li class="fix">Compare seam preserved across layer-picker changes; auto-disabled on File → New so a fresh session never starts in compare mode.</li>
+          <li class="fix">Layer-picker visible checkbox now toggles correctly on click instead of swallowing the event.</li>
+          <li class="fix">Export keeps partial files on cancel and surfaces colour-coded outcomes (success / cancelled / error) instead of a silent dialog dismiss.</li>
+          <li class="fix">Cache handles 1-channel mask buffers and 2-channel L+A buffers without raising; 5-channel crash on AOV groups with a bare alpha is gone.</li>
+          <li class="fix">Boot tolerates the missing <code>QScreen.colorSpace</code> attribute on PySide6 6.11 Windows builds.</li>
+          <li class="fix">Cleanup pass — ruff fixes, helper de-duplication, stale comments hunted out across the cache and compare modules.</li>
+        </ul>
+      </div>
+    </article>
 
     <article class="release">
       <div class="release-meta">
