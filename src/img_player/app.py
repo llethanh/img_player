@@ -401,6 +401,10 @@ class ImgPlayerApp:
 
     def run(self, initial_path: Path | None = None) -> int:
         self._window.show()
+        # Dismiss the PyInstaller splash now that the real window is
+        # on screen. No-op outside the bundled .exe.
+        from img_player import splash
+        splash.close()
         self._status_timer.start()
         self._cache_bar_timer.start()
         # Defer the initial load: show the window first so the event loop

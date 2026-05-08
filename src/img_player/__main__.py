@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -25,6 +27,89 @@ from img_player.perf import (
 
 if TYPE_CHECKING:
     from img_player.sequence.models import SequenceInfo
+
+
+# ----------------------------------------------------------------------------
+# Logging setup — file + stderr handlers shared between the live console
+# launch (dev) and the windowed .exe (no console attached).
+# ----------------------------------------------------------------------------
+
+
+_LOG_FORMAT = "%(asctime)s %(levelname)s %(message)s"
+# 5 MB per file × 3 backups = 20 MB max disk footprint. Sized so a
+# multi-hour playback session that emits a few thousand lines still
+# fits in the live file without rotating mid-session.
+_LOG_MAX_BYTES = 5 * 1024 * 1024
+_LOG_BACKUP_COUNT = 3
+
+
+def _resolve_log_dir() -> Path:
+    """Pick the OS-appropriate per-user app-data directory.
+
+    Windows: ``%LOCALAPPDATA%/img_player/`` (matches the conventional
+    QSettings location prefix used elsewhere).
+    macOS / Linux: ``$XDG_STATE_HOME/img_player/`` falling back to
+    ``~/.local/state/img_player/`` then ``~/.img_player/``.
+    """
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA")
+        if base:
+            return Path(base) / "img_player"
+        return Path.home() / "AppData" / "Local" / "img_player"
+    xdg_state = os.environ.get("XDG_STATE_HOME")
+    if xdg_state:
+        return Path(xdg_state) / "img_player"
+    home = Path.home()
+    candidate = home / ".local" / "state" / "img_player"
+    if candidate.parent.is_dir() or not (home / ".img_player").exists():
+        return candidate
+    return home / ".img_player"
+
+
+def _setup_logging(level: int) -> None:
+    """Install a stderr + rotating-file handler pair on the root
+    logger.
+
+    Idempotent — wipes any previously installed handlers so a
+    re-entry from tests / repeated launches doesn't double-print.
+    The file handler is best-effort: if the log directory can't be
+    created (read-only filesystem, permission denied) we fall back
+    to console-only and keep going rather than blocking startup.
+    """
+    root = logging.getLogger()
+    for handler in list(root.handlers):
+        root.removeHandler(handler)
+    root.setLevel(level)
+
+    formatter = logging.Formatter(_LOG_FORMAT)
+
+    # PyInstaller's ``--noconsole`` bundles can set ``sys.stderr`` to
+    # ``None``, which would crash ``StreamHandler.emit`` on the first
+    # log call. Guard accordingly.
+    if sys.stderr is not None:
+        try:
+            stderr_handler = logging.StreamHandler(sys.stderr)
+            stderr_handler.setFormatter(formatter)
+            root.addHandler(stderr_handler)
+        except Exception:  # pragma: no cover — defensive
+            pass
+
+    log_dir = _resolve_log_dir()
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        file_handler = RotatingFileHandler(
+            log_dir / "flick.log",
+            maxBytes=_LOG_MAX_BYTES,
+            backupCount=_LOG_BACKUP_COUNT,
+            encoding="utf-8",
+        )
+        file_handler.setFormatter(formatter)
+        root.addHandler(file_handler)
+        root.info("logging to %s", log_dir / "flick.log")
+    except OSError:
+        root.warning(
+            "could not create log file under %s — console only", log_dir,
+        )
 
 
 # ----------------------------------------------------------------------------
@@ -234,15 +319,26 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("--scan requires a PATH.")
         return _cmd_scan(args.path, list_all=args.all)
 
+    # Splash status helper — no-op outside the bundled .exe, so dev
+    # runs are unaffected. The actual splash window is brought up by
+    # PyInstaller's bootloader BEFORE this Python code starts; we
+    # only update its status band as boot milestones tick over.
+    from img_player import splash
+    splash.update("Configuring logger…")
+
     # Configure root logger so our [hw-tune] lines actually appear.
     # Other modules call `logging.getLogger(__name__).info(...)` and
-    # rely on a handler being installed. We use the same single-line
-    # format the bench runner uses for consistency.
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(message)s",
-    )
+    # rely on a handler being installed. Two destinations:
+    #
+    # * stderr — visible when launched from a terminal / dev console
+    #   (no-op silent stream when the bundled .exe runs as a windowed
+    #   process with no console attached, which is fine).
+    # * a rotating file under the per-user app-data folder so end
+    #   users running the bundled .exe (= no console window) still
+    #   leave a trail for post-mortem debugging.
+    _setup_logging(logging.INFO)
 
+    splash.update("Detecting hardware…")
     # Auto-tune layer: the hard-coded defaults from earlier versions
     # (8 GB cache, 6 workers, 1 OIIO thread) are now produced as a
     # special case of compute_tune() when gpu_kind is "unknown" —
@@ -276,6 +372,7 @@ def main(argv: list[str] | None = None) -> int:
     # Default: launch the GUI (empty if no path, opening the given
     # sequence otherwise). Users can still drag & drop once the window
     # is open.
+    splash.update("Loading Flick Player…")
     from img_player.app import run_gui
 
     return run_gui(

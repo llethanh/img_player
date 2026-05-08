@@ -288,9 +288,114 @@ a = Analysis(  # noqa: F821 — Analysis is injected by PyInstaller
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)  # noqa: F821
 
+
+# ----------------------------------------------------------------------- Splash
+# Build-time-generated PNG: dark background + Flick icon + title +
+# version number, with a reserved bottom band for the dynamic status
+# text PyInstaller's bootloader paints over via ``pyi_splash.update_text``.
+# The user sees the splash *before* the Python interpreter even starts
+# (that's the point — bridge the 2-3 s import wait so they don't doubt
+# their click registered).
+def _build_splash_png() -> Path:
+    """Render the splash PNG into the PyInstaller build dir and
+    return its absolute path. Idempotent — overwrites on every
+    rebuild so a version bump propagates immediately."""
+    from PIL import Image, ImageDraw, ImageFont
+    out_dir = PROJECT_ROOT / "build" / "splash"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "splash.png"
+    width, height = 480, 240
+    img = Image.new("RGB", (width, height), color=(20, 22, 26))  # BG_DEEP
+    draw = ImageDraw.Draw(img)
+
+    # Lighter tile behind the icon — the film-perf border on the
+    # Flick icon is near-black and disappears against the splash's
+    # BG_DEEP. A slightly raised panel (BG_RAISED-ish) gives the
+    # icon a frame to stand against.
+    tile_size = 112
+    tile_x = (width - tile_size) // 2
+    tile_y = 16
+    draw.rounded_rectangle(
+        (tile_x, tile_y, tile_x + tile_size, tile_y + tile_size),
+        radius=14,
+        fill=(40, 42, 48),       # BG_RAISED-ish
+        outline=(56, 56, 60),    # BORDER_DEFAULT
+        width=1,
+    )
+
+    # Drop the icon centred on the tile. PIL reads .ico containers;
+    # pick the largest available size for crisp downscale.
+    icon_path = PROJECT_ROOT / "src" / "img_player" / "assets" / "icons" / "flick.ico"
+    if icon_path.is_file():
+        icon = Image.open(icon_path)
+        try:
+            icon = icon.resize((88, 88), Image.LANCZOS)
+        except Exception:
+            pass
+        # Convert to RGBA so alpha pastes correctly over the tile.
+        if icon.mode != "RGBA":
+            icon = icon.convert("RGBA")
+        img.paste(
+            icon,
+            (tile_x + (tile_size - 88) // 2, tile_y + (tile_size - 88) // 2),
+            icon,
+        )
+
+    # Title + version centred under the icon.
+    try:
+        title_font = ImageFont.truetype("arialbd.ttf", 22)
+        version_font = ImageFont.truetype("arial.ttf", 12)
+    except OSError:
+        title_font = ImageFont.load_default()
+        version_font = ImageFont.load_default()
+    title = "Flick Player"
+    version = f"v{VERSION}"
+    title_bbox = draw.textbbox((0, 0), title, font=title_font)
+    version_bbox = draw.textbbox((0, 0), version, font=version_font)
+    title_w = title_bbox[2] - title_bbox[0]
+    version_w = version_bbox[2] - version_bbox[0]
+    draw.text(
+        ((width - title_w) // 2, 132),
+        title, fill=(232, 144, 28), font=title_font,  # ACCENT
+    )
+    draw.text(
+        ((width - version_w) // 2, 162),
+        version, fill=(138, 138, 142), font=version_font,  # TEXT_SECONDARY
+    )
+    # Bottom band reserved for ``pyi_splash.update_text`` — leave it
+    # empty here, the bootloader paints over it at runtime. We just
+    # draw a thin separator line so the live status reads as a
+    # distinct row rather than floating arbitrarily.
+    draw.line([(40, 200), (width - 40, 200)], fill=(56, 56, 60), width=1)
+    img.save(out_path, "PNG")
+    return out_path
+
+
+splash_png_path = _build_splash_png()
+# ``text_pos`` is the top-left anchor of the dynamic status string.
+# The splash is 480 px wide; anchoring at x=40 leaves ~400 px of
+# usable width — fits "Initialising OpenColorIO…" and friends with
+# room to spare without needing centred-text gymnastics that
+# ``pyi_splash`` doesn't natively support.
+splash = Splash(  # noqa: F821
+    str(splash_png_path),
+    binaries=a.binaries,
+    datas=a.datas,
+    text_pos=(40, 215),
+    text_size=11,
+    text_color="white",
+    text_default="Loading…",
+    minify_script=True,
+    always_on_top=True,
+    rundir=None,
+)
+
+
 exe = EXE(  # noqa: F821
     pyz,
     a.scripts,
+    splash,
+    splash.binaries,
     [],
     exclude_binaries=True,
     name="FlickPlayer",
@@ -299,8 +404,10 @@ exe = EXE(  # noqa: F821
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,            # UPX often trips antivirus heuristics — leave off.
-    console=True,         # Keep the console window for now: shows logs +
-                          # bench output. Switch to False once we trust it.
+    console=False,        # No console window for the bundled .exe.
+                          # Logs land in a rotating file under
+                          # %LOCALAPPDATA%\img_player\flick.log
+                          # (set up by ``__main__._setup_logging``).
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
