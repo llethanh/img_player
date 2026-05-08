@@ -1561,6 +1561,28 @@ footer a:hover { color: var(--accent); }
 
     <article class="release">
       <div class="release-meta">
+        <span class="ver">v1.4.0 <em style="color: var(--text-secondary); font-size: 12px; font-style: normal;">(unreleased)</em></span>
+        <span class="date">2026-05-08</span>
+        <span class="tagline">Preferences dialog, OCIO hot-reload, splash refactor.</span>
+      </div>
+      <div class="release-body">
+        <h4>New</h4>
+        <ul>
+          <li><strong>Preferences dialog</strong> — <em>File → Open Preferences…</em> (<code>Ctrl+,</code>) opens a sidebar+stack settings window. First section: <strong>Color Management</strong>, with three modes for resolving the OCIO config at boot — <em>Default</em> (built-in ACES), <em>From <code>$OCIO</code></em>, or <em>Custom config file…</em> (browse to any <code>.ocio</code> on disk). The dialog's structure is set up to accept further sections (Playback, Cache, Annotation…) by adding one widget.</li>
+          <li><strong>OCIO config hot-reload</strong> — applying a new config in Preferences swaps the running <code>OCIOManager</code> in place: ColorPanel combos repopulate, the GPU shader rebuilds against the new transform, persisted source / display / view picks that no longer exist in the new config are dropped silently. Restart no longer required. Banner turns green with the loaded config name and a summary of which picks were preserved vs reset.</li>
+          <li><strong>Cream-on-orange channel menu typography</strong> — when the cache-fill bar is half-filled behind a channel row, the label text repaints in <code>#FFE5C0</code> (the same warm cream the bottom info band uses) clipped to the filled region, so the row stays legible all the way across the bar. Outside the bar the standard theme colour shows through, so typography is untouched until loading begins.</li>
+          <li><strong>QSplashScreen at boot</strong> — the previous PyInstaller bootloader splash used Tk, which isn't DPI-aware on Windows and visibly shrunk + repositioned the splash mid-boot on HiDPI displays. The new splash is a Qt <code>QSplashScreen</code> reading a checked-in PNG asset; DPI-aware, no shrink. Trade-off: ~1-2 s appearance latency (PySide6 import) instead of the bootloader's instant paint.</li>
+        </ul>
+        <h4>Fixes</h4>
+        <ul>
+          <li class="fix">Cache-fill bar on channel rows starts a few pixels before the label's first character (in the radio↔label gutter) so the orange wash never crashes flush against the leftmost glyph.</li>
+          <li class="fix">Build chain — bundle build now produces a working EXE on miniforge Windows: <code>tkinter</code> excluded again (saves ~5 MB), Tcl/Tk PATH workaround dropped, OIIO / OpenEXR / Imath DLLs explicitly pulled from <code>$CONDA_PREFIX\Library\bin\</code> so the bundle is no longer missing them at startup.</li>
+        </ul>
+      </div>
+    </article>
+
+    <article class="release">
+      <div class="release-meta">
         <span class="ver">
           <a href="https://github.com/llethanh/img_player/releases/tag/v1.3.0" style="color: inherit; text-decoration: none;">v1.3.0</a>
         </span>
