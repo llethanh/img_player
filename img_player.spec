@@ -10,7 +10,6 @@ the target machine — it ships its own Python, OpenImageIO,
 OpenColorIO and Qt6, so nothing needs to be installed.
 """
 
-import os
 import re
 from pathlib import Path
 
@@ -75,6 +74,14 @@ icon_datas = [
     (str(icons_dir / f.name), "img_player/assets/icons")
     for f in icons_dir.glob("*") if f.is_file()
 ]
+
+# Splash PNG — loaded at boot via ``QSplashScreen`` from
+# ``src/img_player/splash.py``. Same Path-arithmetic pattern as the
+# fonts / icons above so the asset survives the bundle relocation.
+splash_asset = PROJECT_ROOT / "src" / "img_player" / "assets" / "splash.png"
+splash_datas = (
+    [(str(splash_asset), "img_player/assets")] if splash_asset.is_file() else []
+)
 
 # OCIO ships built-in configs *inside* the shared library (ocio://default
 # resolves to ACES 2.0 CG). No external files to bundle. But we still want
@@ -279,7 +286,7 @@ a = Analysis(  # noqa: F821 — Analysis is injected by PyInstaller
     ["src/img_player/__main__.py"],
     pathex=[str(PROJECT_ROOT / "src")],
     binaries=oiio_bins + ocio_bins + av_bins + pyside_bins,
-    datas=shader_datas + font_datas + icon_datas + ocio_datas + oiio_datas + sd_datas,
+    datas=shader_datas + font_datas + icon_datas + splash_datas + ocio_datas + oiio_datas + sd_datas,
     hiddenimports=hidden,
     hookspath=[],
     hooksconfig={},
@@ -288,12 +295,12 @@ a = Analysis(  # noqa: F821 — Analysis is injected by PyInstaller
     # tooling (mrViewer, Nuke, RV, etc. that put their bin/ on PATH).
     runtime_hooks=[str(PROJECT_ROOT / "pyi_rth_dll_priority.py")],
     # Trim Qt translations + tests we never load — saves ~80 MB.
-    # NB: ``tkinter`` is *not* excluded — PyInstaller's ``Splash``
-    # bootloader requires the Tcl/Tk shared libs at startup, even
-    # though no Python code in Flick uses tkinter directly. Excluding
-    # it makes PyInstaller 6.20+ fail with "Could not determine the
-    # path to Tcl and/or Tk shared library" during bundle build.
+    # ``tkinter`` is excluded: the splash now goes through the
+    # external PowerShell launcher (``splash_launcher.ps1`` + WPF),
+    # so we no longer need PyInstaller's Tk-backed Splash() block,
+    # and shedding the Tcl/Tk runtime saves another ~5 MB.
     excludes=[
+        "tkinter",
         "PySide6.Qt3DAnimation",
         "PySide6.Qt3DCore",
         "PySide6.Qt3DExtras",
@@ -335,132 +342,18 @@ a = Analysis(  # noqa: F821 — Analysis is injected by PyInstaller
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)  # noqa: F821
 
 
-# ----------------------------------------------------------------------- Splash
-# Build-time-generated PNG: dark background + Flick icon + title +
-# version number, with a reserved bottom band for the dynamic status
-# text PyInstaller's bootloader paints over via ``pyi_splash.update_text``.
-# The user sees the splash *before* the Python interpreter even starts
-# (that's the point — bridge the 2-3 s import wait so they don't doubt
-# their click registered).
-def _build_splash_png() -> Path:
-    """Render the splash PNG into the PyInstaller build dir and
-    return its absolute path. Idempotent — overwrites on every
-    rebuild so a version bump propagates immediately."""
-    from PIL import Image, ImageDraw, ImageFont
-    out_dir = PROJECT_ROOT / "build" / "splash"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / "splash.png"
-    width, height = 480, 260
-    img = Image.new("RGB", (width, height), color=(20, 22, 26))  # BG_DEEP
-    draw = ImageDraw.Draw(img)
-
-    # Lighter tile behind the icon — the film-perf border on the
-    # Flick icon is near-black and disappears against the splash's
-    # BG_DEEP. A slightly raised panel (BG_RAISED-ish) gives the
-    # icon a frame to stand against.
-    tile_size = 112
-    tile_x = (width - tile_size) // 2
-    tile_y = 16
-    draw.rounded_rectangle(
-        (tile_x, tile_y, tile_x + tile_size, tile_y + tile_size),
-        radius=14,
-        fill=(40, 42, 48),       # BG_RAISED-ish
-        outline=(56, 56, 60),    # BORDER_DEFAULT
-        width=1,
-    )
-
-    # Drop the icon centred on the tile. PIL reads .ico containers;
-    # pick the largest available size for crisp downscale.
-    icon_path = PROJECT_ROOT / "src" / "img_player" / "assets" / "icons" / "flick.ico"
-    if icon_path.is_file():
-        icon = Image.open(icon_path)
-        try:
-            icon = icon.resize((88, 88), Image.LANCZOS)
-        except Exception:
-            pass
-        # Convert to RGBA so alpha pastes correctly over the tile.
-        if icon.mode != "RGBA":
-            icon = icon.convert("RGBA")
-        img.paste(
-            icon,
-            (tile_x + (tile_size - 88) // 2, tile_y + (tile_size - 88) // 2),
-            icon,
-        )
-
-    # Title + version centred under the icon.
-    try:
-        title_font = ImageFont.truetype("arialbd.ttf", 22)
-        version_font = ImageFont.truetype("arial.ttf", 12)
-    except OSError:
-        title_font = ImageFont.load_default()
-        version_font = ImageFont.load_default()
-    title = "Flick Player"
-    version = f"v{VERSION}"
-    title_bbox = draw.textbbox((0, 0), title, font=title_font)
-    version_bbox = draw.textbbox((0, 0), version, font=version_font)
-    title_w = title_bbox[2] - title_bbox[0]
-    version_w = version_bbox[2] - version_bbox[0]
-    draw.text(
-        ((width - title_w) // 2, 132),
-        title, fill=(232, 144, 28), font=title_font,  # ACCENT
-    )
-    draw.text(
-        ((width - version_w) // 2, 162),
-        version, fill=(138, 138, 142), font=version_font,  # TEXT_SECONDARY
-    )
-    # Bottom band reserved for ``pyi_splash.update_text`` — leave it
-    # empty here, the bootloader paints over it at runtime. No
-    # separator line: the bootloader's font baseline sits ~6 px
-    # higher than PIL's, so a static line drawn here would land
-    # right under the ascenders of the live status text.
-    img.save(out_path, "PNG")
-    return out_path
-
-
-# PyInstaller's Splash uses Tcl/Tk shared libs. On miniforge Windows
-# they live in ``$CONDA_PREFIX\Library\bin\``, which is on PATH only
-# when the env is activated (``conda activate img_player``). The
-# companion ``build_exe.bat`` prepends that directory before invoking
-# PyInstaller so the strict TclTkInfo check finds the DLLs and the
-# build picks up the splash transparently.
-#
-# If a future env layout breaks the Tcl/Tk lookup again, set
-# ``FLICK_BUILD_SPLASH=0`` to drop the splash and unblock the build —
-# ``src/img_player/splash.py`` already turns the runtime
-# ``pyi_splash`` calls into no-ops when the bundle ships without one.
-_BUILD_SPLASH = os.environ.get("FLICK_BUILD_SPLASH", "1").lower() not in ("0", "false", "no")
-
-if _BUILD_SPLASH:
-    splash_png_path = _build_splash_png()
-    # ``text_pos`` is the top-left anchor of the dynamic status string.
-    # The splash is 480 px wide; anchoring at x=40 leaves ~400 px of
-    # usable width — fits "Initialising OpenColorIO…" and friends with
-    # room to spare without needing centred-text gymnastics that
-    # ``pyi_splash`` doesn't natively support. y=222 sits the status
-    # clearly under the version with breathing room and clears the
-    # bootloader's ~6 px baseline shift versus PIL.
-    splash = Splash(  # noqa: F821
-        str(splash_png_path),
-        binaries=a.binaries,
-        datas=a.datas,
-        text_pos=(40, 240),
-        text_size=11,
-        text_color="white",
-        text_default="Loading…",
-        minify_script=True,
-        always_on_top=True,
-        rundir=None,
-    )
-    _exe_extras = [splash, splash.binaries]
-else:
-    splash = None
-    _exe_extras = []
+# Splash is now external: ``splash_launcher.ps1`` (driven from
+# ``flick.bat``) paints a WPF window before Python starts, then
+# spawns ``FlickPlayer.exe`` with ``FLICK_LAUNCHER=1`` set. The
+# Python side detects the env var and stays quiet (writes a ready
+# marker to ``%TEMP%\flick_ready.flag`` when the main window
+# appears, which the launcher polls to dismiss its splash). See
+# ``src/img_player/splash.py`` for the runtime hooks.
 
 
 exe = EXE(  # noqa: F821
     pyz,
     a.scripts,
-    *_exe_extras,
     [],
     exclude_binaries=True,
     name="FlickPlayer",

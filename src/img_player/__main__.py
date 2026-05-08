@@ -319,11 +319,31 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("--scan requires a PATH.")
         return _cmd_scan(args.path, list_all=args.all)
 
-    # Splash status helper — no-op outside the bundled .exe, so dev
-    # runs are unaffected. The actual splash window is brought up by
-    # PyInstaller's bootloader BEFORE this Python code starts; we
-    # only update its status band as boot milestones tick over.
+    # Bring up Qt + splash *before* anything else we want to surface
+    # as "loading…" — every milestone update needs a live
+    # QApplication. Constructing the QApplication this early is cheap
+    # (no widgets yet) and the App later picks it up via
+    # ``QApplication.instance()`` so we don't double-create it.
+    #
+    # Windows AppUserModelID is set first so the splash + taskbar
+    # entry both inherit the right ID; ``ImgPlayerApp`` re-applies it
+    # defensively but the model ID needs to be in place *before* the
+    # first QApplication-managed window is shown to take effect.
+    if sys.platform == "win32":
+        try:
+            import ctypes as _ctypes
+            _ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                "flickplayer.app",
+            )
+        except Exception:
+            pass
+
+    from PySide6.QtWidgets import QApplication
+
+    qapp = QApplication.instance() or QApplication(sys.argv)
+
     from img_player import splash
+    splash.init()
     splash.update("Configuring logger…")
 
     # Configure root logger so our [hw-tune] lines actually appear.

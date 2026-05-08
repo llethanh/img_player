@@ -80,24 +80,26 @@ REM (pushd already done at the top of the file.)
 if exist build  rmdir /s /q build
 if exist dist   rmdir /s /q dist
 
-REM ---- Make sure conda env's Library\bin is on PATH -------------------
-REM PyInstaller 6.20+'s strict TclTkInfo check loads ``tcl86t.dll`` /
-REM ``tk86t.dll`` to verify Splash() compatibility. Under miniforge
-REM Windows those live in ``%CONDA_PREFIX%\Library\bin``, which is
-REM normally added by ``conda activate`` — but non-interactive batch
-REM activation occasionally skips it, so the build then errors out
-REM with "Could not determine the path to Tcl and/or Tk shared
-REM library". Belt-and-suspenders: prepend it ourselves.
-if defined CONDA_PREFIX (
-    if exist "%CONDA_PREFIX%\Library\bin" set "PATH=%CONDA_PREFIX%\Library\bin;%PATH%"
-)
-
 REM ---- Run PyInstaller -------------------------------------------------
 echo.
 echo [build_exe] Running PyInstaller (this takes a few minutes)...
 echo.
 pyinstaller img_player.spec --noconfirm
 set EXIT_CODE=%ERRORLEVEL%
+
+REM ---- Drop the WPF splash launcher next to the .exe ------------------
+REM ``flick.bat`` + ``splash_launcher.ps1`` form the user-facing entry
+REM point: clicking ``flick.bat`` brings the splash up in ~200 ms,
+REM then spawns FlickPlayer.exe in the background. They have to sit
+REM at the bundle root (not under _internal/) so the .ps1's path
+REM arithmetic resolves to FlickPlayer.exe and the splash PNG.
+if %EXIT_CODE% EQU 0 (
+    for /d %%d in ("dist\FlickPlayer_v*") do (
+        copy /y "splash_launcher.ps1" "%%d\" >nul
+        copy /y "flick.bat" "%%d\" >nul
+        echo [build_exe] Copied splash_launcher.ps1 + flick.bat into %%d\
+    )
+)
 
 if %EXIT_CODE% EQU 0 (
     echo.
