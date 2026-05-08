@@ -318,6 +318,14 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
         self._play_start_frame = self._state.current_frame
 
         self._update(is_playing=True)
+        # Drain the worker pool's pending queue: any alt-channel
+        # decodes scheduled while paused are now in the way of
+        # playback (workers can't be preempted, so an alt OIIO read
+        # in flight when the controller wants the next frame steals
+        # 10-50 ms of GIL). ``clear`` also drops pending actives —
+        # ``_prefetch_from`` on the next ``_tick`` re-queues the
+        # close-window the play loop actually needs.
+        self._cache.clear_pending()
         self._timer.start(self._interval_ms())
 
     def pause(self) -> None:
@@ -339,6 +347,13 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
         # Drop the wall-clock anchor — the next play() reseeds it.
         self._play_start_clock = None
         self._update(is_playing=False)
+        # Now that we're paused, replay the full prefetch wave —
+        # actives over the full nav range AND alt-channel groups
+        # (which were suppressed during playback to keep workers off
+        # the critical path). ``request`` / ``request_alt_channel``
+        # both dedup against already-cached / already-pending so
+        # the call is cheap when most of the cache is already warm.
+        self.replan_prefetch()
 
     def stop(self) -> None:
         """Pause and jump back to the in-frame (or sequence start)."""
@@ -708,6 +723,22 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
     # behind-frames never get scheduled.
     _BEHIND_PRIORITY_PENALTY = 4
 
+    # Background alt-channel prefetch sits behind every active decode
+    # in the worker pool's min-heap. Active priorities live in
+    # ``[0, ring_size × penalty]`` (~ a few thousand for typical
+    # sequences); this base sits well above so the pool always
+    # picks an active frame first when one is queued.
+    _ALT_CHANNEL_BASE_PRIORITY = 1_000_000
+    # Per channel-group offset within the alt prefetch — group 0 fully
+    # finishes (in/out range, then full nav range) before group 1
+    # starts. Sized so frames-of-group-0-full + ring buffer headroom
+    # comfortably fits before the next group's first frame.
+    _ALT_CHANNEL_GROUP_STRIDE = 100_000
+    # Inside a group, in/out range frames win against the rest of
+    # the nav range. Bumping by this offset puts every full-range
+    # frame after every in-range frame within the same group.
+    _ALT_CHANNEL_OUT_OF_RANGE_OFFSET = 50_000
+
     def _prefetch_full_sequence(self, frame: int, direction: int) -> None:
         """Schedule every frame in the sequence, prioritised by
         signed distance from ``frame``.
@@ -765,6 +796,99 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
                     else (-delta * self._BEHIND_PRIORITY_PENALTY)
                 )
             self._cache.request(f, priority=priority)
+
+        # Background alt-channel prefetch — once active is queued,
+        # also queue the focused layer's *other* channel groups at
+        # very high priorities so the worker pool only picks them up
+        # after the active queue drains. The eviction policy (tier 0
+        # = stale-signature) drops these alt entries first under
+        # memory pressure, so they're a "best effort if RAM is
+        # available" affordance and never compete with live needs.
+        self._queue_focused_alt_channels(frame, first_f, last_f)
+
+    def _queue_focused_alt_channels(
+        self, frame: int, full_lo: int, full_hi: int,
+    ) -> None:
+        """Queue per-frame decodes for every alternate channel group
+        of the focused single-layer stack.
+
+        Order
+        -----
+        1. Iterate ``alt_channel_groups_for_focused`` in the natural
+           ``group_channels`` order (RGB beauty first, AOVs after).
+           Each group gets its own priority slot so group 0 finishes
+           entirely before group 1 begins decoding.
+        2. Within a group, the **in/out range** frames win first
+           (sorted by distance from the playhead), then the rest of
+           the nav range. The user explicitly asked for this:
+           confidence on the playable range first, the wider nav
+           later.
+
+        No-op when the cache reports no alt groups (e.g. multi-layer
+        stack, no AOVs in the source, or the focused layer has only
+        one group). Cheap to call: ``request_alt_channel`` dedups
+        against already-cached / already-pending keys, so repeated
+        invocations on every seek don't compound.
+
+        Also no-op while playing: background workers can't be
+        preempted mid-decode, so an alt OIIO read in flight when
+        the controller needs the next playback frame steals 10-50 ms
+        of GIL — visible as a 1-2 frame stall at 24 fps. ``pause()``
+        re-queues the alts so they resume as soon as the user
+        stops playback.
+        """
+        if self._state.is_playing:
+            return
+        groups = self._cache.alt_channel_groups_for_focused()
+        if not groups:
+            return
+        layer_range = self._cache.focused_layer_master_range()
+        if layer_range is None:
+            return
+        layer_first, layer_last = layer_range
+        # Clamp the alt prefetch to the actual layer coverage — no
+        # point queueing decodes for master frames the layer doesn't
+        # touch. Intersect with the nav range while we're at it.
+        full_lo = max(full_lo, layer_first)
+        full_hi = min(full_hi, layer_last)
+        if full_lo > full_hi:
+            return
+        # In/out window: respect the user's playback range. Falls back
+        # to the full layer range when no in/out is set.
+        in_lo = max(self._effective_in_frame(), full_lo)
+        in_hi = min(self._effective_out_frame(), full_hi)
+        if in_lo > in_hi:
+            in_lo, in_hi = full_lo, full_hi
+        # Resolve focused layer id once; the cache method needs it
+        # per-call but the id is invariant across the iteration.
+        focused = self._cache.focused_layer_id_for_alt()
+        if focused is None:
+            return
+        for group_idx, (alt_label, alt_channels) in enumerate(groups):
+            group_base = (
+                self._ALT_CHANNEL_BASE_PRIORITY
+                + group_idx * self._ALT_CHANNEL_GROUP_STRIDE
+            )
+            # In-range frames first — distance from playhead, no
+            # behind-penalty (alt prefetch isn't tied to playback
+            # direction; the user might switch channels and immediately
+            # scrub backwards).
+            for f in range(in_lo, in_hi + 1):
+                priority = group_base + abs(f - frame)
+                self._cache.request_alt_channel(
+                    focused, f, alt_channels, alt_label, priority,
+                )
+            # Out-of-range frames last — same group, but bumped by
+            # the per-group out-of-range offset so they all sit
+            # behind the in-range frames within this group.
+            out_base = group_base + self._ALT_CHANNEL_OUT_OF_RANGE_OFFSET
+            for f in range(full_lo, full_hi + 1):
+                if in_lo <= f <= in_hi:
+                    continue
+                priority = out_base + abs(f - frame)
+                self._cache.request_alt_channel(
+                    focused, f, alt_channels, alt_label, priority,
+                )
 
     def _interval_ms(self) -> int:
         return max(1, round(1000.0 / self._state.fps))

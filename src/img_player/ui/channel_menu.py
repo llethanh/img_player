@@ -16,9 +16,10 @@ radio-button list.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import QBrush, QPainter, QPen
 from PySide6.QtWidgets import (
     QButtonGroup,
     QFrame,
@@ -31,7 +32,7 @@ from PySide6.QtWidgets import (
 )
 
 from img_player.sequence.channels import ChannelGroup, ChannelSelection
-from img_player.ui.theme import S
+from img_player.ui.theme import C, S
 
 
 class _ChannelRow(QFrame):  # type: ignore[misc]
@@ -42,6 +43,7 @@ class _ChannelRow(QFrame):  # type: ignore[misc]
     def __init__(self, group: ChannelGroup, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.label = group.label
+        self._original_channels = tuple(group.channels)
 
         self.setFrameShape(QFrame.Shape.NoFrame)
 
@@ -61,10 +63,20 @@ class _ChannelRow(QFrame):  # type: ignore[misc]
         self._label = QLabel(group.label)
         self._label.setMinimumWidth(120)
         self._label.setToolTip("Channels: " + ", ".join(group.channels))
+        # Transparent label background so the row's cache-fill paint
+        # (drawn in paintEvent below) shows through the text.
+        self._label.setStyleSheet("background: transparent;")
         # Click-on-label is a synonym for click-on-radio: bigger
         # target, more forgiving UX, especially on touchpads.
         self._label.mousePressEvent = self._on_label_clicked  # type: ignore[method-assign]
         layout.addWidget(self._label, 1)
+
+        # Cache-fill fraction painted as a translucent orange bar in
+        # the label's geometry — same idiom as the timeline cache
+        # bar (``C.CACHE_BAR`` fill + ``C.CACHE_BAR_BORDER`` outline)
+        # so the two readouts feel kin. Negative = "no data, paint
+        # nothing" (multi-layer / no-AOV stacks stay clean).
+        self._fraction: float = -1.0
 
     # -------------------------------------------------- public API
 
@@ -74,9 +86,57 @@ class _ChannelRow(QFrame):  # type: ignore[misc]
         self._radio.setChecked(on)
         self._radio.blockSignals(False)
 
+    def set_progress(self, cached: int, total: int) -> None:
+        """Update the row's cache-fill fraction. ``total <= 0`` resets
+        to "no data" (= paints nothing). Called by the menu's polling
+        loop while it's visible."""
+        if total <= 0:
+            if self._fraction != -1.0:
+                self._fraction = -1.0
+                self.update()
+            return
+        new_fraction = max(0.0, min(1.0, cached / total))
+        if new_fraction != self._fraction:
+            self._fraction = new_fraction
+            self.update()
+        self._label.setToolTip(
+            f"Channels: {', '.join(self._original_channels)}\n"
+            f"Cached: {cached} / {total} frames"
+        )
+
     @property
     def radio(self) -> QRadioButton:
         return self._radio
+
+    # -------------------------------------------------- paint
+
+    def paintEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        """Paint the cache-fill bar behind the label, then let Qt
+        render the regular children (radio + label) on top.
+
+        Bar is drawn over the label's geometry only — not the radio
+        — so the indicator stays readable. Same colour idiom as the
+        timeline cache bar (translucent accent fill + opaque accent
+        outline) for visual consistency."""
+        if self._fraction >= 0:
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            label_geom = self._label.geometry()
+            full = QRectF(label_geom)
+            fill_w = full.width() * self._fraction
+            if fill_w > 0:
+                fill_rect = QRectF(full.x(), full.y(), fill_w, full.height())
+                # Translucent fill — text reads cleanly through it.
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QBrush(C.CACHE_BAR))
+                painter.drawRect(fill_rect)
+                # Opaque outline tracing the fill — half-pixel inset
+                # so the line lands inside the rect rather than on
+                # the boundary (sub-pixel crispness at any DPI).
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.setPen(QPen(C.CACHE_BAR_BORDER, 1.0))
+                painter.drawRect(fill_rect.adjusted(0.5, 0.5, -0.5, -0.5))
+        super().paintEvent(event)
 
     # -------------------------------------------------- handlers
 
@@ -111,10 +171,26 @@ class ChannelMenu(QMenu):  # type: ignore[misc]
         self._radio_group.setExclusive(True)
 
         # Ensure the menu is wide enough that long layer names don't
-        # get truncated. 220 is a tested sweet spot — fits "albedo"
+        # get truncated. 220 is the tested sweet spot — fits "albedo"
         # comfortably without dwarfing the transport bar in the rare
-        # case of just RGB.
+        # case of just RGB. The cache-fill bar paints inside the
+        # label area so no extra horizontal budget needed.
         self.setMinimumWidth(220)
+
+        # Optional callable that returns ``{group_label: (cached, total)}``
+        # for the focused layer. Set by the host (transport / app) at
+        # wire-up time; the menu polls it on a 250 ms timer while
+        # visible to refresh each row's pip. Stays at ``None`` for
+        # tests / standalone use of the menu.
+        self._progress_provider: Callable[[], dict[str, tuple[int, int]]] | None = None
+        self._progress_timer = QTimer(self)
+        self._progress_timer.setInterval(250)
+        self._progress_timer.timeout.connect(self._refresh_progress)
+        # Only spend cycles on the poll when the menu is actually
+        # on screen — the popup hides via ``aboutToHide`` after a
+        # pick or an outside click.
+        self.aboutToShow.connect(self._on_about_to_show)
+        self.aboutToHide.connect(self._progress_timer.stop)
 
     # ------------------------------------------------------------------ Public API
 
@@ -175,6 +251,45 @@ class ChannelMenu(QMenu):  # type: ignore[misc]
     @property
     def active_label(self) -> str:
         return self._active_label
+
+    def set_progress_provider(
+        self,
+        provider: Callable[[], dict[str, tuple[int, int]]] | None,
+    ) -> None:
+        """Wire (or unwire) the cache-fill data source. Called once
+        at app startup with a closure over the cache; subsequent
+        ``aboutToShow`` events poll the provider and push the
+        ``(cached, total)`` pair into each row's pip."""
+        self._progress_provider = provider
+
+    def update_progress(
+        self, progress: dict[str, tuple[int, int]] | None,
+    ) -> None:
+        """Push a fresh ``{group_label: (cached, total)}`` map into
+        every row's pip. Missing labels reset their pip to "no
+        data"; unknown labels in the input are silently ignored."""
+        if progress is None:
+            for row in self._row_by_label.values():
+                row.set_progress(0, 0)
+            return
+        for label, row in self._row_by_label.items():
+            cached, total = progress.get(label, (0, 0))
+            row.set_progress(cached, total)
+
+    def _on_about_to_show(self) -> None:
+        # Push a fresh tick immediately so the user doesn't see the
+        # previous (stale) progress for 250 ms before the timer fires.
+        self._refresh_progress()
+        self._progress_timer.start()
+
+    def _refresh_progress(self) -> None:
+        if self._progress_provider is None:
+            return
+        try:
+            data = self._progress_provider()
+        except Exception:
+            data = None
+        self.update_progress(data)
 
     def cycle_active(self, delta: int) -> None:
         """Move the active radio by ``delta`` positions in the group

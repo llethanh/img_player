@@ -785,6 +785,281 @@ class MasterFrameCache:
             time.sleep(0.005)
         return False
 
+    # ------------------------------------------------------------------ Alt-channel background prefetch
+
+    def request_alt_channel(
+        self,
+        layer_id: str,
+        master_frame: int,
+        alt_channels: tuple[str, ...],
+        alt_label: str,
+        priority: int,
+    ) -> bool:
+        """Submit a decode of ``layer_id`` at ``master_frame`` using
+        ``alt_channels`` (instead of the layer's live selection).
+
+        Single-layer stacks take the cheap single-decode path; multi-
+        layer stacks go through the composite path with an override
+        on this layer's channels — both store under the synthetic
+        signature ``_signature_at_with_override`` produces, so a
+        future channel switch on this layer hits the cache regardless
+        of how many other layers it composites with.
+
+        Returns ``False`` when the layer can't contribute (hidden,
+        doesn't cover, video, still, sparse hole), when the focused
+        layer is masked above (e.g. an opaque-floor topmost), or
+        when the entry is already cached / pending.
+
+        ``priority`` should be very large (alt_base + offset) so
+        these decodes only run when the worker pool has nothing of
+        active priority left to do.
+        """
+        layer = self._stack.find(layer_id)
+        if layer is None or not layer.visible or not layer.covers(master_frame):
+            return False
+        if getattr(layer, "is_video", False):
+            return False
+        if getattr(layer, "is_still", False):
+            # Stills resolve to one anchor frame regardless of mf —
+            # alt prefetch already handled by the still fan-out path
+            # the moment the anchor is decoded. Skip the per-frame
+            # repeats so we don't burn priority slots on no-ops.
+            return False
+        sig = self._signature_at_with_override(
+            master_frame, layer_id, alt_label,
+        )
+        key = (master_frame, sig)
+        with self._lock:
+            if key in self._frames:
+                return False
+
+        # Walk the visible+covering chain at this master frame; stop
+        # at the first opaque-floor (= what the regular composite
+        # path does in ``request``).
+        visible = [
+            l for l in self._stack.layers()
+            if l.visible and l.covers(master_frame)
+            and not getattr(l, "is_video", False)
+        ]
+        chain: list[Layer] = []
+        for l in visible:
+            chain.append(l)
+            if not l.alpha_composite:
+                break
+        # Focused layer must be in the chain — if it's masked above
+        # by an opaque floor, no alt decode of it would change the
+        # composite the user sees, so caching is pointless.
+        if not any(l.id == layer_id for l in chain):
+            return False
+
+        # Single-layer fast path: chain is just the focused layer
+        # AND it's an opaque floor (= no compositing needed). One
+        # OIIO read straight into the cache.
+        if (
+            len(chain) == 1
+            and chain[0].id == layer_id
+            and not chain[0].alpha_composite
+        ):
+            source_frame = layer.source_frame_at(master_frame)
+            self._ensure_index(layer)
+            path = self._path_index[layer.id].get(source_frame)
+            if path is None:
+                return False
+            channels = self._channels_for_with_override(layer, alt_channels)
+            ph_w = layer.sequence.width or 512
+            ph_h = layer.sequence.height or 512
+            strip_alpha = not layer.alpha_composite
+            return self._pool.submit(
+                priority,
+                key,
+                lambda: self._decode_and_store(
+                    master_frame, sig, path, channels, ph_w, ph_h,
+                    strip_alpha=strip_alpha,
+                ),
+            )
+
+        # Composite path with override. Mirrors ``_submit_composite``'s
+        # plan-building loop but with the focused layer's channels
+        # swapped to ``alt_channels``.
+        plan = self._build_composite_plan_with_override(
+            master_frame, chain, layer_id, alt_channels,
+        )
+        if not plan:
+            return False
+        # Same opaque-floor-on-bottom rule as the regular composite
+        # path (transparency BG only shows when no other visible
+        # layer covers below the chain).
+        covering_ids = [
+            l.id for l in self._stack.layers()
+            if l.visible and l.covers(master_frame)
+        ]
+        bottom_id = plan[-1]["layer_id"]
+        if bottom_id in covering_ids:
+            stack_idx = covering_ids.index(bottom_id)
+            if stack_idx < len(covering_ids) - 1:
+                plan[-1]["is_opaque_floor"] = True
+        return self._pool.submit(
+            priority,
+            key,
+            lambda: self._decode_composited_and_store(
+                master_frame, sig, plan,
+            ),
+        )
+
+    def _build_composite_plan_with_override(
+        self,
+        master_frame: int,
+        chain: list[Layer],
+        override_layer_id: str,
+        override_channels: tuple[str, ...],
+    ) -> list[dict]:
+        """Mirror of the plan-building loop inside
+        :meth:`_submit_composite`, but the layer matching
+        ``override_layer_id`` reads ``override_channels`` instead of
+        its live ``channel_selection``.
+
+        Used by :meth:`request_alt_channel` to pre-cache an
+        alt-channel composite at the synthetic signature the user's
+        future channel switch would compute.
+        """
+        plan: list[dict] = []
+        for layer in chain:
+            self._ensure_index(layer)
+            source_frame = layer.source_frame_at(master_frame)
+            path = self._path_index[layer.id].get(source_frame)
+            if path is None:
+                continue
+            if layer.id == override_layer_id:
+                channels = self._channels_for_with_override(
+                    layer, override_channels,
+                )
+            else:
+                channels = self._channels_for(layer)
+            plan.append({
+                "layer_id": layer.id,
+                "path": path,
+                "channels": channels,
+                "ph_w": layer.sequence.width or 512,
+                "ph_h": layer.sequence.height or 512,
+                "is_straight": bool(layer.alpha_is_straight),
+                "is_opaque_floor": not layer.alpha_composite,
+            })
+        return plan
+
+    def alt_channel_groups_for_focused(
+        self,
+    ) -> tuple[tuple[str, tuple[str, ...]], ...]:
+        """List the focused layer's channel groups *other than the
+        active one*, ordered by ``group_channels`` (RGB first, then
+        AOVs in their natural order).
+
+        Each entry = ``(label, channels_tuple)`` — directly feedable
+        to :meth:`request_alt_channel`. Works for both single- and
+        multi-layer stacks (multi-layer alt decodes go through the
+        composite path with the override on the focused layer).
+        Empty when there's no focused layer or when it has no alt
+        groups (= just RGB).
+        """
+        layer = self._focused_alt_layer()
+        if layer is None:
+            return ()
+        from img_player.sequence.channels import group_channels
+        groups = group_channels(layer.sequence.channel_names)
+        if len(groups) <= 1:
+            return ()
+        active_label = (
+            layer.channel_selection.active.label
+            if layer.channel_selection is not None else None
+        )
+        out: list[tuple[str, tuple[str, ...]]] = []
+        for grp in groups:
+            if grp.label == active_label:
+                continue
+            out.append((grp.label, grp.channels))
+        return tuple(out)
+
+    def focused_layer_master_range(self) -> tuple[int, int] | None:
+        """``(first, last)`` master-frame range covered by the
+        focused (single-layer) layer, or ``None`` when alt prefetch
+        doesn't apply."""
+        layer = self._focused_alt_layer()
+        if layer is None:
+            return None
+        return (layer.master_start, layer.master_end)
+
+    def focused_layer_id_for_alt(self) -> str | None:
+        """Layer id the alt-channel prefetch should target, or
+        ``None`` when alt prefetch doesn't apply (multi-layer stack
+        / empty stack). Wrapped here so callers don't reach through
+        ``_stack``."""
+        layer = self._focused_alt_layer()
+        return layer.id if layer is not None else None
+
+    def _focused_alt_layer(self) -> Layer | None:
+        """Resolve the focused layer for alt-channel prefetch — the
+        layer whose channel groups the menu drives.
+
+        Multi-layer stacks are supported: alt decodes go through the
+        composite path with an override on this layer's channels, so
+        the cached composite matches the signature a future channel
+        switch on this layer would compute.
+
+        Falls back to the first layer when no focus is set (= the
+        immediately-after-attach state on a freshly-loaded sequence).
+        ``None`` only when the stack is empty.
+        """
+        focused = self._stack.focused()
+        if focused is not None:
+            return focused
+        layers = self._stack.layers()
+        if not layers:
+            return None
+        return layers[0]
+
+    def alt_channel_progress(self) -> dict[str, tuple[int, int]]:
+        """Per-channel-group cache fill ``(cached, total)`` for the
+        focused layer. Includes the active group (so the channel
+        menu can show its progress too).
+
+        Iterates every channel group × every covered master frame
+        and counts how many ``(mf, signature)`` entries are present
+        in ``_frames``. O(groups × frames) per call — typically a
+        few thousand dict lookups, fine for the menu's
+        ``aboutToShow`` poll cadence (every 200 ms while the menu
+        is open). Empty when alt prefetch doesn't apply (multi-layer
+        stack, no groups, empty stack).
+        """
+        layer = self._focused_alt_layer()
+        if layer is None:
+            return {}
+        from img_player.sequence.channels import group_channels
+        groups = group_channels(layer.sequence.channel_names)
+        if not groups:
+            return {}
+        first, last = layer.master_start, layer.master_end
+        total = last - first + 1
+        if total <= 0:
+            return {}
+        active_label = (
+            layer.channel_selection.active.label
+            if layer.channel_selection is not None else None
+        )
+        out: dict[str, tuple[int, int]] = {}
+        with self._lock:
+            for grp in groups:
+                count = 0
+                for mf in range(first, last + 1):
+                    if grp.label == active_label:
+                        sig = self._signature_at(mf)
+                    else:
+                        sig = self._signature_at_with_override(
+                            mf, layer.id, grp.label,
+                        )
+                    if (mf, sig) in self._frames:
+                        count += 1
+                out[grp.label] = (count, total)
+        return out
+
     def _signature_at(self, master_frame: int) -> str:
         """Stable string id for the chain × channel-selection tuple
         that would produce the pixels at ``master_frame`` under the
@@ -837,6 +1112,72 @@ class MasterFrameCache:
         that mutates the layer stack (visibility, channels, reorder,
         add / remove, trim)."""
         self._signature_cache.clear()
+
+    def _signature_at_with_override(
+        self,
+        master_frame: int,
+        override_layer_id: str,
+        override_label: str,
+    ) -> str:
+        """Same as :meth:`_signature_at` but with one layer's channel
+        label swapped to ``override_label``.
+
+        Used by the background alt-channel prefetch to compute the
+        synthetic signature an alt-channel snapshot would land
+        under — the user's future channel switch to that group
+        would compute the same key and hit the cache.
+
+        Not memoised: alt prefetch is rare-path; keeping the memo
+        keyed only on the live state avoids cross-contamination.
+        """
+        parts: list[str] = []
+        for layer in self._stack.layers():
+            if not layer.visible or not layer.covers(master_frame):
+                continue
+            sel = layer.channel_selection
+            sel_label = sel.active.label if sel is not None else "_"
+            if layer.id == override_layer_id:
+                sel_label = override_label
+            ac = "1" if layer.alpha_composite else "0"
+            pm = "1" if layer.alpha_is_straight else "0"
+            off = int(layer.offset)
+            lin = int(layer.layer_in)
+            parts.append(
+                f"{layer.id}@{sel_label}#{ac}{pm}+{off}+{lin}"
+            )
+            if not layer.alpha_composite:
+                break
+        return "|".join(parts)
+
+    def _channels_for_with_override(
+        self, layer: Layer, override_channels: tuple[str, ...],
+    ) -> list[str] | None:
+        """Mirror of :meth:`_channels_for` but with the layer's
+        ``channel_selection.active.channels`` replaced by
+        ``override_channels`` (without mutating the layer).
+
+        Used by the alt-channel prefetch to ask OIIO for a different
+        channel set than the layer's live selection.
+        """
+        available = set(layer.sequence.channel_names)
+        picked = [c for c in override_channels if c in available]
+        base: list[str] | None = picked or None
+        if not layer.alpha_composite:
+            return base
+        if "A" not in available:
+            if base is None:
+                return None
+            stripped = [c for c in base if c != "A"]
+            return stripped or None
+        if base is None:
+            return None
+        if len(base) >= 4:
+            return base
+        if len(base) == 1:
+            return base
+        if "A" in base:
+            return base
+        return base + ["A"]
 
     # ------------------------------------------------------------------ Stack signals → invalidation
 

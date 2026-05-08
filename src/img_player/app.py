@@ -769,6 +769,15 @@ class ImgPlayerApp:
         w.channel_selection_changed.connect(self._on_channel_selection_changed)
         w.channel_mask_changed.connect(self._on_channel_mask_changed)
         w.transparency_bg_mode_changed.connect(self._on_transparency_bg_mode_changed)
+        # Hand the channel menu a way to ask the cache for per-group
+        # cache-fill data. The menu polls this every 250 ms while it's
+        # open so each row's progress pip reflects the alt-channel
+        # background prefetch in real time. ``alt_channel_progress``
+        # short-circuits to ``{}`` for multi-layer / no-AOV stacks,
+        # which makes the pips paint as empty (= cleanly invisible).
+        w.transport.channel_menu.set_progress_provider(
+            self._cache.alt_channel_progress,
+        )
 
     def _wire_compare(self) -> None:
         """Compare-mode signals: transport button + band + shortcuts."""
@@ -1273,9 +1282,22 @@ class ImgPlayerApp:
                 # The layer was previously focused and the user picked
                 # an explicit channel — restore that pick.
                 transport.restore_channel_state(sel.active.label)
-            # else: fresh layer → ``set_available_channels`` already
-            # defaulted the menu to the first group of *this* sequence.
-            # No cross-sequence carry-over from a previous layer.
+            else:
+                # Fresh layer: ``set_available_channels`` defaulted the
+                # menu to the first group of this sequence. Mirror that
+                # onto the layer so its ``channel_selection`` matches
+                # what the menu shows. Without this, the cache's
+                # signature uses the ``"_"`` (None) fallback while
+                # ``alt_channel_progress`` queries with the menu's
+                # actual label — they mismatch and the channel button's
+                # progress bar reports 0 % even though frames *are*
+                # being cached. Direct assignment (not via
+                # ``stack.update``) avoids firing ``layer_modified``,
+                # which would invalidate a cache range that's empty
+                # for a brand-new layer anyway.
+                menu_sel = transport.channel_menu.current_selection()
+                if menu_sel is not None:
+                    layer.channel_selection = menu_sel
         finally:
             transport.blockSignals(False)
         # Sync app-level fallback so legacy export-snapshot code keeps
@@ -2139,6 +2161,12 @@ class ImgPlayerApp:
         self._window.timeline.set_missing_frames(frozenset())
         self._window.timeline.set_annotated_frames(frozenset())
         self._window.timeline.set_commented_frames(frozenset())
+        # Wipe the channel menu so the previous sequence's groups
+        # don't linger after the cache is detached. Without this the
+        # button keeps its old caption ("albedo", "RGB +2", …) and
+        # the dropdown still lists the AOVs of a sequence that no
+        # longer exists.
+        self._window.transport.clear_channels()
         # Re-disable the actions that need a loaded sequence.
         if hasattr(self._window, "_export_act"):
             self._window._export_act.setEnabled(False)  # noqa: SLF001
@@ -2933,6 +2961,16 @@ class ImgPlayerApp:
             return
         self._window.timeline.set_cached_frames(self._cache.cached_frames())
         self._window.timeline.set_missing_frames(self._cache.missing_frames())
+        # Push the active channel's cache fill onto the channel
+        # button so the bar paints over the closed dropdown too —
+        # not just inside the menu rows. Cheap: ``alt_channel_progress``
+        # reuses the same single-pass scan the menu polls.
+        progress = self._cache.alt_channel_progress()
+        active_label = self._window.transport.channel_menu.active_label
+        cached, total = progress.get(active_label, (0, 0))
+        self._window.transport.channel_button.set_active_progress(
+            (cached / total) if total > 0 else -1.0,
+        )
 
     def _refresh_status(self) -> None:
         """Update the right-hand perf indicators every 500 ms.

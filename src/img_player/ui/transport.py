@@ -53,11 +53,33 @@ class _ChannelToolButton(QToolButton):  # type: ignore[misc]
     without re-opening the menu. Focus is preserved across menu
     close via the parent's ``aboutToHide`` wiring so the arrows
     keep working until the user clicks somewhere else.
+
+    Also paints a translucent orange cache-fill bar in its own
+    button face when ``set_active_progress`` is called — same
+    visual idiom as the timeline cache bar and the per-row bars
+    in the open menu, so the closed dropdown still tells the user
+    "active channel is N % cached" at a glance.
     """
 
     def __init__(self, menu: ChannelMenu, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._menu_ref = menu
+        # Negative = "no data, paint nothing" — keeps the button
+        # clean for sequences where alt prefetch doesn't apply
+        # (multi-layer, no AOVs, etc.).
+        self._active_progress: float = -1.0
+
+    def set_active_progress(self, fraction: float) -> None:
+        """Update the cache-fill fraction painted under the button
+        face. Pass any negative value to hide the bar."""
+        if fraction < 0:
+            new_value = -1.0
+        else:
+            new_value = max(0.0, min(1.0, float(fraction)))
+        if new_value == self._active_progress:
+            return
+        self._active_progress = new_value
+        self.update()
 
     def keyPressEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         key = event.key()
@@ -70,6 +92,33 @@ class _ChannelToolButton(QToolButton):  # type: ignore[misc]
             event.accept()
             return
         super().keyPressEvent(event)
+
+    def paintEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        """Render the standard button first, then overlay the
+        cache-fill bar so the text underneath stays readable
+        through the translucent fill."""
+        super().paintEvent(event)
+        if self._active_progress < 0:
+            return
+        from PySide6.QtCore import QRectF
+        from PySide6.QtGui import QBrush, QPainter, QPen
+        from img_player.ui.theme import C
+        # 2-px inset so the fill doesn't hug the button border —
+        # gives the orange a frame of breathing room and keeps the
+        # rounded-corner radius of the button intact.
+        rect = QRectF(self.rect()).adjusted(2.0, 2.0, -2.0, -2.0)
+        fill_w = rect.width() * self._active_progress
+        if fill_w <= 0:
+            return
+        fill_rect = QRectF(rect.x(), rect.y(), fill_w, rect.height())
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(C.CACHE_BAR))
+        painter.drawRect(fill_rect)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QPen(C.CACHE_BAR_BORDER, 1.0))
+        painter.drawRect(fill_rect.adjusted(0.5, 0.5, -0.5, -0.5))
 
 
 class TransportBar(QWidget):  # type: ignore[misc]
@@ -667,6 +716,13 @@ class TransportBar(QWidget):  # type: ignore[misc]
         return self._channel_button
 
     @property
+    def channel_menu(self) -> ChannelMenu:
+        """The popup menu hanging off the channel button. Exposed so
+        the app can wire the cache-fill progress provider on it
+        without reaching through ``_channel_menu``."""
+        return self._channel_menu
+
+    @property
     def channel_mute_buttons(self) -> dict[str, QPushButton]:
         return self._channel_btns
 
@@ -848,6 +904,25 @@ class TransportBar(QWidget):  # type: ignore[misc]
         sel = self._channel_menu.current_selection()
         if sel is not None:
             self._on_channel_selection_changed(sel)
+
+    def clear_channels(self) -> None:
+        """Drop every entry from the channel menu and reset the
+        button label. Called from File → New (Ctrl+N) so the
+        previous sequence's channel groups don't linger as stale
+        menu rows / a stale button caption when no sequence is
+        loaded.
+
+        Different from ``set_available_channels(())`` which keeps a
+        fallback "RGB" stub so the menu is never visually empty
+        mid-load — here we *do* want it visually empty because
+        there's nothing loaded.
+        """
+        self._current_selection = None
+        self._channel_menu.set_groups([])
+        self._channel_button.setText("")
+        self._channel_button.setToolTip("")
+        # Drop the cache-fill bar from the button face.
+        self._channel_button.set_active_progress(-1.0)
 
     def channel_menu_state(self) -> str:
         """Return the menu's current active-channel label for
