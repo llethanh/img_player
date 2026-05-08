@@ -88,15 +88,32 @@ pyinstaller img_player.spec --noconfirm
 set EXIT_CODE=%ERRORLEVEL%
 
 if %EXIT_CODE% EQU 0 (
+    REM ---- Zip the bundle for portable distribution ---------------
+    REM A folder-by-folder copy to a target machine via Drive Stream
+    REM / OneDrive / SMB occasionally drops bytes from individual
+    REM DLLs, surfacing on the target as cryptic "Failed to load
+    REM Python DLL" / "DLL load failed" errors. A single zip transfer
+    REM is atomic, sidesteps cloud-sync FUSE quirks, and lets the
+    REM end user extract anywhere they have write access — true
+    REM portable, zero-install. Uses .NET ZipFile (much faster than
+    REM Compress-Archive on ~400 MB folders).
     echo.
-    echo [build_exe] Done. Bundle is in:
-    echo   %CD%\dist\FlickPlayer\
+    echo [build_exe] Zipping bundle for portable distribution...
+    for /d %%d in ("dist\FlickPlayer_v*") do (
+        powershell -NoProfile -Command ^
+            "Add-Type -AssemblyName System.IO.Compression.FileSystem; if (Test-Path '%%d.zip') { Remove-Item '%%d.zip' -Force }; [System.IO.Compression.ZipFile]::CreateFromDirectory('%%d', '%%d.zip', [System.IO.Compression.CompressionLevel]::Optimal, $true)"
+        echo [build_exe] Wrote %%d.zip
+    )
+    echo.
+    echo [build_exe] Done. Outputs:
+    echo   %CD%\dist\FlickPlayer_v^<version^>\         ^(unzipped, for local testing^)
+    echo   %CD%\dist\FlickPlayer_v^<version^>.zip      ^(portable, for distribution^)
     echo.
     echo Test it with:
-    echo   dist\FlickPlayer\FlickPlayer.exe --version
+    echo   dist\FlickPlayer_v^<version^>\FlickPlayer.exe --version
     echo.
-    echo To deploy: copy the entire dist\FlickPlayer\ folder to the target
-    echo machine. The .exe finds its DLLs via the _internal subfolder.
+    echo To distribute: send the .zip. The user extracts anywhere and
+    echo double-clicks FlickPlayer.exe — no install needed.
 ) else (
     echo.
     echo [build_exe] PyInstaller FAILED with exit code %EXIT_CODE%.
