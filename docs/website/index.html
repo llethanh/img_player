@@ -1207,24 +1207,30 @@ footer a:hover { color: var(--accent); }
         <h2>A <span class="accent">timeline</span> that tells you what's going on.</h2>
         <p>
           One bar carries every dimension of the sequence's state — at a glance, you
-          know which frames are cached, which are missing, which fall in a multi-layer
-          gap, where you've left a note, what's in/out range, and where the playhead is.
+          know which frames are cached, which failed to decode, which fall in a
+          multi-layer gap, where you've left a note, what's in/out range, and where
+          the playhead is.
         </p>
         <ul>
           <li><b>Translucent orange runs</b> = frames in RAM. The bar shows your prefetch high-water mark.</li>
-          <li><b>Mid-grey runs</b> = no layer covers — Flick plays through and the viewport paints a checkerboard.</li>
+          <li><b>Red runs</b> = source file missing or unreadable. They override the cache run on the same slot so a hole is impossible to miss.</li>
+          <li><b>Mid-grey runs</b> = no layer covers — Flick plays through and the viewport paints a checkerboard with the missing filename baked in.</li>
           <li><b>Green triangles</b> = annotated frames. <b>Blue dots</b> = frames with comments.</li>
           <li><b>Ctrl + click</b> sets and drags the in / out points — like Nuke.</li>
           <li>The cursor scrubs <b>outside</b> the in/out range; playback snaps back inside on press.</li>
+          <li><b>Frame ↔ timecode</b> labels swap with <span class="kbd">Ctrl</span>+<span class="kbd">T</span> — same bar, both reading conventions.</li>
+          <li><b>Minimal mode</b> in fullscreen strips everything but the rail and the playhead, so playback stays the only thing on screen.</li>
         </ul>
       </div>
       <div class="copy" id="layers">
         <h2><span class="accent">Layers</span>, trim and offset.</h2>
         <p>
-          Drop multiple sequences and Flick Player stacks them. Each layer carries its
-          own offset on the master timeline, its own IN / OUT trim, its own channel
-          selection, its own alpha-composite mode. Drag the body to slide, drag a
-          handle to trim — the right-edge stays put on IN-trims, just like a real NLE.
+          Drop image sequences, video files (mp4 / mov / mkv / m4v / avi) or single
+          stills and Flick Player stacks them. Each layer carries its own offset on
+          the master timeline, its own IN / OUT trim, its own channel selection, its
+          own alpha-composite mode and its own audio state. Drag the body to slide,
+          drag a handle to trim — the right edge stays put on IN-trims, just like a
+          real NLE.
         </p>
         <ul>
           <li><b>Drop on the viewer</b> = replace the focused sequence. <b>Drop on the panel</b> = add as a new layer above.</li>
@@ -1232,6 +1238,9 @@ footer a:hover { color: var(--accent); }
           <li><b>Trim handles</b> snap to the playhead, master IN/OUT and other layers' edges.</li>
           <li><b>Ghost overlay</b> (dashed orange) shows source frames hidden by the trim — drag the handle back outwards to reveal them.</li>
           <li><b>Per-layer T / αS toggles</b> control alpha-over compositing and straight-vs-premultiplied alpha handling.</li>
+          <li><b>M / S audio buttons</b> on each video layer — mute or solo, like a mixer. PlayerController stays in wall-clock mode so A/V never drifts.</li>
+          <li><b>Still layers</b> get an adjustable <em>hold duration</em> so a single PNG / JPG can stretch over as many master frames as the review needs.</li>
+          <li><b>👁 visibility</b> per layer — temporarily hide a pass without losing its slot; the cache keeps its frames around for when you toggle it back on.</li>
         </ul>
       </div>
     </div>
@@ -1253,6 +1262,7 @@ footer a:hover { color: var(--accent); }
       <ul>
         <li><b>Background channel pre-cache</b> — once the active channel is fully cached, idle workers quietly pre-decode the focused layer's other groups (RGB beauty, AOVs, normals, Z…) into their own cache slots. Switching becomes free.</li>
         <li><b>Per-row progress bars</b> in the channel menu show each group's fill in real time. Same translucent-orange idiom as the timeline cache bar — visible right on the dropdown button while it's closed.</li>
+        <li><b>Keyboard navigation</b> in the channel menu — <span class="kbd">↑</span> / <span class="kbd">↓</span> walk through groups without leaving the keyboard. Pairs naturally with the cached-snapshot model: every step is instant.</li>
         <li><b>In/out range first</b> — alt prefetch front-loads frames inside your playback range, then fills the rest of the nav range.</li>
         <li><b>Suspended during playback</b> so the GIL stays clean — workers can't be preempted mid-decode, so we hold off until you pause. No more 1-2 frame stalls when an alt steals time during a scrub.</li>
         <li><b>Smart eviction</b> — when RAM gets tight, stale-signature snapshots and hidden-layer contributions go first, then live frames by distance from the playhead. The view you're looking at is always the last to leave.</li>
@@ -1363,8 +1373,13 @@ footer a:hover { color: var(--accent); }
             normals layer and view it as RGB; pre-cached in the background per
             layer with its own master-frame entry.</li>
         <li><b>RGBA mute</b>: toggle channels off in the shader without
-            invalidating the cache. Solo-alpha mode swaps a checkerboard
-            background in so transparency reads correctly.</li>
+            invalidating the cache. Solo-alpha shows the alpha channel as
+            grayscale (white = opaque, black = transparent), Nuke / RV
+            convention.</li>
+        <li><b>Transparency BG picker</b> next to the RGBA buttons —
+            checker / black / mid grey / white. The fragment shader
+            branches on a uniform; switching is free and the choice
+            persists across sessions.</li>
       </ul>
     </div>
     <div class="mockup mockup-fit">
