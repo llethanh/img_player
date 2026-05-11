@@ -55,6 +55,46 @@ log = logging.getLogger(__name__)
 _EMPTY_STACK_STILL_HOLD = 100
 
 
+def _enrich_seq(seq: SequenceInfo) -> SequenceInfo:
+    """Fill in ``channel_names`` / ``width`` / ``height`` on ``seq`` by
+    reading the first frame's header. Safe to call from a worker
+    thread — the OIIO open is the slow bit (1-2 s on Drive / NAS),
+    which is exactly the work we want off the GUI thread.
+
+    Mirrors :meth:`ImgPlayerApp._enrich_with_header`: returns the same
+    ``seq`` when the channel info is already populated (idempotent) or
+    when the header read fails. Once this has run, the matching call
+    on the main thread will early-return at its sentinel check and
+    cost nothing — i.e. the freeze migrates from the GUI thread to
+    the worker, where it is invisible.
+    """
+    if seq.channel_names and seq.width and seq.height:
+        return seq
+    if not seq.frames:
+        return seq
+    try:
+        from dataclasses import replace
+
+        from img_player.io.reader import read_header
+
+        spec = read_header(seq.frames[0].path)
+        channels = tuple(spec.channelnames or ())
+        return replace(
+            seq,
+            channel_names=channels or seq.channel_names,
+            width=spec.width or seq.width,
+            height=spec.height or seq.height,
+        )
+    except Exception:
+        log.exception("scan-worker: header probe failed for %s", seq.frames[0].path)
+        return seq
+
+
+def _enrich_seqs(seqs: list[SequenceInfo]) -> list[SequenceInfo]:
+    """Vectorised ``_enrich_seq`` for the multi-sequence picker path."""
+    return [_enrich_seq(s) for s in seqs]
+
+
 def _default_still_hold(stack: LayerStack) -> int:
     """Pick a sensible hold duration for a still being added to ``stack``.
 
@@ -106,6 +146,15 @@ class ScanRunner(QObject):  # type: ignore[misc]
         def worker() -> None:
             try:
                 groups = scan_paths(paths, probe=False)
+                # Pre-read every detected sequence's header here on the
+                # worker thread so the GUI doesn't pay that cost when
+                # the user picks one. See ``_enrich_seq`` for the why.
+                groups = [
+                    FolderGroup(
+                        folder=g.folder, sequences=tuple(_enrich_seqs(list(g.sequences))),
+                    )
+                    for g in groups
+                ]
                 self.done.emit(groups)
             except Exception as err:
                 self.done.emit(err)
@@ -127,9 +176,15 @@ class ScanRunner(QObject):  # type: ignore[misc]
                         raise SequenceNotFoundError(
                             f"No sequence found in {path}"
                         )
+                    # Enrich here, off the main thread, so the
+                    # subsequent ``_enrich_with_header`` calls in
+                    # ``on_done`` short-circuit and the GUI never
+                    # blocks on an OIIO header read.
+                    sequences = _enrich_seqs(sequences)
                     self.done.emit(sequences)
                 else:
                     seq = scan(path, probe=False)
+                    seq = _enrich_seq(seq)
                     self.done.emit(seq)
             except Exception as err:
                 self.done.emit(err)

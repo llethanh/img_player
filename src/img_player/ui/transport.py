@@ -2,10 +2,19 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from PySide6.QtCore import QEvent, QObject, QSize, Qt, Signal
-from PySide6.QtGui import QAction, QActionGroup, QIcon, QMouseEvent
+from PySide6.QtGui import (
+    QAction,
+    QActionGroup,
+    QColor,
+    QIcon,
+    QMouseEvent,
+    QPainter,
+    QPaintEvent,
+    QPixmap,
+)
 from PySide6.QtWidgets import (
     QComboBox,
     QFrame,
@@ -16,6 +25,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QToolButton,
     QWidget,
+    QWidgetAction,
 )
 
 from img_player.player.state import LoopMode
@@ -504,46 +514,77 @@ class TransportBar(QWidget):  # type: ignore[misc]
         # be derived without re-querying the menu.
         self._current_selection: ChannelSelection | None = None
 
-        # --- RGBA mute toggles ---------------------------------------------
-        # Four small checkable buttons — the viewer's fragment shader
-        # multiplies each component by the matching mask, so toggling
-        # is essentially free at runtime and doesn't invalidate the
-        # frame cache the way the channel-selector does.
-        self._channel_btns: dict[str, QPushButton] = {}
-        for letter, tooltip in (
-            ("R", "Show / hide red channel"),
-            ("G", "Show / hide green channel"),
-            ("B", "Show / hide blue channel"),
-            (
-                "A",
-                "Solo alpha — click to view the alpha channel as "
-                "grayscale (white = opaque, black = transparent). "
-                "Click again to return to RGB.",
-            ),
-        ):
-            btn = _channel_toggle_button(letter, tooltip)
-            btn.toggled.connect(self._emit_channel_mask)
-            self._channel_btns[letter] = btn
+        # --- RGBA channel mode selector ------------------------------------
+        # One button replaces the old four-toggle row. Left-click cycles
+        # RGB → R → G → B → A → RGB. The dropdown arrow opens a menu
+        # for a direct pick. The fragment shader still consumes the
+        # same (R,G,B,A) uniform — see ``_emit_channel_mask`` for the
+        # mode→mask mapping. Cache stays valid: this is a uniform-only
+        # change just like the old 4-button row.
+        self._channel_mode: str = "RGB"
+        self._channel_mode_button = _ChannelModeButton()
+        self._channel_mode_button.setFixedHeight(G.BTN_TRANSPORT_H)
+        # Fixed width so the left half doesn't shrink when the mode
+        # is a single letter (R / G / B / A) vs the wider ``RGB``
+        # label. Sized to fit ``RGB`` + arrow + comfortable padding
+        # while still reading as one of the small transport
+        # controls.
+        self._channel_mode_button.setFixedWidth(72)
+        self._channel_mode_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._channel_mode_button.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonTextOnly,
+        )
+        self._channel_mode_button.setPopupMode(
+            QToolButton.ToolButtonPopupMode.MenuButtonPopup,
+        )
+        self._channel_mode_button.setToolTip(
+            "Channel view — click to cycle RGB → R → G → B → A, "
+            "or use the dropdown to pick directly. "
+            "A solos the alpha channel as grayscale "
+            "(white = opaque, black = transparent).",
+        )
+        self._channel_mode_menu = self._build_channel_mode_menu()
+        self._channel_mode_button.setMenu(self._channel_mode_menu)
+        self._channel_mode_button.clicked.connect(self._cycle_channel_mode)
+        self._apply_channel_mode_style()
 
         # --- Transparency background picker ---------------------------
-        # A small popup-menu button next to the RGBA toggles. Lets the
-        # reviewer choose what to draw under transparent pixels — VFX
-        # checker (default), or a flat colour for evaluating edges
-        # against a known background. Pure GL uniform change, no
-        # cache invalidation.
-        self._bg_button = QToolButton()
-        self._bg_button.setText("BG")
+        # Same widget shape as the channel-mode button next door:
+        # a ``_ChannelModeButton`` in ``MenuButtonPopup`` mode where
+        # the main click cycles through the four BG modes and the
+        # right-side arrow opens the dropdown menu. Pure GL uniform
+        # change either way, no cache invalidation. The button face
+        # is an icon-only square swatch (checker pattern, black,
+        # grey, white) so the current mode reads at a glance — the
+        # text-based "Blk" label was lost on the dark menu chrome.
+        self._current_bg_mode: int = 0
+        self._bg_button = _ChannelModeButton()
         self._bg_button.setFixedHeight(G.BTN_TRANSPORT_H)
-        self._bg_button.setMinimumWidth(34)
+        # 22 (icon) + 20 (arrow) + slack. Earlier 44 was too tight:
+        # Qt's MenuButtonPopup zone reserves a bit more than the
+        # declared ``menu-button width`` for the arrow chrome, so
+        # the arrow ended up drawing into the icon's right edge.
+        # 52 keeps them visually separated while staying compact
+        # enough that the ``BG :`` label sits right next to the
+        # swatch.
+        self._bg_button.setFixedWidth(52)
         self._bg_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self._bg_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-        self._bg_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self._bg_button.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonIconOnly,
+        )
+        self._bg_button.setIconSize(QSize(22, 22))
+        self._bg_button.setPopupMode(
+            QToolButton.ToolButtonPopupMode.MenuButtonPopup,
+        )
         self._bg_button.setToolTip(
-            "Choose background for transparent pixels — checker / black / grey / white",
+            "Background for transparent pixels — click to cycle "
+            "Checker → Black → Mid grey → White, or use the dropdown "
+            "to pick directly.",
         )
         self._bg_menu = self._build_bg_menu()
         self._bg_button.setMenu(self._bg_menu)
-        self._current_bg_mode: int = 0
+        self._bg_button.clicked.connect(self._cycle_bg_mode)
+        self._apply_bg_button_style()
 
         # NB: T + αS toggles moved to each :class:`LayerRow` since
         # they reflect *per-layer* state. Keeping them here would
@@ -723,8 +764,11 @@ class TransportBar(QWidget):  # type: ignore[misc]
         return self._channel_menu
 
     @property
-    def channel_mute_buttons(self) -> dict[str, QPushButton]:
-        return self._channel_btns
+    def channel_mode_button(self) -> QToolButton:
+        """Single button that replaces the old R/G/B/A toggle row.
+        Main click cycles RGB→R→G→B→A; the dropdown arrow exposes
+        the same picks as an explicit menu."""
+        return self._channel_mode_button
 
     @property
     def bg_button(self) -> QToolButton:
@@ -747,6 +791,11 @@ class TransportBar(QWidget):  # type: ignore[misc]
             return
         self._current_bg_mode = m
         self._refresh_bg_menu_check()
+        # Repaint the button face so the swatch icon matches the new
+        # mode. Without this the icon stuck on whatever was set in
+        # ``__init__`` (always checker), giving the user a mismatch
+        # between the BG indicator and the actual viewport background.
+        self._apply_bg_button_style()
 
     def update_from_state(self, state: PlaybackState) -> None:
         # Swap the play button's icon between the two states. We keep
@@ -952,49 +1001,204 @@ class TransportBar(QWidget):  # type: ignore[misc]
 
     # ---- Transparency background picker ------------------------------
 
+    # Modes for the BG button — value, short label (for the closed
+    # button face), long label (for the menu), and tint colour used
+    # by the menu item. ``Checker`` keeps the accent-orange so it
+    # reads as "the special pattern mode" rather than just a colour.
+    _BG_MODES: ClassVar[tuple[tuple[int, str, str, str], ...]] = (
+        (0, "Chk", "Checker (default)", H.ACCENT),
+        (1, "Blk", "Black",             "#1A1A1A"),
+        (2, "Gry", "Mid grey",          "#888888"),
+        (3, "Wht", "White",             "#F0F0F0"),
+    )
+
     def _build_bg_menu(self) -> QMenu:
-        """Build the BG button's popup with four mutually-exclusive
-        actions. The action group enforces the radio behaviour so only
-        one option ever shows as checked at a time."""
+        """Build the BG dropdown: each row is a painted colour swatch
+        (or a checker chip for the default mode), wrapped in a
+        :class:`QWidgetAction`. The swatch *is* the label — no text —
+        which side-steps the "Black on black menu chrome" readability
+        problem and makes the menu scannable at a glance."""
         menu = QMenu(self)
-        group = QActionGroup(menu)
-        group.setExclusive(True)
-        self._bg_actions: dict[int, QAction] = {}
-        for mode, label in (
-            (0, "Checker (default)"),
-            (1, "Black"),
-            (2, "Mid grey"),
-            (3, "White"),
-        ):
-            act = QAction(label, menu)
-            act.setCheckable(True)
-            act.setData(mode)
-            act.triggered.connect(
-                lambda _checked, m=mode: self._on_bg_picked(m),
-            )
-            group.addAction(act)
-            menu.addAction(act)
-            self._bg_actions[mode] = act
-        # Default-checked entry mirrors ``_current_bg_mode``.
-        self._bg_actions[0].setChecked(True)
+        self._bg_items: dict[int, _SwatchMenuItem] = {}
+        for mode, _short, _long_label, tint in self._BG_MODES:
+            is_checker = mode == 0
+            # For the checker entry we pass ``None`` as the colour —
+            # the swatch paints the pattern instead. Other entries
+            # use the canonical mode colour straight.
+            color: str | None = None if is_checker else tint
+            item = _SwatchMenuItem(mode, color, checker=is_checker)
+            item.set_checked(mode == self._current_bg_mode)
+            item.clicked.connect(self._on_bg_menu_item_clicked)
+            wa = QWidgetAction(menu)
+            wa.setDefaultWidget(item)
+            menu.addAction(wa)
+            self._bg_items[mode] = item
         return menu
 
+    def _cycle_bg_mode(self) -> None:
+        """Step through Checker → Black → Grey → White → Checker.
+        Bound to the main click of the BG toolbutton (the arrow on
+        the right edge opens the menu instead)."""
+        order = [m[0] for m in self._BG_MODES]
+        idx = order.index(self._current_bg_mode)
+        nxt = order[(idx + 1) % len(order)]
+        self._on_bg_picked(nxt)
+
+    def _on_bg_menu_item_clicked(self, mode: int) -> None:
+        self._on_bg_picked(mode)
+        if self._bg_menu.isVisible():
+            self._bg_menu.close()
+
     def _on_bg_picked(self, mode: int) -> None:
+        if int(mode) == self._current_bg_mode:
+            return
         self._current_bg_mode = int(mode)
         self._refresh_bg_menu_check()
+        self._apply_bg_button_style()
         self.transparency_bg_mode_changed.emit(int(mode))
 
     def _refresh_bg_menu_check(self) -> None:
-        for mode, act in self._bg_actions.items():
-            act.setChecked(mode == self._current_bg_mode)
+        for mode, item in self._bg_items.items():
+            item.set_checked(mode == self._current_bg_mode)
 
-    def _emit_channel_mask(self) -> None:
-        """Bundle the four RGBA toggle states and emit
-        ``channel_mask_changed`` with a (R, G, B, A) bool tuple."""
-        mask = tuple(
-            self._channel_btns[letter].isChecked() for letter in ("R", "G", "B", "A")
+    def _apply_bg_button_style(self) -> None:
+        """Refresh the BG toolbutton icon to match the current mode.
+
+        We paint a square swatch (checker pattern for mode 0, flat
+        colour otherwise) into a QPixmap and feed it through
+        :meth:`QToolButton.setIcon`. Mode names like ``Blk`` were
+        unreadable on the dark menu-bar chrome — the swatch sidesteps
+        the contrast problem entirely.
+        """
+        color = next(m[3] for m in self._BG_MODES if m[0] == self._current_bg_mode)
+        is_checker = self._current_bg_mode == 0
+        self._bg_button.setIcon(
+            _swatch_icon(color, checker=is_checker, size=22),
         )
-        self.channel_mask_changed.emit(mask)
+        self._bg_button.setStyleSheet(
+            "QToolButton {"
+            "  padding: 0;"
+            "}"
+            # The swatch icon already has its own outline so the
+            # two halves read as separate without an extra divider —
+            # drop ``border-left`` to ditch the little vertical bar.
+            "QToolButton::menu-button {"
+            "  width: 20px;"
+            "  border: none;"
+            "  margin: 0;"
+            "  padding: 0;"
+            "}"
+            "QToolButton::menu-arrow {"
+            "  width: 10px;"
+            "  height: 10px;"
+            "}",
+        )
+
+    # --- Channel mode (RGB / R / G / B / A) -----------------------
+    # The mode names map to a (R, G, B, A) shader mask. ``A`` zeroes
+    # alpha which trips the shader's ``uChannelMask.a < 0.5`` branch
+    # — that's how solo-alpha becomes grayscale (white = opaque,
+    # black = transparent), mirroring Nuke / RV's convention.
+    _CHANNEL_MODE_MASKS: ClassVar[dict[str, tuple[bool, bool, bool, bool]]] = {
+        "RGB": (True, True, True, True),
+        "R":   (True, False, False, True),
+        "G":   (False, True, False, True),
+        "B":   (False, False, True, True),
+        "A":   (False, False, False, False),
+    }
+    _CHANNEL_MODE_ORDER: ClassVar[tuple[str, ...]] = ("RGB", "R", "G", "B", "A")
+
+    def _build_channel_mode_menu(self) -> QMenu:
+        """Dropdown menu hanging off the channel-mode button.
+
+        Each row is a :class:`_ChannelMenuItem` widget wrapped in a
+        :class:`QWidgetAction` so we can colour the R / G / B letters
+        in their channel tint (which a plain ``QAction`` can't do —
+        Qt offers no honoured per-item text-colour stylesheet on
+        ``QMenu::item``). The widget owns its own check / hover
+        painting; the menu just hosts them.
+        """
+        menu = QMenu(self)
+        self._channel_mode_items: dict[str, _ChannelMenuItem] = {}
+        for mode in self._CHANNEL_MODE_ORDER:
+            color = _CHANNEL_BTN_COLORS.get(mode, H.TEXT_PRIMARY)
+            item = _ChannelMenuItem(mode, color)
+            item.set_checked(mode == self._channel_mode)
+            # Click → pick the mode + close the menu (the widget
+            # doesn't bubble a ``triggered`` up to the QMenu the
+            # way a QAction would, so we close it explicitly).
+            item.clicked.connect(self._on_channel_menu_item_clicked)
+            wa = QWidgetAction(menu)
+            wa.setDefaultWidget(item)
+            menu.addAction(wa)
+            self._channel_mode_items[mode] = item
+        return menu
+
+    def _on_channel_menu_item_clicked(self, mode: str) -> None:
+        self._set_channel_mode(mode)
+        if self._channel_mode_menu.isVisible():
+            self._channel_mode_menu.close()
+
+    def _cycle_channel_mode(self) -> None:
+        """Step through RGB → R → G → B → A → RGB. Bound to the main
+        click of the channel-mode toolbutton (the dropdown arrow
+        opens the menu instead)."""
+        idx = self._CHANNEL_MODE_ORDER.index(self._channel_mode)
+        nxt = self._CHANNEL_MODE_ORDER[(idx + 1) % len(self._CHANNEL_MODE_ORDER)]
+        self._set_channel_mode(nxt)
+
+    def _set_channel_mode(self, mode: str) -> None:
+        if mode not in self._CHANNEL_MODE_MASKS:
+            return
+        if mode == self._channel_mode:
+            # Still refresh the menu check state — defensive in case
+            # we ever get out of sync with the action checks.
+            self._refresh_channel_mode_menu_check()
+            return
+        self._channel_mode = mode
+        self._refresh_channel_mode_menu_check()
+        self._apply_channel_mode_style()
+        self.channel_mask_changed.emit(self._CHANNEL_MODE_MASKS[mode])
+
+    def _refresh_channel_mode_menu_check(self) -> None:
+        for mode, item in self._channel_mode_items.items():
+            item.set_checked(mode == self._channel_mode)
+
+    def _apply_channel_mode_style(self) -> None:
+        """Refresh the toolbutton label + tinted text colour to match
+        the current mode. RGB is a neutral white; R/G/B/A use the
+        same per-channel tints we used on the old 4-button row."""
+        self._channel_mode_button.setText(self._channel_mode)
+        color = _CHANNEL_BTN_COLORS.get(
+            self._channel_mode, H.TEXT_PRIMARY,
+        )
+        # Inline QSS: text colour follows the current channel, the
+        # rest stays in line with the global QToolButton chrome.
+        # The text-area + menu-button geometry mirrors the fixed
+        # width set in ``__init__`` (72 px total): 52 px label half
+        # with the text auto-centered by Qt, 20 px arrow half,
+        # separated by a clear divider.
+        self._channel_mode_button.setStyleSheet(
+            "QToolButton {"
+            f"  color: {color};"
+            "  font-weight: 600;"
+            "  padding: 0;"
+            "  text-align: center;"
+            "}"
+            # No inner divider — the wider arrow zone is enough to
+            # tell the two halves apart, and a hairline next to the
+            # tinted letter reads as visual clutter.
+            "QToolButton::menu-button {"
+            "  width: 20px;"
+            "  border: none;"
+            "  margin: 0;"
+            "  padding: 0;"
+            "}"
+            "QToolButton::menu-arrow {"
+            "  width: 10px;"
+            "  height: 10px;"
+            "}",
+        )
 
     def _on_channel_selection_changed(self, selection: ChannelSelection) -> None:
         """Forward a fresh selection from the channel menu.
@@ -1130,29 +1334,292 @@ _CHANNEL_BTN_COLORS = {
 
 
 
-def _channel_toggle_button(letter: str, tooltip: str) -> QPushButton:
-    btn = QPushButton(letter)
-    btn.setFixedSize(22, G.BTN_TRANSPORT_H)
-    btn.setCheckable(True)
-    btn.setChecked(True)
-    btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-    btn.setToolTip(tooltip)
-    color = _CHANNEL_BTN_COLORS[letter]
-    # Inline QSS: enabled = letter colour, disabled / muted = dim grey.
-    # The button still uses the global QPushButton border / background
-    # so it sits visually with the rest of the transport bar.
-    btn.setStyleSheet(
-        "QPushButton {"
-        f"  color: {color};"
-        f"  font-weight: 600;"
-        f"  padding: 0;"
-        "}"
-        "QPushButton:!checked {"
-        f"  color: {H.TEXT_DISABLED};"
-        f"  background: {H.BG_RAISED};"
-        "}"
-    )
-    return btn
+class _ChannelMenuItem(QWidget):
+    """Single row of the channel-mode dropdown menu.
+
+    ``QAction`` text colour can't be overridden per-item with stylesheet
+    selectors that Qt actually honours on ``QMenu::item``. So we ship
+    each row as a ``QWidget`` wrapped in a :class:`QWidgetAction`: a
+    check-mark slot on the left, then the mode letter coloured to
+    match its channel (red / green / blue / grey, white for ``RGB``).
+    Hover and click feedback are painted with inline QSS — small
+    enough to live next to the parent class without its own module.
+    """
+
+    clicked = Signal(str)  # the mode name (RGB / R / G / B / A)
+
+    _HOVER_BG = "rgba(255,255,255,0.08)"
+    _CHECKED_BG = "rgba(255,255,255,0.05)"
+
+    def __init__(self, mode: str, color: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._mode = mode
+        self._checked = False
+        self._hover = False
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 5, 22, 5)
+        layout.setSpacing(8)
+
+        self._check = QLabel("")
+        # Reserve the check slot's width so the label column stays
+        # vertically aligned across all five rows whether they're
+        # ticked or not.
+        self._check.setFixedWidth(14)
+        self._check.setStyleSheet(f"color: {H.ACCENT}; font-weight: 700;")
+
+        self._label = QLabel(mode)
+        self._label.setStyleSheet(f"color: {color}; font-weight: 600;")
+
+        layout.addWidget(self._check)
+        layout.addWidget(self._label, 1)
+
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        # Tracking + Hover so enter/leave events fire reliably even
+        # over the child labels — Qt forwards them to the parent
+        # QWidget when both are mouse-tracking.
+        self.setMouseTracking(True)
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
+        self._refresh_bg()
+
+    def set_checked(self, on: bool) -> None:
+        if on == self._checked:
+            return
+        self._checked = on
+        self._check.setText("✓" if on else "")
+        self._refresh_bg()
+
+    def _refresh_bg(self) -> None:
+        if self._hover:
+            bg = self._HOVER_BG
+        elif self._checked:
+            bg = self._CHECKED_BG
+        else:
+            bg = "transparent"
+        self.setStyleSheet(f"_ChannelMenuItem {{ background: {bg}; }}")
+
+    def enterEvent(self, event: QEvent) -> None:  # noqa: D401, N802
+        self._hover = True
+        self._refresh_bg()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event: QEvent) -> None:  # noqa: D401, N802
+        self._hover = False
+        self._refresh_bg()
+        super().leaveEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: D401, N802
+        if event.button() == Qt.MouseButton.LeftButton and self.rect().contains(
+            event.position().toPoint()
+        ):
+            self.clicked.emit(self._mode)
+        super().mouseReleaseEvent(event)
+
+
+def _swatch_icon(
+    color: str | None,
+    *,
+    checker: bool = False,
+    size: int = 22,
+) -> QIcon:
+    """Paint a square swatch (flat colour or checker pattern) into a
+    :class:`QPixmap` and wrap it in a :class:`QIcon`. Used to feed the
+    BG toolbutton's icon so the closed face mirrors the menu chips.
+
+    Logic mirrors :meth:`_SwatchPaint.paintEvent` — kept duplicated
+    rather than refactored because the widget path needs to repaint
+    on resize / theme change, whereas this baked pixmap path only
+    fires when the mode actually changes.
+    """
+    pm = QPixmap(size, size)
+    pm.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pm)
+    try:
+        r = pm.rect().adjusted(0, 0, -1, -1)
+        if checker:
+            tile = 4
+            cols = (r.width() // tile) + 1
+            rows = (r.height() // tile) + 1
+            painter.fillRect(r, QColor("#3D3D3F"))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor("#5A5A5C"))
+            for j in range(rows):
+                for i in range(cols):
+                    if (i + j) % 2 == 0:
+                        continue
+                    painter.drawRect(r.x() + i * tile, r.y() + j * tile, tile, tile)
+        else:
+            painter.fillRect(r, QColor(color or "#888888"))
+        # Same quiet outline as the widget swatch so Black stays
+        # visible against the toolbutton's dark hover state.
+        painter.setPen(QColor(255, 255, 255, 64))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRect(r)
+    finally:
+        painter.end()
+    return QIcon(pm)
+
+
+class _SwatchPaint(QWidget):
+    """Small painted preview chip: either a flat colour fill or a
+    VFX-style 2-tone checker pattern. Used by the BG dropdown so the
+    swatch itself is the label — no text needed (which is what was
+    failing for "Black" on the dark menu chrome anyway).
+    """
+
+    # Checker palette mirrors the runtime shader (mid-grey + lighter
+    # grey on the dark transparency backdrop): readable enough on
+    # the menu's #2x background without screaming for attention.
+    _CHECKER_A = QColor("#3D3D3F")
+    _CHECKER_B = QColor("#5A5A5C")
+    _CHECKER_TILE = 5  # px
+
+    def __init__(
+        self,
+        color: str | None,
+        *,
+        checker: bool = False,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._color = QColor(color) if color else QColor("#888888")
+        self._checker = checker
+
+    def paintEvent(self, event: QPaintEvent) -> None:  # noqa: D401, N802
+        p = QPainter(self)
+        try:
+            r = self.rect().adjusted(0, 0, -1, -1)
+            if self._checker:
+                # Tile the rect with alternating squares.
+                size = self._CHECKER_TILE
+                cols = (r.width() // size) + 1
+                rows = (r.height() // size) + 1
+                p.fillRect(r, self._CHECKER_A)
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(self._CHECKER_B)
+                for j in range(rows):
+                    for i in range(cols):
+                        if (i + j) % 2 == 0:
+                            continue
+                        x = r.x() + i * size
+                        y = r.y() + j * size
+                        p.drawRect(x, y, size, size)
+            else:
+                p.fillRect(r, self._color)
+            # Thin outline so "Black" doesn't vanish on the dark
+            # menu background. Same border colour as the menu chrome
+            # divider used elsewhere — quiet but always present.
+            p.setPen(QColor(255, 255, 255, 64))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRect(r)
+        finally:
+            p.end()
+
+
+class _SwatchMenuItem(QWidget):
+    """Same row layout as :class:`_ChannelMenuItem` but the label is
+    replaced by a painted colour swatch (or a checker chip). Lets the
+    BG dropdown show the actual mode preview instead of a text name —
+    much faster to scan, and side-steps the "Black on black"
+    contrast issue.
+    """
+
+    clicked = Signal(int)  # carries the mode value
+
+    _HOVER_BG = "rgba(255,255,255,0.08)"
+    _CHECKED_BG = "rgba(255,255,255,0.05)"
+
+    def __init__(
+        self,
+        mode: int,
+        color: str | None,
+        *,
+        checker: bool = False,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._mode = mode
+        self._checked = False
+        self._hover = False
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 5, 22, 5)
+        layout.setSpacing(8)
+
+        self._check = QLabel("")
+        self._check.setFixedWidth(14)
+        self._check.setStyleSheet(f"color: {H.ACCENT}; font-weight: 700;")
+
+        self._swatch = _SwatchPaint(color, checker=checker)
+        # Square chip — same shape language as the closed button face.
+        self._swatch.setFixedSize(26, 26)
+
+        layout.addWidget(self._check)
+        layout.addWidget(self._swatch)
+        # Pull the right edge in so the square chip doesn't sit in a
+        # giant empty space; the ``addStretch`` keeps the column
+        # left-aligned across rows.
+        layout.addStretch(1)
+
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setMouseTracking(True)
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
+        self._refresh_bg()
+
+    def set_checked(self, on: bool) -> None:
+        if on == self._checked:
+            return
+        self._checked = on
+        self._check.setText("✓" if on else "")
+        self._refresh_bg()
+
+    def _refresh_bg(self) -> None:
+        if self._hover:
+            bg = self._HOVER_BG
+        elif self._checked:
+            bg = self._CHECKED_BG
+        else:
+            bg = "transparent"
+        self.setStyleSheet(f"_SwatchMenuItem {{ background: {bg}; }}")
+
+    def enterEvent(self, event: QEvent) -> None:  # noqa: D401, N802
+        self._hover = True
+        self._refresh_bg()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event: QEvent) -> None:  # noqa: D401, N802
+        self._hover = False
+        self._refresh_bg()
+        super().leaveEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: D401, N802
+        if event.button() == Qt.MouseButton.LeftButton and self.rect().contains(
+            event.position().toPoint()
+        ):
+            self.clicked.emit(self._mode)
+        super().mouseReleaseEvent(event)
+
+
+class _ChannelModeButton(QToolButton):
+    """``QToolButton`` whose right-click also opens the dropdown menu.
+
+    The default ``MenuButtonPopup`` mode only fires the menu when the
+    user clicks the small triangle on the right edge. That target is
+    fine for mice but easy to miss; making right-click on the button
+    body open the menu too gives a second, less-fiddly path. The
+    main left-click stays bound to ``clicked`` so the cycle logic
+    still runs.
+    """
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: D401, N802
+        if event.button() == Qt.MouseButton.RightButton and self.menu() is not None:
+            # Show the menu at the bottom-left of the button so it
+            # drops down predictably, the way the dropdown arrow
+            # would have done.
+            self.menu().popup(self.mapToGlobal(self.rect().bottomLeft()))
+            event.accept()
+            return
+        super().mousePressEvent(event)
 
 
 class _ZoomLineEditClickFilter(QObject):

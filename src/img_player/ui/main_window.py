@@ -903,14 +903,61 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         buttons_layout.addWidget(self._transport.compare_button)
         buttons_layout.addWidget(self._transport.reload_button)
         buttons_layout.addWidget(self._transport.export_button)
-        # Channel selector + RGBA mute toggles, grouped tight.
+        # Channel selector + RGBA mode selector, grouped tight.
+        # The mode button (RGB / R / G / B / A) replaces the old four
+        # toggle row: click to cycle, dropdown arrow for direct pick.
+        # A thin vertical line marks the boundary between the channel
+        # *group* selector (RGB / albedo / normal …) and the channel
+        # *mode* picker (RGB / R / G / B / A) — same group of pixels,
+        # different question.
         buttons_layout.addWidget(self._transport.channel_button)
-        for letter in ("R", "G", "B", "A"):
-            buttons_layout.addWidget(self._transport.channel_mute_buttons[letter])
+        ch_sep = QFrame(self)
+        ch_sep.setFrameShape(QFrame.Shape.VLine)
+        ch_sep.setFrameShadow(QFrame.Shadow.Plain)
+        ch_sep.setStyleSheet(
+            f"color: {H.BORDER_DEFAULT}; background: {H.BORDER_DEFAULT};",
+        )
+        ch_sep.setFixedWidth(1)
+        ch_sep.setFixedHeight(G.BTN_TRANSPORT_H - 6)
+        buttons_layout.addWidget(ch_sep)
+        buttons_layout.addWidget(self._transport.channel_mode_button)
         # Transparency-background picker — sits next to the RGBA
         # toggles since they're all "what does the viewer paint?"
         # controls. Popup menu gives discoverable per-mode picks.
-        buttons_layout.addWidget(self._transport.bg_button)
+        # ``BG :`` prefix label mirrors the ``Zoom`` / ``FPS`` pairings
+        # below so the button's identity is obvious at a glance — and
+        # leaves the button face free to show the active mode as a
+        # painted swatch. The label + button live in their own tight
+        # sub-layout (no spacing) so they read as one control rather
+        # than two widgets ``S.SM`` apart.
+        bg_box = QWidget(self)
+        bg_box.setStyleSheet("background: transparent;")
+        bg_inner = QHBoxLayout(bg_box)
+        # Left margin pushes the group away from the RGB channel
+        # button on its left, ``setSpacing(2)`` glues the label to
+        # the button so ``BG :`` reads as the prefix of the swatch
+        # rather than as a free-standing piece of chrome.
+        bg_inner.setContentsMargins(8, 0, 0, 0)
+        bg_inner.setSpacing(0)
+        bg_label = QLabel("BG :")
+        bg_label.setStyleSheet(f"color: {H.TEXT_SECONDARY};")
+        bg_inner.addWidget(bg_label)
+        bg_inner.addWidget(self._transport.bg_button)
+        # Vertical hairline between the channel-mode picker (R/G/B/A
+        # selector — about the *data* being read) and the BG group
+        # (about the *background* drawn under transparent pixels).
+        # Same chrome as the channel-vs-mode separator above so the
+        # menu bar reads as three grouped clusters.
+        bgsep = QFrame(self)
+        bgsep.setFrameShape(QFrame.Shape.VLine)
+        bgsep.setFrameShadow(QFrame.Shadow.Plain)
+        bgsep.setStyleSheet(
+            f"color: {H.BORDER_DEFAULT}; background: {H.BORDER_DEFAULT};",
+        )
+        bgsep.setFixedWidth(1)
+        bgsep.setFixedHeight(G.BTN_TRANSPORT_H - 6)
+        buttons_layout.addWidget(bgsep)
+        buttons_layout.addWidget(bg_box)
         # Zoom selector — preceded by a small "Zoom" label, mirroring
         # the "FPS" label/field pairing in the transport bar.
         zoom_label = QLabel("Zoom")
