@@ -244,6 +244,22 @@ class MasterFrameCache:
         self._stack.layers_changed.connect(self._on_layers_changed)
         self._stack.visibility_changed.connect(self._on_visibility_changed)
         self._stack.layer_modified.connect(self._on_layer_modified)
+        # Seed ``_last_known_*`` from layers already in the stack at
+        # construction time. Without this, layers added pre-cache
+        # never populate the snapshot dicts (``layers_changed`` fires
+        # before we connect), and the first ``_on_layer_modified``
+        # call sees ``prev_state == None`` — which falls through to
+        # the trim branch and misses the pure-offset-shift fast path.
+        # Idempotent + cheap: no signals fired, no cache mutation.
+        for layer in self._stack.layers():
+            self._last_known_range[layer.id] = (
+                layer.master_start, layer.master_end,
+            )
+            self._last_known_state[layer.id] = (
+                layer.offset, layer.layer_in, layer.layer_out,
+                layer.channel_selection,
+                layer.alpha_composite, layer.alpha_is_straight,
+            )
 
     # ------------------------------------------------------------------ Lifecycle
 
@@ -1388,11 +1404,20 @@ class MasterFrameCache:
 
         Three paths:
 
-        * **Pure offset shift** (single-layer stack, no trim /
-          channel / alpha-flag change): re-index the cached frames
-          by ``Δ = new_offset - old_offset`` instead of dropping
-          them. Decoded pixels are identical between the two
-          offsets, only their master-frame keys move.
+        * **Pure offset shift** (no trim / channel / alpha-flag
+          change): re-key cached frames where the moved layer was
+          the *sole contributor* at that master frame, mapping
+          ``mf → mf + Δ``. Decoded pixels are identical between the
+          two offsets — only the master-frame key moves. Works in
+          both single-layer and multi-layer stacks: in multi-layer
+          we filter by signature equality (a single-token signature
+          referencing the moved layer at its OLD offset), so only
+          frames whose composite was determined entirely by this
+          layer get rekeyed. Frames where higher / lower layers
+          also contributed stay under their old keys as stale
+          snapshots — they're correctly invalidated passively by
+          the multi-version cache key (new signature lookup misses
+          → fresh decode).
 
         * **Channel selection or alpha-flag change**: the multi-
           version cache key handles this passively — the new state
@@ -1428,16 +1453,21 @@ class MasterFrameCache:
         # touches must reflect the new state.
         self._invalidate_signature_cache()
 
-        # Pure-offset shift fast path.
+        # Pure-offset shift fast path — works for any stack size.
+        # In multi-layer, ``_shift_solo_dominant_frames`` rekeys only
+        # the subset of cached entries where the moved layer was the
+        # sole contributor (= signature is a single token referencing
+        # this layer at its old offset). Other entries remain under
+        # their old keys as snapshots; the multi-version cache key
+        # ensures correctness without an explicit invalidate.
         is_offset_only = (
             prev_state is not None
             and prev_state[0] != new_state[0]            # offset differs
             and prev_state[1:] == new_state[1:]          # rest equal
-            and len(self._stack) == 1
         )
         if is_offset_only:
             shift = new_state[0] - prev_state[0]
-            self._shift_cached_frames(prev_start, prev_end, shift)
+            self._shift_solo_dominant_frames(layer, prev_state, shift)
             self._last_known_range[layer_id] = (new_start, new_end)
             self._last_known_state[layer_id] = new_state
             return
@@ -1479,49 +1509,97 @@ class MasterFrameCache:
 
     # ------------------------------------------------------------------ Internals
 
-    def _shift_cached_frames(self, old_first: int, old_last: int, shift: int) -> None:
-        """Re-key cached frames in ``[old_first, old_last]`` by ``shift``.
+    def _shift_solo_dominant_frames(
+        self,
+        layer: Layer,
+        prev_state: tuple,
+        shift: int,
+    ) -> None:
+        """Re-key cached entries where ``layer`` was the sole contributor.
 
-        Used for the pure-offset-shift fast path: instead of dropping
-        every cached frame and re-decoding (= seconds of work for a
-        100-frame layer), we just move each entry from master key F
-        to F + shift. The decoded pixel buffer is unchanged — only
-        the timeline coordinate it answers to.
+        Used by the pure-offset-shift fast path. Walks the cache and
+        identifies entries whose stored signature is exactly the
+        single-token form ``"{layer.id}@{sel}#{ac}{pm}+{prev_off}+{lin}"``
+        — those are entries where the composite at master frame F
+        was determined ENTIRELY by this layer at its old offset. For
+        each, we map ``F → F + shift`` and verify the live signature
+        at the new master frame is also a single token referring to
+        this layer (now at its new offset). When both conditions
+        hold the rekey is pixel-correct: the decoded source frame
+        baked into the buffer (= ``L.layer_in + (F - L.old_master_start)``)
+        is exactly what L would produce at ``F + shift`` under its
+        new offset (= ``L.layer_in + ((F + shift) - L.new_master_start)``,
+        and ``new_master_start = old_master_start + shift``).
 
-        Each entry's signature is recomputed at the new master frame
-        (a layer offset shift moves the chain coverage with it, so
-        ``layer.id`` may now appear at a different mf — its tokens
-        in the signature stay logically the same since ids and
-        channel selections didn't change).
+        Entries the moved layer didn't dominate (multi-token sigs)
+        stay under their old keys. They remain accessible as
+        snapshots if the user undoes the shift; otherwise the
+        multi-version cache key handles them passively — the live
+        lookup at the post-shift signature misses, triggering a
+        fresh decode.
 
         Bumps the epoch so any in-flight decode (which captured the
         OLD master_frame at submit time) gets dropped at store time
         rather than landing under a now-stale key.
         """
-        if shift == 0 or old_first > old_last:
+        if shift == 0:
             return
+        # Reconstruct the signature token L would have produced under
+        # its previous state. ``prev_state[1:] == new_state[1:]`` was
+        # asserted at the call site, so the channel / alpha / layer_in
+        # parts of the token are unchanged — we can read them from
+        # the current ``layer`` and only swap the offset.
+        sel = layer.channel_selection
+        sel_label = sel.active.label if sel is not None else "_"
+        ac = "1" if layer.alpha_composite else "0"
+        pm = "1" if layer.alpha_is_straight else "0"
+        prev_off = int(prev_state[0])
+        lin = int(layer.layer_in)
+        old_solo_token = (
+            f"{layer.id}@{sel_label}#{ac}{pm}+{prev_off}+{lin}"
+        )
+        new_off = int(layer.offset)
+        new_solo_token = (
+            f"{layer.id}@{sel_label}#{ac}{pm}+{new_off}+{lin}"
+        )
         with self._lock:
-            # Snapshot the entries to move; iterate later to avoid
+            # Snapshot the entries to consider; iterate later to avoid
             # mutating the dict while iterating it.
             to_move: list[tuple[int, np.ndarray, bool]] = []
             for k in list(self._frames.keys()):
-                mf, _sig = k
-                if old_first <= mf <= old_last:
-                    arr = self._frames.pop(k)
-                    is_missing = k in self._missing
-                    self._missing.discard(k)
-                    to_move.append((mf, arr, is_missing))
+                _mf, sig = k
+                if sig != old_solo_token:
+                    continue
+                arr = self._frames.pop(k)
+                is_missing = k in self._missing
+                self._missing.discard(k)
+                to_move.append((k[0], arr, is_missing))
             # Recompute signatures against the post-shift state.
             self._invalidate_signature_cache()
-            # Apply the shift. If a destination key is already
-            # occupied (shouldn't happen with a single-layer stack,
-            # but be defensive) the existing entry wins and the
-            # shifted one is dropped — that frame will simply be
-            # re-decoded by the next prefetch wave.
+            # Apply the shift. Verify the live sig at the new master
+            # frame matches our expected new_solo_token — if a higher
+            # / lower layer has crept in at the destination, the
+            # composite math differs and rekey would be wrong; in
+            # that case we put the entry back under its old key as a
+            # snapshot.
             for old_mf, arr, is_missing in to_move:
                 new_mf = old_mf + shift
-                new_key = (new_mf, self._signature_at(new_mf))
+                live_sig = self._signature_at(new_mf)
+                if live_sig != new_solo_token:
+                    # Other layers now contribute at new_mf — restore
+                    # the entry as a stale snapshot under the old
+                    # solo-token key (still pixel-correct for that
+                    # signature; useful if the user reverts).
+                    self._frames[(old_mf, old_solo_token)] = arr
+                    if is_missing:
+                        self._missing.add((old_mf, old_solo_token))
+                    continue
+                new_key = (new_mf, live_sig)
                 if new_key in self._frames:
+                    # A snapshot already occupies the destination —
+                    # keep the incumbent and drop the shifted entry.
+                    # The frame will be re-decoded by the next
+                    # prefetch wave if the live sig disagrees later.
                     if not is_missing:
                         self._bytes_used -= arr.nbytes
                     continue

@@ -198,6 +198,147 @@ class TestInvalidation:
 
 
 # ============================================================================
+# Pure-offset shift fast path (multi-layer rekey)
+# ============================================================================
+
+
+class TestOffsetShift:
+    """Pure-offset shift should re-key cached entries instead of
+    invalidating + re-decoding. Covers single-layer and the multi-
+    layer "solo dominant" extension where the moved layer is the
+    only contributor at certain master frames."""
+
+    def test_single_layer_offset_shift_rekeys_cache(self, qtbot) -> None:
+        """One layer, one cached frame. Shifting the layer's offset
+        by Δ must move the cached entry from F to F+Δ — zero
+        re-decodes."""
+        stack = LayerStack()
+        layer = _layer(offset=0)
+        stack.add(layer)
+        cache = MasterFrameCache(stack, num_workers=1)
+        try:
+            with patch(
+                "img_player.cache.master_frame_cache.read_frame",
+                side_effect=_fake_decode,
+            ) as mock:
+                cache.request(25)
+                cache.wait_idle(timeout=2.0)
+            assert mock.call_count == 1
+            assert 25 in cache.cached_frames()
+            # Shift the layer right by 10. Cache should rekey 25 → 35.
+            stack.update(layer.id, offset=10)
+            cached = cache.cached_frames()
+            assert 25 not in cached, "old key should be gone after shift"
+            assert 35 in cached, (
+                "cached frame should follow the layer's new offset"
+            )
+        finally:
+            cache.shutdown()
+
+    def test_offset_shift_no_op_when_delta_zero(self, qtbot) -> None:
+        """Re-emitting layer_modified with the same offset shouldn't
+        churn the cache."""
+        stack = LayerStack()
+        layer = _layer(offset=5)
+        stack.add(layer)
+        cache = MasterFrameCache(stack, num_workers=1)
+        try:
+            with patch(
+                "img_player.cache.master_frame_cache.read_frame",
+                side_effect=_fake_decode,
+            ):
+                cache.request(30)
+                cache.wait_idle(timeout=2.0)
+            assert 30 in cache.cached_frames()
+            # Updating an unrelated no-op field path (offset to its
+            # current value) should not invalidate.
+            stack.update(layer.id, offset=5)
+            assert 30 in cache.cached_frames()
+        finally:
+            cache.shutdown()
+
+    def test_multilayer_solo_dominant_frames_rekey(self, qtbot) -> None:
+        """Two layers that don't overlap: the moved layer is the sole
+        contributor at every frame it covers. All its cached entries
+        should rekey forward — same outcome as the single-layer case."""
+        stack = LayerStack()
+        # Layer A: master [0, 99].
+        layer_a = _layer(offset=0)
+        # Layer B: master [200, 299] — disjoint from A.
+        layer_b = _layer(offset=200)
+        stack.add(layer_a)
+        stack.add(layer_b)
+        cache = MasterFrameCache(stack, num_workers=1)
+        try:
+            with patch(
+                "img_player.cache.master_frame_cache.read_frame",
+                side_effect=_fake_decode,
+            ):
+                # Cache one frame in A's range, one in B's range.
+                cache.request(50)
+                cache.request(250)
+                cache.wait_idle(timeout=2.0)
+            assert 50 in cache.cached_frames()
+            assert 250 in cache.cached_frames()
+            # Shift A right by 20. A's covered range becomes [20, 119].
+            # The cached entry at master 50 (where A was solo) should
+            # rekey to master 70.
+            stack.update(layer_a.id, offset=20)
+            cached = cache.cached_frames()
+            assert 50 not in cached, "A's cached frame at 50 should move"
+            assert 70 in cached, "A's cached frame should land at 70"
+            # B's cached entry at 250 should be untouched — B didn't move
+            # and B was solo there.
+            assert 250 in cached
+        finally:
+            cache.shutdown()
+
+    def test_overlapping_layers_skip_rekey_keep_snapshot(self, qtbot) -> None:
+        """When the moved layer overlaps with another contributor at a
+        cached master frame, the rekey isn't safe (the other layer's
+        source frame would shift too in the rekeyed composite). The
+        entry must NOT be rekeyed; instead it lingers as a stale
+        snapshot under its old signature key."""
+        stack = LayerStack()
+        # Two transparent layers both covering master [0, 99] →
+        # signature at every frame has TWO tokens (no opaque break).
+        # No entry will match the "solo dominant" condition.
+        bottom = _layer(offset=0)
+        top = _layer(offset=0)
+        stack.add(bottom)
+        stack.add(top)
+        cache = MasterFrameCache(stack, num_workers=1)
+        try:
+            with patch(
+                "img_player.cache.master_frame_cache.read_frame",
+                side_effect=_fake_decode,
+            ):
+                cache.request(40)
+                cache.wait_idle(timeout=2.0)
+            # cached_frames() reports under the live signature; both
+            # layers contribute so the entry was stored under a 2-token
+            # sig. After we shift TOP, the live sig at master 40 has
+            # TOP at the new offset → the old 2-token entry is now a
+            # stale snapshot (different signature). It should NOT
+            # appear in cached_frames() for master 40 (different live
+            # sig) AND should NOT have been rekeyed to master 50
+            # (rekey is unsafe — bottom's contribution would shift).
+            assert 40 in cache.cached_frames()
+            stack.update(top.id, offset=10)
+            cached = cache.cached_frames()
+            assert 40 not in cached, (
+                "after TOP shifts, master 40's live signature is "
+                "different → no hit"
+            )
+            assert 50 not in cached, (
+                "rekey is unsafe in multi-contributor frames; entry "
+                "must stay as snapshot under old key, not migrate"
+            )
+        finally:
+            cache.shutdown()
+
+
+# ============================================================================
 # request_range clamping
 # ============================================================================
 
