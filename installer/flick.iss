@@ -33,7 +33,7 @@
 ; ============================================================================
 
 #define MyAppName "Flick Player"
-#define MyAppVersion "1.4.3"
+#define MyAppVersion "1.5.5"
 #define MyAppPublisher "llethanh"
 #define MyAppURL "https://github.com/llethanh/img_player"
 #define MyAppExeName "FlickPlayer.exe"
