@@ -95,6 +95,48 @@ class WorkerPool:
             self._queue.put(item)
         return dropped
 
+    def drop_above_priority(self, threshold: int) -> int:
+        """Drop every queued task whose priority is **>= threshold**.
+
+        Used by the cache to discard pending alt-channel decodes in
+        bulk once the RAM budget is reached: those tasks have very
+        high priority numbers (= low priority in the queue), and
+        without dropping them the worker pool keeps churning through
+        them one at a time even though their decoded results would
+        be evicted on store, fragmenting the Python heap.
+
+        Returns the number of tasks dropped. In-flight tasks are
+        unaffected — they finish to completion. Shutdown sentinels
+        (priority = ``_SHUTDOWN_PRIORITY`` = highly negative) are
+        always preserved.
+        """
+        dropped = 0
+        drained: list[tuple[int, int, Any, Callable[[], None] | None]] = []
+        dropped_keys: list[Any] = []
+        while True:
+            try:
+                item = self._queue.get_nowait()
+            except queue.Empty:
+                break
+            prio, _, key, _fn = item
+            if prio == _SHUTDOWN_PRIORITY or prio < threshold:
+                drained.append(item)
+                continue
+            if key is not None:
+                dropped += 1
+                dropped_keys.append(key)
+        # Release dedup slots for the dropped keys so a future re-
+        # submission (e.g. user switches back to that channel) goes
+        # through. Keys still in the queue + in-flight stay in
+        # ``_pending``.
+        if dropped_keys:
+            with self._lock:
+                for k in dropped_keys:
+                    self._pending.discard(k)
+        for item in drained:
+            self._queue.put(item)
+        return dropped
+
     def pending(self) -> int:
         """Number of submitted-but-not-done tasks (queued + running)."""
         with self._lock:

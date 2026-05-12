@@ -223,6 +223,17 @@ class MasterFrameCache:
         # their results when the world has moved on (channel change,
         # visibility flip, layer reorder, …).
         self._epoch = 0
+        # Per-signature "last touched" timestamp — bumped every time a
+        # signature is requested (live ``request`` or
+        # ``request_alt_channel``). Used by
+        # :meth:`_evict_if_over_budget` to drop the **oldest** alt
+        # channel group first in tier 0, rather than carving a slice
+        # off every group at once. Without this the user sees
+        # "evict-a-bit-of-each-channel" thrashing when the budget is
+        # smaller than (channels × range × frame_size) — every alt
+        # decode triggers an eviction that spreads across all groups,
+        # so no group ever stays fully cached.
+        self._signature_last_seen: dict[str, float] = {}
         # NB: alpha-compositing and the premult/straight convention
         # both used to live on the cache as global flags. They moved
         # to per-layer fields (``Layer.alpha_composite`` /
@@ -279,6 +290,7 @@ class MasterFrameCache:
             self._frames.clear()
             self._missing.clear()
             self._signature_cache.clear()
+            self._signature_last_seen.clear()
             self._path_index.clear()
             self._mtime_index.clear()
             self._last_known_range.clear()
@@ -293,6 +305,7 @@ class MasterFrameCache:
             self._frames.clear()
             self._missing.clear()
             self._signature_cache.clear()
+            self._signature_last_seen.clear()
             self._bytes_used = 0
             self._epoch += 1
 
@@ -589,6 +602,11 @@ class MasterFrameCache:
         new state."""
         with self._lock:
             sig = self._signature_at(master_frame)
+            # Stamp the LIVE signature so eviction always sees it as
+            # "more recent" than any stored alt-channel signature.
+            # Keeps tier 0 (alts) evictable before tier 2 (live), even
+            # when the user idles on the live channel for a while.
+            self._signature_last_seen[sig] = time.monotonic()
             if (master_frame, sig) in self._frames:
                 return False
         # Per-layer compositing: collect visible layers covering this
@@ -839,6 +857,16 @@ class MasterFrameCache:
         these decodes only run when the worker pool has nothing of
         active priority left to do.
         """
+        # Throttle when RAM is already saturated. Without this gate
+        # the worker pool keeps churning through alt-channel decodes
+        # that are immediately evicted (tier 0) the moment they land
+        # — burning CPU + GIL + I/O for nothing AND starving the live
+        # signature, which sees its own frames pushed past the budget
+        # by the inflight alts. 92 % rather than 100 % so we leave
+        # headroom for the live decodes already in flight to finish
+        # without immediately tripping eviction either.
+        if self._bytes_used >= int(self._budget * 0.92):
+            return False
         layer = self._stack.find(layer_id)
         if layer is None or not layer.visible or not layer.covers(master_frame):
             return False
@@ -853,6 +881,10 @@ class MasterFrameCache:
         sig = self._signature_at_with_override(
             master_frame, layer_id, alt_label,
         )
+        # Stamp the signature as "freshly requested" so it survives
+        # eviction longer than older alt groups. See
+        # :attr:`_signature_last_seen` for the rationale.
+        self._signature_last_seen[sig] = time.monotonic()
         key = (master_frame, sig)
         with self._lock:
             if key in self._frames:
@@ -897,9 +929,11 @@ class MasterFrameCache:
             return self._pool.submit(
                 priority,
                 key,
-                lambda: self._decode_and_store(
-                    master_frame, sig, path, channels, ph_w, ph_h,
-                    strip_alpha=strip_alpha,
+                self._make_alt_task(
+                    lambda: self._decode_and_store(
+                        master_frame, sig, path, channels, ph_w, ph_h,
+                        strip_alpha=strip_alpha,
+                    ),
                 ),
             )
 
@@ -926,10 +960,34 @@ class MasterFrameCache:
         return self._pool.submit(
             priority,
             key,
-            lambda: self._decode_composited_and_store(
-                master_frame, sig, plan,
+            self._make_alt_task(
+                lambda: self._decode_composited_and_store(
+                    master_frame, sig, plan,
+                ),
             ),
         )
+
+    def _make_alt_task(self, decode_fn):  # type: ignore[no-untyped-def]
+        """Wrap an alt-channel decode lambda with a dequeue-time budget
+        check. The pool may hold hundreds of alt tasks submitted before
+        the cache filled up; without this gate the worker keeps
+        decoding them (and the cache evicts them immediately on
+        store), burning CPU + GIL + I/O while the user sees the RAM
+        ticking up. Re-checking here lets queued-but-not-yet-run alt
+        tasks self-cancel once budget is reached.
+
+        Live (non-alt) decodes don't go through this path — they keep
+        the existing direct submission and always run, since they're
+        what the user is currently looking at.
+        """
+        threshold = int(self._budget * 0.92)
+
+        def _gated() -> None:
+            if self._bytes_used >= threshold:
+                return
+            decode_fn()
+
+        return _gated
 
     def _build_composite_plan_with_override(
         self,
@@ -2109,30 +2167,44 @@ class MasterFrameCache:
 
         # Tier each cached entry. Tier 0 = stale-sig (drop first),
         # Tier 1 = sig refs an invisible layer, Tier 2 = live frame.
-        # Within a tier we sort by distance_score descending (worst
-        # first) so the "farthest live frame" gets evicted before
-        # we ever touch a closer one.
-        def key_tier(item: tuple[int, str]) -> tuple[int, float]:
+        # Within tier 0, secondary sort by signature "age" (oldest
+        # signature first) so eviction drops the **least recently
+        # used alt-channel group entirely** before touching another
+        # group — the user wants "free a whole group" rather than
+        # "free a slice from every group", which is what the previous
+        # single distance-score sort did. Tiers 1 and 2 keep the
+        # original distance-only secondary order.
+        def key_tier(item: tuple[int, str]) -> tuple[int, float, float]:
             mf, sig = item
             current_sig = self._signature_at(mf)
             if sig != current_sig:
-                # Stale — score by distance just to give a stable
-                # sort within the tier (doesn't really matter; all
-                # tier-0 entries go before any tier-1).
                 tier = 0
+                # Negate so older (smaller last_seen) sorts higher
+                # under reverse=True → evicted first.
+                age = -self._signature_last_seen.get(sig, 0.0)
             elif signature_refs_invisible(sig):
                 tier = 1
+                age = 0.0
             else:
                 tier = 2
-            return (-tier, distance_score(mf))
+                age = 0.0
+            return (-tier, age, distance_score(mf))
 
         # Sort: tier 0 first (smallest -tier), then tier 1, then
-        # tier 2. Within a tier, highest distance_score first.
+        # tier 2. Within tier 0, oldest signature first; within
+        # signature, farthest frame first. Within tier 1/2, farthest
+        # frame first.
         by_priority = sorted(
             self._frames.keys(),
             key=key_tier,
             reverse=True,
         )
+        # Track whether we had to enter eviction at all — if we did,
+        # any pending alt-channel tasks are about to land in the same
+        # over-budget regime and will trip more evictions. Drop them
+        # in bulk below so the worker pool stops churning. Threshold
+        # = 1_000_000 matches ``PlayerController._ALT_CHANNEL_BASE_PRIORITY``.
+        we_had_to_evict = True
         for k in by_priority:
             if self._bytes_used <= self._budget:
                 break
@@ -2141,3 +2213,14 @@ class MasterFrameCache:
                 self._bytes_used -= arr.nbytes
             self._missing.discard(k)
             self._evictions += 1
+
+        if we_had_to_evict:
+            # Cull queued alt-channel tasks. Without this the worker
+            # pool keeps decoding stale alts that immediately re-
+            # trigger eviction → constant 32 MB alloc/free cycles →
+            # Python heap fragmentation → process RSS climbs even
+            # though ``_bytes_used`` stays at budget. 1_000_000 is the
+            # base priority used by the controller for alt-channel
+            # decodes (see ``PlayerController._ALT_CHANNEL_BASE_PRIORITY``);
+            # live decodes use priorities well below that.
+            self._pool.drop_above_priority(1_000_000)
