@@ -39,7 +39,15 @@ def read_version(root: Path | None = None) -> str:
 
 def regenerate(root: Path | None = None) -> Path:
     """Write a fresh ``splash.png`` to the assets dir and return the
-    path. Safe to call repeatedly — overwrites the existing PNG."""
+    path. Safe to call repeatedly — overwrites the existing PNG.
+
+    Rendered at 2× the logical splash size (960×520 physical for a
+    480×260 logical splash) so a Hi-DPI display can show it 1:1
+    without upscaling, and a 1× display gets a clean downscale.
+    :mod:`img_player.splash` flags the loaded pixmap with
+    ``devicePixelRatio(2.0)`` so Qt picks the matching draw size on
+    each screen.
+    """
     from PIL import Image, ImageDraw, ImageFont
 
     if root is None:
@@ -47,39 +55,49 @@ def regenerate(root: Path | None = None) -> Path:
     version = read_version(root)
     asset_path = root / "src" / "img_player" / "assets" / "splash.png"
 
-    width, height = 480, 260
+    # Render at SCALE × logical size; the runtime loader sets DPR =
+    # SCALE so Qt draws at logical px on Hi-DPI. Bumping SCALE here
+    # (e.g. 3 for 4K-native displays) keeps the layout identical and
+    # only sharpens the result.
+    SCALE = 2
+    logical_w, logical_h = 480, 260
+    width, height = logical_w * SCALE, logical_h * SCALE
     img = Image.new("RGB", (width, height), color=(20, 22, 26))
     draw = ImageDraw.Draw(img)
 
-    tile_size = 112
+    tile_size = 112 * SCALE
     tile_x = (width - tile_size) // 2
-    tile_y = 16
+    tile_y = 16 * SCALE
     draw.rounded_rectangle(
         (tile_x, tile_y, tile_x + tile_size, tile_y + tile_size),
-        radius=14,
+        radius=14 * SCALE,
         fill=(40, 42, 48),
         outline=(56, 56, 60),
-        width=1,
+        width=max(1, SCALE),
     )
 
     icon_path = root / "src" / "img_player" / "assets" / "icons" / "flick.ico"
     if icon_path.is_file():
         icon = Image.open(icon_path)
+        icon_px = 88 * SCALE
         try:
-            icon = icon.resize((88, 88), Image.LANCZOS)
+            icon = icon.resize((icon_px, icon_px), Image.LANCZOS)
         except Exception:
             pass
         if icon.mode != "RGBA":
             icon = icon.convert("RGBA")
         img.paste(
             icon,
-            (tile_x + (tile_size - 88) // 2, tile_y + (tile_size - 88) // 2),
+            (
+                tile_x + (tile_size - icon_px) // 2,
+                tile_y + (tile_size - icon_px) // 2,
+            ),
             icon,
         )
 
     try:
-        title_font = ImageFont.truetype("arialbd.ttf", 22)
-        version_font = ImageFont.truetype("arial.ttf", 12)
+        title_font = ImageFont.truetype("arialbd.ttf", 22 * SCALE)
+        version_font = ImageFont.truetype("arial.ttf", 12 * SCALE)
     except OSError:
         title_font = ImageFont.load_default()
         version_font = ImageFont.load_default()
@@ -91,11 +109,11 @@ def regenerate(root: Path | None = None) -> Path:
     title_w = title_bbox[2] - title_bbox[0]
     version_w = version_bbox[2] - version_bbox[0]
     draw.text(
-        ((width - title_w) // 2, 132),
+        ((width - title_w) // 2, 132 * SCALE),
         title, fill=(232, 144, 28), font=title_font,
     )
     draw.text(
-        ((width - version_w) // 2, 162),
+        ((width - version_w) // 2, 162 * SCALE),
         version_label, fill=(138, 138, 142), font=version_font,
     )
     # NB: no baked-in status text. ``splash.update`` paints the runtime

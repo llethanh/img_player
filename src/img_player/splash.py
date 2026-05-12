@@ -61,6 +61,15 @@ def init() -> None:
     if pixmap.isNull():
         log.debug("Failed to load splash pixmap from %s.", asset)
         return
+    # The asset is rendered at 2× its logical size by
+    # ``tools/regen_splash.py`` (960×520 physical for a 480×260
+    # logical splash). Flagging the pixmap as 2× tells Qt to draw
+    # it at half its bitmap size in *logical* pixels — on a 1×
+    # monitor it downsamples crisply, on a 2× Hi-DPI monitor it
+    # paints 1:1 at native density. Without this flag Qt upscaled
+    # the splash on Hi-DPI displays and the text read soft /
+    # pixelated.
+    pixmap.setDevicePixelRatio(2.0)
 
     _qt_splash = QSplashScreen(pixmap, Qt.WindowType.WindowStaysOnTopHint)
     _qt_splash.show()
