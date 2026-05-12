@@ -374,3 +374,280 @@ class TestRequestRange:
             # Just checks we don't crash.
         finally:
             cache.shutdown()
+
+
+# ============================================================================
+# alt_channel_progress — per-channel cache-fill progress
+# ============================================================================
+
+
+class TestAltChannelProgress:
+    """The orange progress bars in the channel-picker menu rely on
+    :meth:`MasterFrameCache.alt_channel_progress`. Two requirements:
+
+    1. **Real frames count.** A live decoded entry under the right
+       signature → the bar advances.
+    2. **Missing-frame placeholders DO NOT count.** Failed alt-channel
+       decodes store a placeholder under ``(mf, sig)`` and add the
+       key to :attr:`_missing` — they live in ``_frames`` so the GL
+       pipeline can paint the checker without crashing, but they
+       spent **zero** real RAM and don't represent a decoded frame.
+       Without the missing-filter, the bar would claim "fully cached"
+       for groups where every prefetch failed, contradicting the RAM
+       gauge (51 GB / 51 GB but the bars claim every AOV is in RAM).
+    """
+
+    def _multi_aov_seq(self, first: int = 1001, last: int = 1010) -> SequenceInfo:
+        """Build a sequence with two channel groups: bare ``RGB`` and a
+        layered ``albedo.R/G/B`` AOV. ``group_channels`` produces two
+        ``ChannelGroup`` entries from this — enough surface to exercise
+        the "active vs override signature" split in the progress fn.
+        """
+        frames = tuple(
+            FrameInfo(path=Path(f"/fake/{n}.exr"), frame_number=n)
+            for n in range(first, last + 1)
+        )
+        return SequenceInfo(
+            base_name="x", extension=".exr", directory=Path("/fake"),
+            padding=4, frames=frames, width=64, height=64,
+            channel_names=(
+                "R", "G", "B",
+                "albedo.R", "albedo.G", "albedo.B",
+            ),
+        )
+
+    def _layer_with_active(self, sequence: SequenceInfo, active_label: str) -> Layer:
+        from img_player.sequence.channels import ChannelSelection, group_channels
+        layer = Layer.from_sequence(sequence)
+        groups = group_channels(sequence.channel_names)
+        active = next(g for g in groups if g.label == active_label)
+        layer.channel_selection = ChannelSelection(active=active)
+        return layer
+
+    def test_missing_placeholders_excluded_from_progress(self, qtbot) -> None:
+        """Inject two entries under the ``albedo`` signature: one real
+        decoded buffer, one placeholder. The progress count for
+        ``albedo`` must be 1 (not 2)."""
+        stack = LayerStack()
+        seq = self._multi_aov_seq()
+        layer = self._layer_with_active(seq, "RGB")
+        stack.add(layer)
+        cache = MasterFrameCache(stack, num_workers=1)
+        try:
+            # Build the synthetic signature the alt-prefetch would
+            # store under for ``albedo`` at master frames 1001 / 1002.
+            sig_albedo = cache._signature_at_with_override(
+                1001, layer.id, "albedo",
+            )
+            real_arr = np.zeros((4, 4, 3), dtype=np.float32)
+            placeholder = np.zeros((4, 4, 4), dtype=np.float32)
+            with cache._lock:
+                # 1001 = real decode
+                cache._frames[(1001, sig_albedo)] = real_arr
+                # 1002 = decode failed → placeholder + _missing entry
+                cache._frames[(1002, sig_albedo)] = placeholder
+                cache._missing.add((1002, sig_albedo))
+
+            progress = cache.alt_channel_progress()
+            cached, total = progress["albedo"]
+            # 10 frames in the sequence (1001..1010 inclusive).
+            assert total == 10
+            # Only the real entry at 1001 counts. The 1002 placeholder
+            # is in ``_missing`` so it's excluded.
+            assert cached == 1, (
+                f"expected 1 real cached frame, got {cached} — "
+                "missing-frame placeholder leaked into progress count"
+            )
+        finally:
+            cache.shutdown()
+
+    def test_real_frames_under_active_signature_count(self, qtbot) -> None:
+        """Sanity: the *active* group's bar advances when real frames
+        land under the live signature. Belt-and-braces — covers the
+        ``grp.label == active_label`` branch that uses
+        :meth:`_signature_at` instead of the override path."""
+        stack = LayerStack()
+        seq = self._multi_aov_seq()
+        layer = self._layer_with_active(seq, "RGB")
+        stack.add(layer)
+        cache = MasterFrameCache(stack, num_workers=1)
+        try:
+            sig_rgb = cache._signature_at(1001)
+            real_arr = np.zeros((4, 4, 3), dtype=np.float32)
+            with cache._lock:
+                cache._frames[(1001, sig_rgb)] = real_arr
+                cache._frames[(1005, sig_rgb)] = real_arr
+
+            progress = cache.alt_channel_progress()
+            cached, total = progress["RGB"]
+            assert (cached, total) == (2, 10)
+        finally:
+            cache.shutdown()
+
+
+# ============================================================================
+# Eviction ordering — whole-channel-at-a-time + RGBA pin
+# ============================================================================
+
+
+class TestEvictionOrdering:
+    """:meth:`_evict_if_over_budget` should drop alt-channel snapshots
+    **one whole group at a time** (oldest first), and the beauty pass
+    (RGB / RGBA) should be the last thing evicted.
+
+    Rationale: under heavy AOV browsing, the user has 5-20 alt
+    snapshots cached + the beauty pass. When budget pressure hits,
+    they want a clean "lose volume_Z entirely, keep everything else
+    full" rather than "lose 30% of every channel" (which leaves all
+    channels half-cached and nothing instantly browseable). And
+    they want to swap back to RGBA from any AOV in O(0) decode time,
+    so RGBA stays pinned.
+    """
+
+    def _multi_aov_seq(self, first: int = 1001, last: int = 1010) -> SequenceInfo:
+        frames = tuple(
+            FrameInfo(path=Path(f"/fake/{n}.exr"), frame_number=n)
+            for n in range(first, last + 1)
+        )
+        return SequenceInfo(
+            base_name="x", extension=".exr", directory=Path("/fake"),
+            padding=4, frames=frames, width=64, height=64,
+            channel_names=(
+                "R", "G", "B", "A",
+                "albedo.R", "albedo.G", "albedo.B",
+                "emission.R", "emission.G", "emission.B",
+            ),
+        )
+
+    def _layer_with_active(self, sequence: SequenceInfo, active_label: str) -> Layer:
+        from img_player.sequence.channels import ChannelSelection, group_channels
+        layer = Layer.from_sequence(sequence)
+        groups = group_channels(sequence.channel_names)
+        active = next(g for g in groups if g.label == active_label)
+        layer.channel_selection = ChannelSelection(active=active)
+        return layer
+
+    def test_evicts_oldest_non_beauty_channel_first(self, qtbot) -> None:
+        """3 cached channels: RGBA (beauty), albedo (older), emission
+        (newer). Currently looking at a 4th hypothetical state so
+        all three are stale (tier 0). Force eviction; emission
+        should empty before albedo, and RGBA should stay intact."""
+        import time as _time
+        stack = LayerStack()
+        seq = self._multi_aov_seq()
+        # Active label = something not in cache; pretend by setting a
+        # group that doesn't have RGBA-style entries we'll inject.
+        layer = self._layer_with_active(seq, "RGBA")
+        stack.add(layer)
+        cache = MasterFrameCache(stack, num_workers=1)
+        try:
+            sig_rgba = cache._signature_at_with_override(
+                1001, layer.id, "RGBA",
+            )
+            sig_albedo = cache._signature_at_with_override(
+                1001, layer.id, "albedo",
+            )
+            sig_emission = cache._signature_at_with_override(
+                1001, layer.id, "emission",
+            )
+            arr = np.zeros((100, 100, 3), dtype=np.float32)  # ~120 KB
+            nbytes_per = arr.nbytes
+            # Inject 3 frames per channel — enough to verify "whole
+            # channel clumped" vs "spread across channels".
+            with cache._lock:
+                for mf in (1001, 1002, 1003):
+                    cache._frames[(mf, sig_rgba)] = arr
+                    cache._frames[(mf, sig_albedo)] = arr
+                    cache._frames[(mf, sig_emission)] = arr
+                    cache._bytes_used += 3 * nbytes_per
+                # Stamp first_cached: albedo cached FIRST (10s ago),
+                # emission cached LATER (1s ago). RGBA cached most
+                # recently but beauty-pinned so timing doesn't matter.
+                cache._signature_first_cached[sig_albedo] = _time.monotonic() - 10.0
+                cache._signature_first_cached[sig_emission] = _time.monotonic() - 1.0
+                cache._signature_first_cached[sig_rgba] = _time.monotonic()
+                # Switch the layer's live signature to something else
+                # so ALL three injected sigs are tier 0 (stale). We
+                # bump the offset which is part of the signature.
+                layer.offset = 500  # detached from the injected sigs
+                cache._invalidate_signature_cache()
+
+                # Budget: enough for just 3 frames. Force eviction
+                # to drop 6 frames (3 emission + 3 albedo first).
+                cache._budget = 3 * nbytes_per
+                cache._evict_if_over_budget()
+
+                remaining_sigs = {sig for _mf, sig in cache._frames.keys()}
+            # The 3 RGBA frames must survive (beauty-pinned).
+            assert sig_rgba in remaining_sigs, (
+                "RGBA snapshots were evicted despite the beauty-pass pin"
+            )
+            # Emission (newer non-beauty) should be GONE entirely —
+            # the oldest-stamped beauty pin means emission is the
+            # newest among non-beauty, evicted second by age order,
+            # but we only had budget for 3 frames so both non-beauty
+            # groups are out completely.
+            assert sig_emission not in remaining_sigs
+            assert sig_albedo not in remaining_sigs
+
+        finally:
+            cache.shutdown()
+
+    def test_partial_eviction_drops_whole_channel_not_a_slice(
+        self, qtbot,
+    ) -> None:
+        """Budget pressure that requires evicting *some* but not
+        *all* non-beauty entries should still respect channel
+        boundaries — drop the oldest channel entirely, leave the
+        newer one intact. The old behaviour mixed: would have
+        dropped e.g. 2 albedo frames + 2 emission frames at the
+        same time."""
+        import time as _time
+        stack = LayerStack()
+        seq = self._multi_aov_seq()
+        layer = self._layer_with_active(seq, "RGBA")
+        stack.add(layer)
+        cache = MasterFrameCache(stack, num_workers=1)
+        try:
+            sig_albedo = cache._signature_at_with_override(
+                1001, layer.id, "albedo",
+            )
+            sig_emission = cache._signature_at_with_override(
+                1001, layer.id, "emission",
+            )
+            arr = np.zeros((100, 100, 3), dtype=np.float32)
+            nbytes_per = arr.nbytes
+            with cache._lock:
+                for mf in (1001, 1002, 1003, 1004):
+                    cache._frames[(mf, sig_albedo)] = arr
+                    cache._frames[(mf, sig_emission)] = arr
+                    cache._bytes_used += 2 * nbytes_per
+                # albedo cached 10s ago (first), emission 1s ago.
+                # First-cached channel leaves first under FIFO.
+                cache._signature_first_cached[sig_albedo] = _time.monotonic() - 10.0
+                cache._signature_first_cached[sig_emission] = _time.monotonic() - 1.0
+                # Detach live state so both sigs are stale (tier 0).
+                layer.offset = 500
+                cache._invalidate_signature_cache()
+                # Budget keeps 4 frames out of 8 — must drop exactly
+                # the 4 albedo frames (oldest non-beauty) and leave
+                # emission whole.
+                cache._budget = 4 * nbytes_per
+                cache._evict_if_over_budget()
+                emission_left = sum(
+                    1 for _mf, sig in cache._frames if sig == sig_emission
+                )
+                albedo_left = sum(
+                    1 for _mf, sig in cache._frames if sig == sig_albedo
+                )
+            assert albedo_left == 0, (
+                f"expected oldest channel (albedo) fully evicted, "
+                f"{albedo_left} frames remain — eviction is still slicing "
+                "across channels"
+            )
+            assert emission_left == 4, (
+                f"expected newer channel (emission) fully preserved, "
+                f"only {emission_left} frames left"
+            )
+        finally:
+            cache.shutdown()

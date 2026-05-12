@@ -1992,7 +1992,7 @@ class ImgPlayerApp:
         # cache clear inside ``set_fast_seek_all`` guarantees this
         # request can't return a stale approximate frame.
         try:
-            current = int(self._controller.state.frame)
+            current = int(self._controller.state.current_frame)
             self._show_best_available(current)
         except Exception:
             log.exception("[scrub] post-release re-decode failed")

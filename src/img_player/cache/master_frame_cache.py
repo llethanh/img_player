@@ -225,15 +225,38 @@ class MasterFrameCache:
         self._epoch = 0
         # Per-signature "last touched" timestamp — bumped every time a
         # signature is requested (live ``request`` or
-        # ``request_alt_channel``). Used by
-        # :meth:`_evict_if_over_budget` to drop the **oldest** alt
-        # channel group first in tier 0, rather than carving a slice
-        # off every group at once. Without this the user sees
-        # "evict-a-bit-of-each-channel" thrashing when the budget is
-        # smaller than (channels × range × frame_size) — every alt
-        # decode triggers an eviction that spreads across all groups,
-        # so no group ever stays fully cached.
+        # ``request_alt_channel``). Kept for compatibility / debugging;
+        # eviction uses :attr:`_signature_first_cached` instead because
+        # ``last_seen`` is refreshed by every alt-prefetch pass and so
+        # collapses to "all sigs touched ~now" under steady-state
+        # browsing, making it useless as an age discriminator.
         self._signature_last_seen: dict[str, float] = {}
+        # Per-signature "first cached" timestamp — set **exactly once**
+        # the moment the first real frame for that signature lands in
+        # :attr:`_frames`. Used by :meth:`_evict_if_over_budget` to
+        # drop the **oldest cached** alt-channel group first (FIFO over
+        # channel cache history) rather than carving a slice off every
+        # group at once.
+        #
+        # Why not reuse ``_signature_last_seen``: that one gets bumped
+        # by every alt-prefetch tick, which fires on every pause for
+        # every visible layer × every channel group. The result is
+        # that all alt signatures end up with near-identical
+        # timestamps under steady browsing — the age comparison
+        # collapses, the tertiary signature-string sort takes over,
+        # and eviction starts deciding "channel order" lexicographically
+        # ("emission" before "albedo" before "RGBA" purely because of
+        # ASCII ordering). ``_signature_first_cached`` is immutable
+        # per sig, so first-in-first-out is preserved even under
+        # heavy prefetch traffic.
+        #
+        # Lifetime: stamped on first frame insert under the sig (real
+        # decodes, not missing-frame placeholders). NOT cleared when
+        # a sig is fully evicted — a sig that comes back into cache
+        # after a full eviction keeps its original "first cached"
+        # rank, which is the intuitive behaviour (the channel the
+        # user looked at first stays the channel-to-drop-first).
+        self._signature_first_cached: dict[str, float] = {}
         # NB: alpha-compositing and the premult/straight convention
         # both used to live on the cache as global flags. They moved
         # to per-layer fields (``Layer.alpha_composite`` /
@@ -291,6 +314,7 @@ class MasterFrameCache:
             self._missing.clear()
             self._signature_cache.clear()
             self._signature_last_seen.clear()
+            self._signature_first_cached.clear()
             self._path_index.clear()
             self._mtime_index.clear()
             self._last_known_range.clear()
@@ -306,6 +330,7 @@ class MasterFrameCache:
             self._missing.clear()
             self._signature_cache.clear()
             self._signature_last_seen.clear()
+            self._signature_first_cached.clear()
             self._bytes_used = 0
             self._epoch += 1
 
@@ -1185,7 +1210,19 @@ class MasterFrameCache:
                         sig = self._signature_at_with_override(
                             mf, layer.id, grp.label,
                         )
-                    if (mf, sig) in self._frames:
+                    key = (mf, sig)
+                    # Exclude missing-frame placeholders: they live in
+                    # ``_frames`` (so the GL pipeline can paint the
+                    # checker without crashing) but they're tracked in
+                    # ``_missing`` and **not** counted in
+                    # ``_bytes_used``. Without this filter the per-
+                    # channel progress bars would claim "fully cached"
+                    # for groups where every alt-prefetch had failed /
+                    # produced a placeholder, even though no real RAM
+                    # had been spent on them — making the bars
+                    # contradict the RAM gauge ("51 GB / 51 GB but
+                    # all 23 channels look 100% cached").
+                    if key in self._frames and key not in self._missing:
                         count += 1
                 out[grp.label] = (count, total)
         return out
@@ -1969,6 +2006,12 @@ class MasterFrameCache:
                 return
             self._frames[key] = accum
             self._bytes_used += accum.nbytes
+            # Stamp ``first_cached`` for FIFO-by-channel eviction (only
+            # on the first frame for this sig; later frames share the
+            # original timestamp so the whole channel ages together).
+            self._signature_first_cached.setdefault(
+                signature, time.monotonic(),
+            )
             # Same still-fan-out as ``_decode_and_store`` — covers the
             # case where a user explicitly toggles ``alpha_composite``
             # on a still (uncommon, but supported via the T button).
@@ -1985,6 +2028,9 @@ class MasterFrameCache:
                     if f_key in self._frames:
                         continue
                     self._frames[f_key] = accum
+                    self._signature_first_cached.setdefault(
+                        f_sig, time.monotonic(),
+                    )
             self._evict_if_over_budget()
 
     def _decode_and_store(
@@ -2050,6 +2096,12 @@ class MasterFrameCache:
                 return  # raced — keep existing
             self._frames[key] = arr
             self._bytes_used += arr.nbytes
+            # Stamp ``first_cached`` for FIFO-by-channel eviction (only
+            # on the first frame for this sig; later frames share the
+            # original timestamp so the whole channel ages together).
+            self._signature_first_cached.setdefault(
+                signature, time.monotonic(),
+            )
             # Still-image fan-out: when the just-decoded frame is the
             # anchor (master_start) of a still layer, alias the same
             # ndarray into every other master frame in the still's
@@ -2074,6 +2126,9 @@ class MasterFrameCache:
                     if f_key in self._frames:
                         continue
                     self._frames[f_key] = arr  # ref-share, no nbytes bump
+                    self._signature_first_cached.setdefault(
+                        f_sig, time.monotonic(),
+                    )
             self._evict_if_over_budget()
 
     def _still_layer_anchored_at(self, master_frame: int):  # type: ignore[no-untyped-def]
@@ -2165,35 +2220,85 @@ class MasterFrameCache:
                     return True
             return False
 
+        def signature_is_beauty(sig: str) -> bool:
+            """True when *any* contributor token in the signature uses
+            the beauty-pass label (``RGB`` / ``RGBA``).
+
+            The beauty pass is the visual "anchor" — the user almost
+            always wants it preserved across channel switches so they
+            can flip back to a familiar view instantly. We bias the
+            eviction to keep beauty snapshots last; only when every
+            non-beauty alt has been freed AND we're still over budget
+            do beauty entries become evictable.
+
+            Heuristic for multi-layer stacks: if *any* layer in the
+            chain shows beauty, the whole snapshot is "beauty-
+            anchored" and gets the preservation bonus. Imperfect but
+            cheap, and the common case is single-layer EXR review
+            where this collapses to "exactly the RGB(A) snapshot".
+            """
+            if not sig:
+                return False
+            for token in sig.split("|"):
+                # token shape: "layer_id@LABEL#flags+off+lin"
+                at_idx = token.find("@")
+                if at_idx < 0:
+                    continue
+                hash_idx = token.find("#", at_idx + 1)
+                if hash_idx < 0:
+                    continue
+                label = token[at_idx + 1:hash_idx]
+                if label in ("RGB", "RGBA"):
+                    return True
+            return False
+
         # Tier each cached entry. Tier 0 = stale-sig (drop first),
         # Tier 1 = sig refs an invisible layer, Tier 2 = live frame.
-        # Within tier 0, secondary sort by signature "age" (oldest
-        # signature first) so eviction drops the **least recently
-        # used alt-channel group entirely** before touching another
-        # group — the user wants "free a whole group" rather than
-        # "free a slice from every group", which is what the previous
-        # single distance-score sort did. Tiers 1 and 2 keep the
-        # original distance-only secondary order.
-        def key_tier(item: tuple[int, str]) -> tuple[int, float, float]:
+        # Within tier 0:
+        #   * **Beauty (RGB/RGBA) snapshots evicted LAST** — they're
+        #     the visual anchor the user flips back to; pinning them
+        #     under budget pressure means swapping to RGBA stays
+        #     instant even after a long AOV browse session.
+        #   * Non-beauty snapshots: oldest signature first.
+        #   * Same-signature frames clump together (sig in the sort
+        #     key) so we drop a whole channel before touching
+        #     another. Without the sig in the key, every alt-prefetch
+        #     wave stamps similar timestamps on every group → ages
+        #     collide → the tertiary distance_score becomes the real
+        #     discriminator → eviction spreads across all groups
+        #     instead of clearing one whole group at a time.
+        # Tiers 1 and 2 keep the original distance-only secondary
+        # order (sig field is constant within those tiers anyway).
+        _AGE_BEAUTY_PIN = float("-inf")  # sort lowest → evicted last
+
+        def key_tier(item: tuple[int, str]) -> tuple[int, float, str, float]:
             mf, sig = item
             current_sig = self._signature_at(mf)
             if sig != current_sig:
                 tier = 0
-                # Negate so older (smaller last_seen) sorts higher
-                # under reverse=True → evicted first.
-                age = -self._signature_last_seen.get(sig, 0.0)
+                if signature_is_beauty(sig):
+                    age = _AGE_BEAUTY_PIN
+                else:
+                    # Negate so older (smaller first_cached) sorts
+                    # higher under reverse=True → evicted first.
+                    # Sigs without a first-cached stamp default to
+                    # 0.0 → ``age = 0`` → highest priority for
+                    # eviction (covers placeholder-only sigs that
+                    # never had a real frame stored).
+                    age = -self._signature_first_cached.get(sig, 0.0)
             elif signature_refs_invisible(sig):
                 tier = 1
                 age = 0.0
             else:
                 tier = 2
                 age = 0.0
-            return (-tier, age, distance_score(mf))
+            return (-tier, age, sig, distance_score(mf))
 
         # Sort: tier 0 first (smallest -tier), then tier 1, then
-        # tier 2. Within tier 0, oldest signature first; within
-        # signature, farthest frame first. Within tier 1/2, farthest
-        # frame first.
+        # tier 2. Within tier 0, oldest signature first (beauty
+        # pinned at ``-inf``); same-sig frames clump together;
+        # within signature, farthest frame first. Within tier 1/2,
+        # signature still groups but secondary ordering is distance.
         by_priority = sorted(
             self._frames.keys(),
             key=key_tier,
