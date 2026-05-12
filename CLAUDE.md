@@ -78,7 +78,14 @@ Pour wrap en installer Inno Setup voir `installer/README.md`.
 
 ## État courant (mai 2026)
 
-- **v1.1.0** sur main — release "Video & audio playback"
+- **v1.5.4** sur main — release "Disk cache, per-layer"
+- Disk cache 3-tiers (RAM → disque lz4+half-float → source decode)
+  livré. Survit close/reopen. Pre-paint timeline en orange clair
+  pour les frames disponibles disque. Stats live dans
+  Preferences > Disk cache.
+- **Reste à faire sur le disk cache** : voir
+  [`docs/disk_cache_roadmap.md`](docs/disk_cache_roadmap.md)
+  (robustesse E, multi-process F, perf annexes).
 - Lecture vidéo (mp4/mov/mkv/m4v/avi) + audio sounddevice opérationnels
 - Toggles M/S par layer pour mute/solo audio
 - PlayerController en mode wall-clock (anti-drift A/V)
