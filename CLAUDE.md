@@ -78,14 +78,21 @@ Pour wrap en installer Inno Setup voir `installer/README.md`.
 
 ## État courant (mai 2026)
 
-- **v1.5.4** sur main — release "Disk cache, per-layer"
+- **v1.5.5** sur main — release "Disk cache, hardened"
 - Disk cache 3-tiers (RAM → disque lz4+half-float → source decode)
   livré. Survit close/reopen. Pre-paint timeline en orange clair
   pour les frames disponibles disque. Stats live dans
   Preferences > Disk cache.
-- **Reste à faire sur le disk cache** : voir
-  [`docs/disk_cache_roadmap.md`](docs/disk_cache_roadmap.md)
-  (robustesse E, multi-process F, perf annexes).
+- **Roadmap entière E + F livrée** (voir
+  [`docs/disk_cache_roadmap.md`](docs/disk_cache_roadmap.md)) :
+  E1 shutdown drain 10s + FlushIndicator, E2 sweep blobs orphelins,
+  E3 auto-reload via QFileSystemWatcher, E4 PRAGMA user_version
+  migration, F lock cross-process + read-only fallback.
+- **Perf disk-cache** : format v2 struct-header (1.5× faster) +
+  v3 no-compression option pour NVMe rapides (5.3× faster, toggle
+  dans Preferences > Disk cache > Storage).
+- 59 tests unit + integration pour la feature disk-cache (passent
+  en ~7s).
 - Lecture vidéo (mp4/mov/mkv/m4v/avi) + audio sounddevice opérationnels
 - Toggles M/S par layer pour mute/solo audio
 - PlayerController en mode wall-clock (anti-drift A/V)
