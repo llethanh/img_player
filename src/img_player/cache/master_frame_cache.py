@@ -1321,6 +1321,16 @@ class MasterFrameCache:
         total = last - first + 1
         if total <= 0:
             return {}
+        # When the focused layer is hidden, every override signature
+        # collapses to "same as live" (``_signature_at_with_override``
+        # skips invisible layers — the override has no effect on the
+        # composite). Every group's lookup would then hit the live
+        # composite's entry, painting every bar as fully cached even
+        # though ``visible_alt_layer_ids`` already excluded the layer
+        # from prefetch. Surface the truth: nothing is cached for a
+        # hidden layer's alt channels. Bars render empty.
+        if not layer.visible:
+            return {grp.label: (0, total) for grp in groups}
         active_label = (
             layer.channel_selection.active.label
             if layer.channel_selection is not None else None
