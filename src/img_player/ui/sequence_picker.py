@@ -27,9 +27,10 @@ Default check state
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QObject, Qt
-from PySide6.QtGui import QBrush, QColor
+from PySide6.QtCore import QEvent, QObject, QSize, Qt
+from PySide6.QtGui import QBrush, QColor, QFont, QFontMetrics
 from PySide6.QtWidgets import (
+    QApplication,
     QDialog,
     QDialogButtonBox,
     QHBoxLayout,
@@ -37,6 +38,9 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QPushButton,
+    QStyle,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
     QVBoxLayout,
     QWidget,
 )
@@ -50,6 +54,30 @@ from img_player.ui.theme import F, H, S
 # ``None``). Drives ``selected_sequences()`` and the per-row check
 # semantics — headers are non-selectable and ignore checks.
 _ROLE_SEQ = Qt.ItemDataRole.UserRole + 1
+# Raw column payload — drives :class:`_SeqRowDelegate` which paints
+# each column at a fixed x. Value layout:
+# ``tuple[tuple[text:str, color:str, bold:bool, x:int], ...]``.
+# ``x`` is computed once by :meth:`SequencePickerDialog._apply_column_layout`
+# from the longest text in each column so the dialog can shrink to
+# fit its content while keeping vertical alignment row-to-row.
+_ROLE_COLS = Qt.ItemDataRole.UserRole + 2
+# Pre-layout column data — same shape minus the ``x`` field. Held
+# separately so :meth:`_apply_column_layout` can rebuild the laid-out
+# tuple after measuring widths without losing the source text.
+_ROLE_COLS_DATA = Qt.ItemDataRole.UserRole + 3
+
+# Indent applied to all columns for grouped rows so they sit visually
+# under their folder header.
+_COL_INDENT = 18
+# Minimum horizontal gap between two adjacent columns. Wide enough
+# that "1920×1080" and "complete" never read as one token, narrow
+# enough that the dialog stays tight on short patterns.
+_COL_MIN_GAP = 24
+
+# Foreground colour for the non-badge columns — kept aligned with the
+# QSS-defined default item text colour so the row reads identical to
+# the headers / unstyled items.
+_COL_DEFAULT_FG = "#D8D8D8"
 
 
 class SequencePickerDialog(QDialog):  # type: ignore[misc]
@@ -66,7 +94,9 @@ class SequencePickerDialog(QDialog):  # type: ignore[misc]
         super().__init__(parent)
         self.setWindowTitle("Pick a sequence")
         self.setModal(True)
-        self.setMinimumWidth(560)
+        # Floor only — the actual width is computed from the longest
+        # row's content via :meth:`_apply_column_layout` / :meth:`_resize_for_content`.
+        self.setMinimumWidth(420)
         # Floor the dialog at a height that comfortably shows the
         # header + ~6 rows + buttons row. ``_resize_for_content``
         # below grows it from there based on actual row count, capped
@@ -106,6 +136,12 @@ class SequencePickerDialog(QDialog):  # type: ignore[misc]
 
         self._list = QListWidget()
         self._list.setFont(F.mono(F.SIZE_SM))
+        # HTML-aware delegate for sequence rows — lets us paint the
+        # trailing "complete" / "N missing" badge in its own colour
+        # while leaving the rest of the row in the default foreground.
+        # Headers / separators carry no HTML payload so the delegate
+        # falls back to the default plain-text path for them.
+        self._list.setItemDelegate(_SeqRowDelegate(self._list))
         # Internal list floor — gives the rows enough vertical
         # breathing room even on a single-sequence drop without the
         # whole dialog feeling oversized. The dialog's own floor
@@ -140,6 +176,14 @@ class SequencePickerDialog(QDialog):  # type: ignore[misc]
         else:
             self._populate_flat()
 
+        # Measure every row's column data, derive per-column max
+        # widths, and bake the final x offsets into each item. Also
+        # returns the total content width so the dialog can grow to
+        # fit the longest row (the user dropped a sequence with a
+        # 60-char filename, the dialog widens; a short pattern keeps
+        # it compact).
+        self._content_width = self._apply_column_layout(indent=multi)
+
         # --- Buttons row ----------------------------------------------
         btn_row = QHBoxLayout()
         if multi:
@@ -151,7 +195,18 @@ class SequencePickerDialog(QDialog):  # type: ignore[misc]
             self._deselect_all_btn.clicked.connect(
                 lambda: self._set_all_checked(False),
             )
+            self._select_complete_btn = QPushButton(
+                "Select all completed sequences",
+            )
+            self._select_complete_btn.setToolTip(
+                "Tick only multi-frame sequences with no missing "
+                "frames (skips single-frame stills)",
+            )
+            self._select_complete_btn.clicked.connect(
+                self._select_only_complete,
+            )
             btn_row.addWidget(self._select_all_btn)
+            btn_row.addWidget(self._select_complete_btn)
             btn_row.addWidget(self._deselect_all_btn)
         btn_row.addStretch(1)
 
@@ -225,15 +280,91 @@ class SequencePickerDialog(QDialog):  # type: ignore[misc]
         # Floor at the minimum height so a one-sequence drop still
         # opens at the readable baseline rather than collapsing.
         target_h = max(target_h, self.minimumHeight())
-        self.resize(self.width() or 560, int(target_h))
+        # Width: shrink-wrap to the widest row's content + dialog
+        # chrome (outer margins, list border, checkbox indicator,
+        # QSS padding, scrollbar). The 80 % cap mirrors the height
+        # logic so we never produce a window wider than the screen.
+        content_w = getattr(self, "_content_width", 0)
+        # Chrome breakdown for a single row: indicator (~28) + QSS
+        # padding-left (10) + QSS padding-right (10) + list border
+        # (2) + scrollbar gutter (16) + outer margins (S.MD * 2).
+        chrome_w = 28 + 10 + 10 + 2 + 16 + (2 * S.MD)
+        target_w = content_w + chrome_w
+        screen = self.screen()
+        if screen is not None:
+            avail_w = screen.availableGeometry().width()
+            target_w = min(target_w, int(avail_w * 0.80))
+        target_w = max(target_w, self.minimumWidth())
+        self.resize(int(target_w), int(target_h))
+
+    def _apply_column_layout(self, *, indent: bool) -> int:
+        """Measure column-data widths and bake the final x offsets.
+
+        Walks every row carrying ``_ROLE_COLS_DATA``, computes the
+        widest text per column index using the appropriate font
+        metrics (bold vs regular), then writes back to
+        :data:`_ROLE_COLS` with each column at
+        ``x = sum_of_prev_widths + N * _COL_MIN_GAP + indent``. The
+        result is "compact column layout": each column is exactly as
+        wide as its longest cell, with a uniform readable gap between
+        them.
+
+        Returns the total content width (used by
+        :meth:`_resize_for_content` to size the dialog).
+        """
+        regular = self._list.font()
+        bold = QFont(regular)
+        bold.setBold(True)
+        fm_regular = QFontMetrics(regular)
+        fm_bold = QFontMetrics(bold)
+
+        # Collect every (col_index, text, bold) so we can compute the
+        # per-column max width before laying anything out.
+        max_w = [0, 0, 0, 0, 0]
+        rows: list[tuple[QListWidgetItem, tuple]] = []
+        for i in range(self._list.count()):
+            item = self._list.item(i)
+            if item is None:
+                continue
+            data = item.data(_ROLE_COLS_DATA)
+            if not data:
+                continue
+            rows.append((item, data))
+            for j, (text, _color, is_bold) in enumerate(data):
+                fm = fm_bold if is_bold else fm_regular
+                w = fm.horizontalAdvance(text)
+                if w > max_w[j]:
+                    max_w[j] = w
+
+        if not rows:
+            return 0
+
+        # Compute cumulative x for each column. Indent applies to the
+        # first column only (visual indent under the folder header);
+        # subsequent columns chain off the previous max width + gap.
+        shift = _COL_INDENT if indent else 0
+        xs = [shift]
+        for j in range(4):
+            xs.append(xs[-1] + max_w[j] + _COL_MIN_GAP)
+
+        for item, data in rows:
+            baked = tuple(
+                (text, color, is_bold, xs[j])
+                for j, (text, color, is_bold) in enumerate(data)
+            )
+            item.setData(_ROLE_COLS, baked)
+
+        # Total content width = last column's x + its own width.
+        return xs[-1] + max_w[4]
 
     # ------------------------------------------------------------------ Population
 
     def _populate_flat(self) -> None:
         for seq in self._sequences:
             item = QListWidgetItem(_format_seq_row(seq))
-            item.setToolTip(str(seq.directory / seq.display_pattern()))
+            item.setToolTip(_seq_tooltip(seq))
             item.setData(_ROLE_SEQ, seq)
+            item.setData(_ROLE_COLS_DATA, _seq_columns_data(seq))
             self._list.addItem(item)
 
     def _populate_groups(self) -> None:
@@ -302,7 +433,8 @@ class SequencePickerDialog(QDialog):  # type: ignore[misc]
     def _add_seq_item(self, seq: SequenceInfo, *, checked: bool) -> None:
         item = QListWidgetItem("    " + _format_seq_row(seq))
         item.setData(_ROLE_SEQ, seq)
-        item.setToolTip(str(seq.directory / seq.display_pattern()))
+        item.setData(_ROLE_COLS_DATA, _seq_columns_data(seq))
+        item.setToolTip(_seq_tooltip(seq))
         flags = item.flags()
         flags |= Qt.ItemFlag.ItemIsUserCheckable
         item.setFlags(flags)
@@ -371,6 +503,31 @@ class SequencePickerDialog(QDialog):  # type: ignore[misc]
                 continue
             item.setCheckState(state)
 
+    def _select_only_complete(self) -> None:
+        """Tick every multi-frame, contiguous sequence; untick the
+        rest (incomplete sequences AND single-frame stills).
+
+        The intent is "grab the actual sequences ready for review"
+        — single-frame items in a VFX drop are usually slates,
+        thumbnails, or reference images, not the renders the user
+        came to look at, so they shouldn't be lumped in with the
+        complete sequences.
+        """
+        for i in range(self._list.count()):
+            item = self._list.item(i)
+            if item is None:
+                continue
+            seq = item.data(_ROLE_SEQ)
+            if seq is None:
+                continue
+            is_completed_sequence = (
+                seq.is_contiguous and seq.frame_count > 1
+            )
+            item.setCheckState(
+                Qt.CheckState.Checked if is_completed_sequence
+                else Qt.CheckState.Unchecked,
+            )
+
     def selected_sequence(self) -> SequenceInfo | None:
         """Legacy single-select API — returns the highlighted row's seq."""
         row = self._list.currentRow()
@@ -423,14 +580,168 @@ class SequencePickerDialog(QDialog):  # type: ignore[misc]
 # ---------------------------------------------------------------- Formatting
 
 def _format_seq_row(seq: SequenceInfo) -> str:
-    """One-line summary: pattern + range + resolution."""
+    """One-line plain-text summary: pattern + range + resolution + status.
+
+    Used as the accessibility / fallback ``text`` payload on each
+    QListWidgetItem; the on-screen rendering goes through
+    :func:`_seq_columns` instead (rendered by the delegate).
+    Plain version is kept so screen readers and copy-paste land on
+    something useful, but it isn't what the dialog displays.
+    """
     pattern = seq.display_pattern()
     rng = f"[{seq.first_frame}-{seq.last_frame}]"
-    if seq.width and seq.height:
-        res = f"{seq.width}×{seq.height}"
+    w, h = _resolve_dims(seq)
+    res = f"{w}×{h}" if w and h else "—"
+    total = f"{seq.last_frame - seq.first_frame + 1}f"
+    status = _seq_status_text(seq)
+    return f"{pattern:<32}  {rng:<14}  {res:<12}  {total:<8}  {status}"
+
+
+def _seq_status_text(seq: SequenceInfo) -> str:
+    """Plain-text status badge — used by the plain ``text`` payload
+    (delegate falls back to it when no HTML is set, screen readers see
+    it, etc.). HTML version below mirrors the wording."""
+    if seq.is_contiguous:
+        return "complete"
+    n = len(seq.missing_frames)
+    return f"{n} missing frame" + ("s" if n != 1 else "")
+
+
+def _seq_columns_data(
+    seq: SequenceInfo,
+) -> tuple[tuple[str, str, bool], ...]:
+    """Raw column data for :class:`_SeqRowDelegate`.
+
+    Returns the five columns — pattern / range / resolution / total
+    frames / status — as ``(text, color, bold)`` tuples without an x
+    coordinate. :meth:`SequencePickerDialog._apply_column_layout`
+    measures the widest text per column index across every row, then
+    bakes the final x offsets into :data:`_ROLE_COLS`.
+
+    "Total" is the expected length of the range
+    (``last - first + 1``), not :attr:`SequenceInfo.frame_count` —
+    so an incomplete sequence with 120 present frames over a 139-frame
+    range still reports "139f" alongside the "19 missing frames"
+    badge, which is the count the user wants to see ("what should the
+    sequence be?").
+    """
+    pattern = seq.display_pattern()
+    rng = f"[{seq.first_frame}-{seq.last_frame}]"
+    w, h = _resolve_dims(seq)
+    res = f"{w}×{h}" if w and h else "—"
+    total = seq.last_frame - seq.first_frame + 1
+    total_text = f"{total}f"
+    if seq.is_contiguous:
+        badge_text = "complete"
+        badge_color = "#7FCC7F"
+        badge_bold = False
     else:
-        res = f"{seq.frame_count}f"
-    return f"{pattern:<32}  {rng:<14}  {res}"
+        n = len(seq.missing_frames)
+        word = "frame" if n == 1 else "frames"
+        badge_text = f"{n} missing {word}"
+        badge_color = "#E06B6B"
+        badge_bold = True
+    return (
+        (pattern, _COL_DEFAULT_FG, False),
+        (rng, _COL_DEFAULT_FG, False),
+        (res, _COL_DEFAULT_FG, False),
+        (total_text, _COL_DEFAULT_FG, False),
+        (badge_text, badge_color, badge_bold),
+    )
+
+
+def _resolve_dims(seq: SequenceInfo) -> tuple[int | None, int | None]:
+    """Return ``(width, height)`` for the sequence, falling back to a
+    fresh probe of the first frame when the scanner didn't fill them.
+
+    The scanner can leave dims empty when the OIIO probe failed at
+    scan time (slow Drive fetch, unusual PNG variant, etc.). Re-trying
+    here is cheap (one header read) and usually succeeds the second
+    time round — the file is by now warm in the OS cache, or the
+    user-initiated picker open gave Drive enough time to materialise
+    the bytes.
+    """
+    if seq.width and seq.height:
+        return seq.width, seq.height
+    if not seq.frames:
+        return None, None
+    try:
+        from img_player.io.reader import read_header
+        spec = read_header(seq.frames[0].path)
+        return spec.width, spec.height
+    except Exception:
+        return None, None
+
+
+def _seq_tooltip(seq: SequenceInfo) -> str:
+    """Tooltip: full file pattern path + status detail when incomplete."""
+    base = str(seq.directory / seq.display_pattern())
+    if seq.is_contiguous:
+        return base
+    missing = seq.missing_frames
+    # Show the first few gap frames so the user can spot the holes
+    # without leaving the picker. Truncate at ten so a sequence with
+    # 500 missing frames doesn't produce a tooltip wall.
+    preview = ", ".join(str(f) for f in missing[:10])
+    if len(missing) > 10:
+        preview += ", …"
+    return f"{base}\nMissing frames: {preview}"
+
+
+class _SeqRowDelegate(QStyledItemDelegate):  # type: ignore[misc]
+    """Paints each sequence row as a set of fixed-x text columns so
+    the picker's pattern / range / resolution / status badges line up
+    vertically across every row.
+
+    Reads the column payload from :data:`_ROLE_COLS`. Rows without one
+    (folder headers, separators, empty markers) fall through to the
+    default plain-text path so the delegate stays a pure enhancement.
+
+    Background, selection and the checkbox indicator are drawn by the
+    style (via ``CE_ItemViewItem`` with the text blanked out) so the
+    QSS in :data:`_LIST_QSS` keeps owning the visual chrome — we only
+    paint the row's text region ourselves.
+    """
+
+    def paint(self, painter, option, index) -> None:  # type: ignore[no-untyped-def]
+        cols = index.data(_ROLE_COLS)
+        if not cols:
+            super().paint(painter, option, index)
+            return
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        opt.text = ""
+        widget = opt.widget
+        style = (
+            widget.style() if widget is not None else QApplication.style()
+        )
+        style.drawControl(
+            QStyle.ControlElement.CE_ItemViewItem, opt, painter, widget,
+        )
+        text_rect = style.subElementRect(
+            QStyle.SubElement.SE_ItemViewItemText, opt, widget,
+        )
+
+        painter.save()
+        # Baseline y: centre of the row, plus half the font ascent so
+        # the glyphs sit on the optical centre rather than crawling
+        # to the top. Matches how QStyle paints the checkbox indicator
+        # so columns and checkbox line up.
+        fm = painter.fontMetrics()
+        baseline_y = (
+            text_rect.top()
+            + (text_rect.height() + fm.ascent() - fm.descent()) // 2
+        )
+        bold_font = QFont(opt.font)
+        bold_font.setBold(True)
+        for text, color, bold, x in cols:
+            painter.setFont(bold_font if bold else opt.font)
+            painter.setPen(QColor(color))
+            painter.drawText(text_rect.left() + x, baseline_y, text)
+        painter.restore()
+
+    def sizeHint(self, option, index) -> QSize:  # type: ignore[no-untyped-def]
+        return super().sizeHint(option, index)
 
 
 _LIST_QSS = """
