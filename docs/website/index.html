@@ -1097,7 +1097,7 @@ footer a:hover { color: var(--accent); }
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="12" y1="3" x2="12" y2="21"/></svg>
       </div>
       <h3>A/B compare</h3>
-      <p>Two layers, four modes: vertical wipe, horizontal wipe, opacity blend, solo-B. Drag the seam live — pure shader, no re-decode. Bake the wipe into your export too.</p>
+      <p>Two layers, four modes: vertical wipe, horizontal wipe, opacity blend, solo-B. Drag the seam live — pure shader, no re-decode. Orange <strong>A</strong> / <strong>B</strong> markers anchored to image corners follow pan + zoom and fade with the opacity seam. Bake the wipe into your export too.</p>
     </a>
     <a href="#cache" class="feature-card">
       <div class="icon">
@@ -1189,7 +1189,9 @@ footer a:hover { color: var(--accent); }
         <li><b>Horizontal wipe</b> — top from A, bottom from B. Useful when the difference is along a horizon.</li>
         <li><b>Opacity blend</b> — linear mix at the seam value. 0 = pure A, 1 = pure B.</li>
         <li><b>Solo B</b> (A↔B button) — temporary "show full B" override without leaving the chosen blend.</li>
-        <li>Right-click drag in the viewport <b>moves the seam</b> live; <code>W</code> toggles compare on/off; <code>Ctrl+W</code> swaps A and B.</li>
+        <li><b>On-image A/B markers</b> — orange letters anchored to <em>image-space</em> corners (mode-aware: top corners for vertical wipe, right edge for horizontal, top corners for opacity), follow pan + zoom. In opacity mode each letter fades with the seam — the marker mirrors the blend rather than competing with it.</li>
+        <li><b>Numbered dropdowns + A/B seam bar</b> — A/B layer pickers prefix layer names with their row number (<code>"1. shot.exr"</code>) so they map directly to the layer panel. The seam bar in the menu row gets orange A/B end-labels too.</li>
+        <li>Right-click drag in the viewport <b>moves the seam</b> live; <code>W</code> toggles compare on/off; <code>Ctrl+W</code> swaps A and B. Compare auto-exits when the stack drops below 2 layers.</li>
         <li><b>Bake into your export</b> — tick "Bake A/B compare overlay" in the export dialog and the live wipe is reproduced for every frame written to disk.</li>
       </ul>
     </div>
@@ -1563,6 +1565,96 @@ footer a:hover { color: var(--accent); }
   </p>
 
   <div class="changelog">
+
+    <article class="release">
+      <div class="release-meta">
+        <span class="ver">
+          <a href="https://github.com/llethanh/img_player/releases/tag/v1.4.5" style="color: inherit; text-decoration: none;">v1.4.5</a>
+        </span>
+        <span class="date">2026-05-12</span>
+        <span class="tagline">Hi-DPI splash polish.</span>
+      </div>
+      <div class="release-body">
+        <h4>Fixes</h4>
+        <ul>
+          <li class="fix"><strong>Splash now crisp on Hi-DPI displays</strong> — the bundled <code>splash.png</code> is now rendered at 2× the logical splash size (960×520 physical for a 480×260 logical splash) and the runtime loader tags the pixmap with <code>devicePixelRatio(2.0)</code>. Qt draws it 1:1 on Hi-DPI monitors instead of upscaling, so the text and icon stay sharp. 1× monitors get a clean downscale instead of native-pixel jaggies.</li>
+        </ul>
+      </div>
+    </article>
+
+    <article class="release">
+      <div class="release-meta">
+        <span class="ver">
+          <a href="https://github.com/llethanh/img_player/releases/tag/v1.4.4" style="color: inherit; text-decoration: none;">v1.4.4</a>
+        </span>
+        <span class="date">2026-05-12</span>
+        <span class="tagline">Compare overlay polish, selection HUD, smarter missing-frame card.</span>
+      </div>
+      <div class="release-body">
+        <h4>New</h4>
+        <ul>
+          <li><strong>On-image A/B markers</strong> — small orange "A" and "B" letters anchored to <em>image-space</em> corners (so they follow pan + zoom), with mode-aware placement: top-left/top-right for vertical wipe, top-right/bottom-right for horizontal wipe, top-left/top-right for opacity. In opacity mode each letter fades with the seam — at <code>seam = 0</code> only A is visible, at <code>1</code> only B, at <code>0.5</code> both half-visible — so the marker mirrors the live blend instead of competing with it.</li>
+          <li><strong>Numbered A/B dropdowns + A/B on the seam bar</strong> — compare-band dropdowns now prefix each layer with its row number (<code>"1. shot.exr"</code>) so the picker maps trivially to the layer panel's numbering. The seam bar in the menu row gets orange "A" / "B" end-labels flanking its centred "Split" caption.</li>
+          <li><strong>"Selected layers" readout in the status bar</strong> — a permanent segment at the bottom-right of the window shows the panel selection (<code>"1. plate.exr · 2. mask.png"</code>) in accent-orange monospace, prefixed with row numbers and mid-dot-separated for multi-select. Stays visible under transient <code>set_status</code> messages (load progress, in/out feedback, etc.).</li>
+          <li><strong>Missing-frame placeholder mirrors the info band</strong> — the rich error graphic under "MISSING FRAME / SEQUENCE ERROR" now stacks two strips matching the bottom HUD's layout: <code>LAYER 00220 / 01140</code> (source frame / source max) and <code>FRAME 01101 / 01140</code> (master / timeline max). Same zero-padding so consecutive missing frames line up vertically when scrubbed through.</li>
+        </ul>
+        <h4>Fixes</h4>
+        <ul>
+          <li class="fix"><strong>Compare auto-exits when the stack drops below 2 layers</strong> — removing a layer while in compare mode used to leave an empty "B" dropdown and a stale shader state. The compare band now closes itself (band hides, GL uniforms clear, overlay state resets) so the user isn't forced to click ✕ manually after every removal.</li>
+          <li class="fix"><strong>Picker warns before silently importing nothing</strong> — accepting the multi-source sequence picker with zero rows ticked used to dismiss the dialog and load 0 sequences (= silent no-op). Now a Yes/No popup confirms <em>"You haven't ticked any sequence — close anyway?"</em> with No as default, so a forgotten click doesn't quietly drop the drop.</li>
+        </ul>
+      </div>
+    </article>
+
+    <article class="release">
+      <div class="release-meta">
+        <span class="ver">
+          <a href="https://github.com/llethanh/img_player/releases/tag/v1.4.3" style="color: inherit; text-decoration: none;">v1.4.3</a>
+        </span>
+        <span class="date">2026-05-11</span>
+        <span class="tagline">Picker columns, layer right-click menu, truthful per-channel cache.</span>
+      </div>
+      <div class="release-body">
+        <h4>New</h4>
+        <ul>
+          <li><strong>Column-laid sequence picker</strong> — multi-source picker now shows resolution, frame range, and a <em>complete / partial / single-frame</em> status badge per row in aligned columns (computed once from the longest text in each column so a 30-sequence drop reads cleanly). The "select only complete" button ticks multi-frame sequences with no missing frames in one click.</li>
+          <li><strong>Right-click context menu on layer rows</strong> — Reorder up/down, isolate, duplicate, delete (single + multi-select), reset offset / trim, toggle channel mute, jump-to-layer-start. Multi-select aware: actions cascade across the whole selection group.</li>
+          <li><strong>Beauty-pass-protected channel eviction</strong> — when RAM hits budget the cache now evicts entire channels FIFO (oldest cached channel first), keeping the beauty pass (RGB / RGBA) as the last to drop. Replaces the previous "slice across channels" eviction which left every channel half-cached and unusable.</li>
+          <li><strong>Per-channel progress tells the truth</strong> — the orange fill bar on each channel row now excludes missing-frame placeholders from the "cached" count, so a sparse sequence no longer shows 100% loaded when half the slots are gap placeholders.</li>
+        </ul>
+        <h4>Fixes</h4>
+        <ul>
+          <li class="fix"><strong>Alt-channel pre-cache no longer thrashes under RAM pressure</strong> — when the active channel had filled the budget, the background pre-cache used to keep submitting alt-channel decodes that immediately got evicted by the prefetch around the playhead. Pre-cache now suspends itself when free budget &lt; one frame's worth, instead of churning the worker pool.</li>
+          <li class="fix"><strong>Pure-offset drag is now a rekey for multi-layer stacks too</strong> — dragging a layer's offset slider used to invalidate every cached entry for that layer (full re-decode on release). Multi-layer stacks now reuse the single-layer rekey path: cached entries are remapped to the new master frames in place, no decode triggered.</li>
+          <li class="fix"><strong>Scrub error gone</strong> — <code>'PlaybackState' object has no attribute 'frame'</code> on scrub release was a typo in the re-decode helper. Reading <code>state.current_frame</code> instead.</li>
+          <li class="fix">Splash <code>Loading…</code> ghost — the bundled PNG no longer bakes a placeholder status string; only the runtime <code>showMessage()</code> paints, so the user no longer sees two overlapping <em>"Loading Flick Player…"</em> lines on cold boot.</li>
+          <li class="fix">Build chain — auto-regenerate splash PNG on each PyInstaller run (so a version bump can't drift behind the splash label) and drop a <code>Flick Player v&lt;version&gt;.txt</code> marker next to the .exe so a quick listing tells you which build you've got.</li>
+        </ul>
+      </div>
+    </article>
+
+    <article class="release">
+      <div class="release-meta">
+        <span class="ver">
+          <a href="https://github.com/llethanh/img_player/releases/tag/v1.4.2" style="color: inherit; text-decoration: none;">v1.4.2</a>
+        </span>
+        <span class="date">2026-05-10</span>
+        <span class="tagline">Video scrub fast-seek, channel-mode redesign, off-thread scan.</span>
+      </div>
+      <div class="release-body">
+        <h4>New</h4>
+        <ul>
+          <li><strong>Fast-seek mode on video scrub</strong> — during a drag-scrub gesture, the PyAV decoder switches to keyframe-only seeks (5-15 ms → 1-3 ms per seek on long-GOP H.264 / H.265) and falls back to precise seeks on release, with a final re-request at the landing frame so the playhead lands exactly. Scrubbing a 4K H.265 clip now feels as responsive as scrubbing an EXR sequence.</li>
+          <li><strong>Master volume popup</strong> on the transport bar — a small slider lives behind the speaker icon for one-click master gain, persisted across launches. Pairs with the per-layer M/S audio buttons that already live on each row.</li>
+          <li><strong>Channel mode + BG button redesign</strong> — RGB / R / G / B / A / Alpha-solo and the transparency-background picker share the same pill rail above the channel list, smaller and tighter than the previous double-row layout.</li>
+          <li><strong>Off-thread sequence scan</strong> — dropping a folder with thousands of frames no longer freezes the UI during enumeration. Scan runs on a worker; the drop overlay stays responsive and the picker pops as soon as the scan finishes.</li>
+        </ul>
+        <h4>Fixes</h4>
+        <ul>
+          <li class="fix">Channel menu rows stay legible under the cache-fill bar at any fill percentage — text repaints in the cream <code>#FFE5C0</code> tone clipped to the filled region, so the label reads cleanly across the seam between filled and empty parts of the bar.</li>
+        </ul>
+      </div>
+    </article>
 
     <article class="release">
       <div class="release-meta">
