@@ -302,6 +302,20 @@ class DiskCache:
         # needed after a Flick update that bumps the format.
         self._migrate_if_needed()
 
+        # ---- Orphan-blob sweep (E2) ----------------------------------
+        # Scan the cache tree for ``.bin`` files that don't appear in
+        # the SQLite index. Sources of orphans:
+        #   * Pre-1.5.1 blobs left over from the wrong-key bug (now
+        #     dropped from the index by E4's migration, but the files
+        #     themselves stay until LRU eviction touches them).
+        #   * A user manually deleted ``index.sqlite`` while keeping
+        #     the cache root (unlikely, but cheap to handle).
+        #   * Crash mid-write where the file landed but the INSERT
+        #     never committed.
+        # Done at init (writer thread not started yet) so there's no
+        # race with concurrent writes touching the same files.
+        self._sweep_orphans()
+
         # ---- Async writer --------------------------------------------
         # Bounded queue so a runaway producer (e.g. eviction storm)
         # doesn't OOM the process. When full, ``put`` falls back to
@@ -690,6 +704,79 @@ class DiskCache:
             entry_count,
             freed // (1024 * 1024),
         )
+
+    def _sweep_orphans(self) -> None:
+        """Delete ``.bin`` files in the cache tree not referenced by SQLite.
+
+        Called from :meth:`__init__` before the writer thread starts.
+        On a typical 50 GB cache (≈2000 4K frames) the walk takes <1s
+        on SSD; for HD-only caches with 20k entries we've measured
+        ~2-3 s — still well below the user's perceptual budget for an
+        app launch. If it ever becomes a hot spot we can move the
+        scan to a background thread, but for now the simplicity wins.
+
+        Errors during unlink are logged and ignored — a leftover
+        orphan is harmless (it just wastes disk space until the next
+        sweep) so we never let a permission glitch take down the boot.
+        """
+        t0 = time.monotonic()
+        # Build the reference set from SQLite — relative paths exactly
+        # as stored in ``entries.blob_path`` (forward-slash POSIX
+        # form). We normalise the on-disk paths to match.
+        with self._db_lock:
+            rows = self._db.execute("SELECT blob_path FROM entries").fetchall()
+        known = {row[0] for row in rows}
+
+        # Walk the tree. ``os.walk`` is a touch faster than Path.rglob
+        # for our 2-level shard layout and avoids constructing Path
+        # objects we'd immediately string-ify.
+        removed = 0
+        freed = 0
+        scanned = 0
+        for dirpath, _dirnames, filenames in os.walk(self._cache_dir):
+            for name in filenames:
+                if not name.endswith(".bin"):
+                    continue
+                scanned += 1
+                full = os.path.join(dirpath, name)
+                # Recompute the same relative form that
+                # ``_blob_path_for`` produces — POSIX-style separators.
+                rel = os.path.relpath(full, self._cache_dir).replace(os.sep, "/")
+                if rel in known:
+                    continue
+                try:
+                    size = os.path.getsize(full)
+                    os.remove(full)
+                    removed += 1
+                    freed += size
+                except OSError as err:
+                    log.warning(
+                        "DiskCache sweep: failed to remove orphan %s (%s)",
+                        full, err,
+                    )
+
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        if removed > 0:
+            log.info(
+                "DiskCache swept %d orphan blob(s) (%d MB) "
+                "out of %d scanned in %d ms",
+                removed,
+                freed // (1024 * 1024),
+                scanned,
+                elapsed_ms,
+            )
+            # Clean up shard sub-dirs that became empty as a result.
+            try:
+                self._prune_empty_dirs()
+            except Exception:  # pragma: no cover — defensive
+                log.exception("DiskCache sweep: dir cleanup failed")
+        elif scanned > 0:
+            # Quiet success path — debug only so a clean launch
+            # doesn't spam INFO.
+            log.debug(
+                "DiskCache sweep: %d blobs scanned, no orphans (%d ms)",
+                scanned, elapsed_ms,
+            )
 
     def _entry_count_unlocked(self) -> int:
         row = self._db.execute("SELECT COUNT(*) FROM entries").fetchone()

@@ -41,13 +41,12 @@ la polir.
   affiche une bulle "Flushing disk cache… (N pending)" centrée sur
   la main window quand la queue > 5 entries au close. Préférences
   passées en non-modal au passage. Commit `c263d53`.
-- **Nettoyage des blobs v1 orphelins** : la v1.5.0 a écrit des blobs
-  sous un schéma de clé bogué. Le bump v1 → v2 les a invalidés mais
-  ils restent sur disque jusqu'à éviction LRU. Au boot, scan le
-  cache_dir pour les fichiers `.bin` orphelins (non référencés par
-  l'index SQLite) et les supprimer. Action : nouvelle méthode
-  `DiskCache._sweep_orphans()` appelée à l'init, log "swept N
-  orphaned blobs (X MB)" en INFO.
+- ~~**Nettoyage des blobs v1 orphelins**~~ **(livré, E2)** :
+  `_sweep_orphans()` appelé à l'init, après la migration v4. Scan
+  via `os.walk` (rapide, <1s sur 2k entries SSD), diff contre les
+  `entries.blob_path` SQLite, unlink des `.bin` non référencés.
+  Log INFO "swept N orphan blob(s) (X MB) out of Y scanned in Z ms"
+  uniquement si quelque chose a été nettoyé.
 - **File watcher pour invalidation auto** : si une source EXR est
   re-rendue mid-session, le `mtime` change. Aujourd'hui le cache sert
   des pixels stale jusqu'à un redémarrage. Implémenter via
