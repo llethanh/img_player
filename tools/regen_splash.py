@@ -80,11 +80,9 @@ def regenerate(root: Path | None = None) -> Path:
     try:
         title_font = ImageFont.truetype("arialbd.ttf", 22)
         version_font = ImageFont.truetype("arial.ttf", 12)
-        status_font = ImageFont.truetype("arial.ttf", 11)
     except OSError:
         title_font = ImageFont.load_default()
         version_font = ImageFont.load_default()
-        status_font = ImageFont.load_default()
 
     title = "Flick Player"
     version_label = f"v{version}"
@@ -100,13 +98,11 @@ def regenerate(root: Path | None = None) -> Path:
         ((width - version_w) // 2, 162),
         version_label, fill=(138, 138, 142), font=version_font,
     )
-    # Demo status text — overwritten at runtime by ``splash.update``
-    # when the bundled exe boots.
-    draw.text(
-        (40, 240),
-        "Loading Flick Player…",
-        fill=(255, 255, 255), font=status_font,
-    )
+    # NB: no baked-in status text. ``splash.update`` paints the runtime
+    # status via ``QSplashScreen.showMessage`` which draws on top of the
+    # pixmap rather than replacing it — if we bake a placeholder string
+    # here it stays visible as a ghost under the live message, giving
+    # the user two overlapping "Loading…" lines.
 
     asset_path.parent.mkdir(parents=True, exist_ok=True)
     img.save(asset_path, "PNG")

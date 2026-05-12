@@ -41,6 +41,8 @@ set ACTIVATE=
 if exist "%USERPROFILE%\miniforge3\Scripts\activate.bat" set ACTIVATE="%USERPROFILE%\miniforge3\Scripts\activate.bat"
 if not defined ACTIVATE if exist "%USERPROFILE%\miniconda3\Scripts\activate.bat" set ACTIVATE="%USERPROFILE%\miniconda3\Scripts\activate.bat"
 if not defined ACTIVATE if exist "%USERPROFILE%\anaconda3\Scripts\activate.bat" set ACTIVATE="%USERPROFILE%\anaconda3\Scripts\activate.bat"
+if not defined ACTIVATE if exist "%LOCALAPPDATA%\miniforge3\Scripts\activate.bat" set ACTIVATE="%LOCALAPPDATA%\miniforge3\Scripts\activate.bat"
+if not defined ACTIVATE if exist "%LOCALAPPDATA%\miniconda3\Scripts\activate.bat" set ACTIVATE="%LOCALAPPDATA%\miniconda3\Scripts\activate.bat"
 if not defined ACTIVATE if exist "%ProgramData%\miniforge3\Scripts\activate.bat" set ACTIVATE="%ProgramData%\miniforge3\Scripts\activate.bat"
 if not defined ACTIVATE (
     echo.
