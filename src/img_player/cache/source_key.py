@@ -102,8 +102,15 @@ def source_key_for_layer_frame(
     canonical = str(source_path).replace("\\", "/")
     if canonical and canonical[1:2] == ":":  # "C:/Users/..." → windows-ish
         canonical = canonical.lower()
+    # Version prefix bumped to ``v2`` when we fixed the channel-key
+    # mismatch in 1.5.1 (the live-state read in ``_source_key_at``
+    # caused alt-channel decodes to write blobs under the wrong key,
+    # mixing channels in the disk cache). Old v1 blobs stay on disk
+    # but are effectively orphaned — LRU eviction sweeps them on the
+    # next budget overrun, or the user clears manually via
+    # Preferences > Disk cache > Clear cache now.
     payload = (
-        f"v1|{canonical}|{int(mtime * 1000)}|{int(size)}|"
+        f"v2|{canonical}|{int(mtime * 1000)}|{int(size)}|"
         f"{channel_str}|{int(alpha_composite)}{int(alpha_is_straight)}"
     )
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()
@@ -122,7 +129,7 @@ def composite_source_key(per_layer_keys: Iterable[str]) -> str:
     :func:`source_key_for_layer_frame`.
     """
     h = hashlib.sha1()
-    h.update(b"composite-v1|")
+    h.update(b"composite-v2|")  # bumped alongside the per-layer v2 above
     for k in per_layer_keys:
         h.update(k.encode("ascii"))
         h.update(b"|")

@@ -774,15 +774,23 @@ class MasterFrameCache:
         # user toggles channels between submit and store, the in-
         # flight buffer lands under the original signature (still
         # accessible if they switch back) and a fresh request fires
-        # under the new signature.
+        # under the new signature. Same idea for ``disk_key``: it
+        # must be computed from the captured channel selection so
+        # the disk cache writes/reads agree on what's in the blob
+        # (the live state at decode time can differ — e.g. the user
+        # switched channels while the worker was queued).
         with self._lock:
             sig = self._signature_at(master_frame)
+            disk_key = self._source_key_for_single_layer(
+                layer, master_frame, channels,
+            )
         return self._pool.submit(
             priority,
             (master_frame, sig),
             lambda: self._decode_and_store(
                 master_frame, sig, path, channels, ph_w, ph_h,
                 strip_alpha=strip_alpha,
+                disk_key=disk_key,
             ),
         )
 
@@ -984,6 +992,15 @@ class MasterFrameCache:
             ph_w = layer.sequence.width or 512
             ph_h = layer.sequence.height or 512
             strip_alpha = not layer.alpha_composite
+            # Same submit-time capture as the live decode path —
+            # the disk key uses the *override* channels we're about
+            # to decode with, not the live state. Without this the
+            # alt-channel prefetch would write each blob under the
+            # live channel's source key in the disk cache, scrambling
+            # cross-session lookups.
+            disk_key = self._source_key_for_single_layer(
+                layer, master_frame, channels,
+            )
             return self._pool.submit(
                 priority,
                 key,
@@ -991,6 +1008,7 @@ class MasterFrameCache:
                     lambda: self._decode_and_store(
                         master_frame, sig, path, channels, ph_w, ph_h,
                         strip_alpha=strip_alpha,
+                        disk_key=disk_key,
                     ),
                 ),
             )
@@ -1015,12 +1033,19 @@ class MasterFrameCache:
             stack_idx = covering_ids.index(bottom_id)
             if stack_idx < len(covering_ids) - 1:
                 plan[-1]["is_opaque_floor"] = True
+        # Same submit-time disk-key capture as the live composite
+        # path — plan's per-layer channels (with the focused layer's
+        # override applied) drive the key, not the live state.
+        with self._lock:
+            disk_key = self._composite_disk_key_for_plan(
+                master_frame, plan,
+            )
         return self._pool.submit(
             priority,
             key,
             self._make_alt_task(
                 lambda: self._decode_composited_and_store(
-                    master_frame, sig, plan,
+                    master_frame, sig, plan, disk_key=disk_key,
                 ),
             ),
         )
@@ -1313,15 +1338,101 @@ class MasterFrameCache:
         add / remove, trim)."""
         self._signature_cache.clear()
 
+    def _composite_disk_key_for_plan(
+        self,
+        master_frame: int,
+        plan: list[dict],
+    ) -> str | None:
+        """Build the composite disk-cache key from a submit-time
+        ``plan`` (list of per-contributor dicts built by
+        :meth:`_submit_composite` / the alt-channel override path).
+
+        Each plan entry already carries the captured ``channels`` for
+        its contributor; we look the layer up by id to read its
+        alpha flags + path/mtime. Returns ``None`` if any contributor
+        can't be resolved (the cache then skips the disk write/read
+        for that frame — fine, just slower).
+        """
+        if self._disk_cache is None or not plan:
+            return None
+        per_layer: list[str] = []
+        for entry in plan:
+            layer = self._stack.find(entry["layer_id"])
+            if layer is None:
+                return None
+            key = self._source_key_for_single_layer(
+                layer, master_frame, entry.get("channels"),
+            )
+            if key is None:
+                return None
+            per_layer.append(key)
+            # Plans use the same "stop after the first opaque floor"
+            # convention as :meth:`_signature_at`. Honour it here so
+            # the composite key matches the actual decode walk.
+            if entry.get("is_opaque_floor"):
+                break
+        if not per_layer:
+            return None
+        if len(per_layer) == 1:
+            return per_layer[0]
+        return composite_source_key(per_layer)
+
+    def _source_key_for_single_layer(
+        self,
+        layer: Layer,
+        master_frame: int,
+        channels: list[str] | None,
+    ) -> str | None:
+        """Compute the disk-cache key for one layer's contribution at
+        ``master_frame`` using **explicit** ``channels``.
+
+        Bypasses ``layer.channel_selection`` (= live state) so the
+        key matches what the decode worker will actually decode. This
+        is what callers should use at **submit time** to capture a
+        stable key alongside the captured ``signature``; using the
+        live state at decode time race-conditions with the user
+        toggling channels (or with the alt-channel prefetch which
+        decodes one channel while the live state is on another).
+        """
+        if self._disk_cache is None:
+            return None
+        source_frame = layer.source_frame_at(master_frame)
+        path_map = self._path_index.get(layer.id)
+        mtime_map = self._mtime_index.get(layer.id)
+        if path_map is None or mtime_map is None:
+            return None
+        path = path_map.get(source_frame)
+        mtime = mtime_map.get(source_frame)
+        if path is None or mtime is None:
+            return None
+        return source_key_for_layer_frame(
+            source_path=path,
+            mtime=float(mtime),
+            size=0,
+            channels=channels,
+            alpha_composite=bool(layer.alpha_composite),
+            alpha_is_straight=bool(layer.alpha_is_straight),
+        )
+
     def _source_key_at(self, master_frame: int) -> str | None:
         """Compute the **session-independent** disk-cache key for the
-        chain at ``master_frame``.
+        live chain at ``master_frame``.
 
         Mirrors :meth:`_signature_at` (same chain walk, same channel
         rules) but swaps each layer's session-local ``id`` for a
         canonical ``(path, mtime, channels, alpha flags)`` tuple. Two
         sessions opening the same EXR with the same channel selection
         get the same key — that's the whole point of the disk tier.
+
+        .. warning::
+           Uses **live state**. At decode time the live state may
+           differ from the state-at-submit (alt-channel prefetch,
+           mid-decode user toggle, …). Decode workers should compute
+           and pass the key from submit-time state via
+           :meth:`_source_key_for_single_layer` instead; this helper
+           is for code paths that need the key from a synchronous
+           read context (none today, kept for completeness / future
+           use cases).
 
         Returns ``None`` when the key can't be meaningfully built:
           * no visible layer covers this frame (= gap, nothing to
@@ -2042,19 +2153,28 @@ class MasterFrameCache:
         # Capture the signature at submit time — the worker will store
         # under the same key even if the stack mutates mid-decode, so
         # the in-flight buffer lands as a "stale" snapshot accessible
-        # if the user reverts.
+        # if the user reverts. Same capture for the disk key, built
+        # from the plan's per-layer channels so the cross-session
+        # cache key matches the bytes being decoded.
         with self._lock:
             sig = self._signature_at(master_frame)
+            disk_key = self._composite_disk_key_for_plan(
+                master_frame, plan,
+            )
         return self._pool.submit(
             priority,
             (master_frame, sig),
             lambda: self._decode_composited_and_store(
-                master_frame, sig, plan,
+                master_frame, sig, plan, disk_key=disk_key,
             ),
         )
 
     def _decode_composited_and_store(
-        self, master_frame: int, signature: str, plan: list[dict],
+        self,
+        master_frame: int,
+        signature: str,
+        plan: list[dict],
+        disk_key: str | None = None,
     ) -> None:
         """Worker entry: decode each layer's contribution + over-blend
         front-to-back. The first plan entry is the topmost.
@@ -2066,12 +2186,19 @@ class MasterFrameCache:
           fully opaque (force its alpha to 1.0) so layers below are
           masked. Reached when the walker hit a non-composing layer.
 
+        ``disk_key`` is the cross-session cache key computed at submit
+        time (from the captured plan's per-contributor channels). It
+        must come from the same state that built ``plan`` — passing
+        ``None`` skips disk-tier read + write entirely for this
+        decode, which is the safe choice when the key couldn't be
+        resolved at submit time (e.g. a layer was reordered out of
+        the chain between submit and run).
+
         Math (everything in premult):
             accum = top + arr * (1 - accum.a)
         """
         with self._lock:
             epoch = self._epoch
-            disk_key = self._source_key_at(master_frame)
         key = (master_frame, signature)
         # Disk-tier lookup — same fast path as in ``_decode_and_store``
         # but for the multi-layer composite case. The disk cache key
@@ -2195,6 +2322,7 @@ class MasterFrameCache:
         placeholder_w: int,
         placeholder_h: int,
         strip_alpha: bool = False,
+        disk_key: str | None = None,
     ) -> None:
         """Worker entry point — runs on a decode thread.
 
@@ -2211,10 +2339,16 @@ class MasterFrameCache:
         PNG with an alpha channel would still feed the shader an
         ``alpha < 1`` value and surface the checker even though the
         user explicitly disabled transparency on the layer.
+
+        ``disk_key`` is the cross-session cache key computed at submit
+        time (from the captured ``channels`` selection). Critical that
+        it doesn't get recomputed here from *live* state — the alt-
+        channel prefetch decodes with overridden channels while the
+        live state is on another, and a mismatched key reads / writes
+        the wrong blob, mixing channels across cache slots.
         """
         with self._lock:
             epoch = self._epoch
-            disk_key = self._source_key_at(master_frame)
         key = (master_frame, signature)
         # Disk-tier lookup — short-circuit the expensive ``read_frame``
         # when the same source was decoded in a previous session (or
