@@ -281,6 +281,12 @@ hidden += collect_submodules("PyOpenColorIO")
 hidden += collect_submodules("av")
 # sounddevice + its CFFI shim. ``_sounddevice`` is the compiled bridge.
 hidden += ["sounddevice", "_sounddevice", "_cffi_backend", "cffi"]
+# lz4 is loaded lazily inside ``img_player.cache.disk_cache`` (wrapped in
+# a try / except so the disk cache degrades gracefully to stdlib zlib).
+# Without this hint PyInstaller's static scan misses ``lz4.frame`` and
+# the bundle silently falls back to the slow path even though the dep
+# is in the env. The full submodule set is small.
+hidden += collect_submodules("lz4")
 hidden += [
     "OpenGL.platform.win32",
     "OpenGL.arrays.ctypesarrays",
