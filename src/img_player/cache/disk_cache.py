@@ -93,6 +93,11 @@ class DiskCacheStats:
     entries: int = 0
     size_bytes: int = 0
     budget_bytes: int = 0
+    # True when another Flick instance already holds the cache-dir
+    # lock — writes are no-ops, only reads work. The UI uses this to
+    # show a "(read-only — second instance)" badge in Preferences so
+    # the user understands why the write counters never tick.
+    read_only: bool = False
 
     @property
     def hit_rate(self) -> float:
@@ -164,6 +169,46 @@ _BLOB_MAGIC = b"FCD1"
 #   * v1 — bogus key schema (live-state instead of submit-state).
 #   * v2 — corrected key schema, lz4 + half-float blobs (current).
 _CACHE_FORMAT_VERSION = 2
+
+
+def _try_acquire_lock(lock_path: Path):  # type: ignore[no-untyped-def]
+    """Acquire an exclusive non-blocking file lock cross-platform.
+
+    Used to detect a second Flick instance sharing the same cache
+    directory. Returns the open file handle on success (caller keeps
+    it alive for the duration of the lock) or ``None`` if another
+    process already holds it.
+
+    On Windows we use :func:`msvcrt.locking` with ``LK_NBLCK``; on
+    POSIX :func:`fcntl.flock` with ``LOCK_EX | LOCK_NB``. Both APIs
+    release the lock when the file handle is closed, so the caller
+    only has to remember to ``close()`` at shutdown.
+    """
+    try:
+        fh = open(lock_path, "ab")  # noqa: SIM115 — handle held by caller
+    except OSError as err:
+        log.warning("DiskCache: could not open lock file %s (%s)", lock_path, err)
+        return None
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+
+            # Lock 1 byte at offset 0; non-blocking. Re-issued by the
+            # same process is fine (re-locking own region is allowed).
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+        else:  # pragma: no cover — non-Windows
+            import fcntl
+
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        # Another process holds the lock. Close our handle (which
+        # would otherwise leak) and signal read-only fallback.
+        try:
+            fh.close()
+        except OSError:
+            pass
+        return None
+    return fh
 
 
 def _compress(payload: bytes) -> bytes:
@@ -263,6 +308,23 @@ class DiskCache:
         self._cache_dir.mkdir(parents=True, exist_ok=True)
         self._budget_bytes = max(0, int(budget_bytes))
 
+        # ---- Multi-process lock (F) ----------------------------------
+        # Acquire <cache_dir>/.lock so a second Flick instance can't
+        # mutate this cache concurrently. SQLite WAL handles overlapping
+        # reads/writes safely, but the side-channel blob files don't —
+        # two writer threads could race on the same blob path and leave
+        # a truncated file. If the lock is already held, we fall back
+        # to read-only mode: queries (get / contains_keys) still work,
+        # but puts / writes / clears become no-ops with a debug log.
+        self._lock_file = _try_acquire_lock(self._cache_dir / ".lock")
+        self._read_only = self._lock_file is None
+        if self._read_only:
+            log.warning(
+                "DiskCache at %s: another instance holds the lock — "
+                "running read-only (writes will be dropped)",
+                self._cache_dir,
+            )
+
         # ---- SQLite index --------------------------------------------
         db_path = self._cache_dir / "index.sqlite"
         # ``check_same_thread=False`` because both the main thread
@@ -300,7 +362,10 @@ class DiskCache:
         # so we wipe them once at boot. The user sees a single INFO
         # log line — no dialog interrupt, no manual "Clear cache now"
         # needed after a Flick update that bumps the format.
-        self._migrate_if_needed()
+        # Skipped in read-only mode: the owning instance will run the
+        # migration when it boots; we just consume whatever's there.
+        if not self._read_only:
+            self._migrate_if_needed()
 
         # ---- Orphan-blob sweep (E2) ----------------------------------
         # Scan the cache tree for ``.bin`` files that don't appear in
@@ -314,7 +379,10 @@ class DiskCache:
         #     never committed.
         # Done at init (writer thread not started yet) so there's no
         # race with concurrent writes touching the same files.
-        self._sweep_orphans()
+        # Skipped in read-only mode — sweeping would race with the
+        # owning instance's writer.
+        if not self._read_only:
+            self._sweep_orphans()
 
         # ---- Async writer --------------------------------------------
         # Bounded queue so a runaway producer (e.g. eviction storm)
@@ -343,7 +411,13 @@ class DiskCache:
             name="DiskCacheWriter",
             daemon=True,
         )
-        self._writer_thread.start()
+        # In read-only mode the writer thread has nothing to do —
+        # ``put`` short-circuits before enqueueing, and we don't want
+        # the batched ``last_access`` flushes to compete with the
+        # owning instance for the WAL. ``shutdown`` still works (the
+        # thread checks ``self._shutdown`` so the join falls through).
+        if not self._read_only:
+            self._writer_thread.start()
 
         # Cached total size — updated atomically alongside SQLite
         # writes so callers don't pay an aggregate query per ``put``.
@@ -454,6 +528,12 @@ class DiskCache:
             return
         if self._shutdown.is_set():
             return
+        if self._read_only:
+            # Another instance owns the lock; we can read its blobs
+            # but must not write to avoid corrupting its index /
+            # blob files. Drop silently — cache stays correct via the
+            # natural cold-cache fallback (source decode).
+            return
         try:
             self._write_queue.put_nowait((key, arr))
         except queue.Full:
@@ -501,6 +581,10 @@ class DiskCache:
         """Synchronous delete. No-op if the entry doesn't exist."""
         if not key:
             return
+        if self._read_only:
+            # See :meth:`put` — another instance owns the cache,
+            # we must not mutate the index.
+            return
         self._remove_internal(key)
 
     def clear(self) -> int:
@@ -510,7 +594,18 @@ class DiskCache:
         the disk to free up). The writer thread is paused via a
         flag-check inside the writer loop so a pending write doesn't
         re-create files mid-clear.
+
+        Read-only mode no-ops: blowing away the index while another
+        instance is writing to it is the worst kind of cache
+        corruption. The user gets the "another instance" warning at
+        boot, that's the right place to address it.
         """
+        if self._read_only:
+            log.warning(
+                "DiskCache: clear() requested in read-only mode — ignored "
+                "(another Flick instance owns this cache directory)"
+            )
+            return 0
         # Drain pending writes first so nothing gets re-created after
         # we've removed it.
         self._drain_pending_writes(timeout_s=1.0)
@@ -552,12 +647,16 @@ class DiskCache:
 
         Triggers an immediate eviction round if the new budget is
         below current usage — frees disk on demand when the user
-        shrinks the limit.
+        shrinks the limit. Read-only no-ops the eviction (it would
+        mutate) but still records the budget locally so the UI
+        reflects the user's choice.
         """
         new = max(0, int(budget_bytes))
         if new == self._budget_bytes:
             return
         self._budget_bytes = new
+        if self._read_only:
+            return
         if new > 0 and self._total_bytes > new:
             self._evict_to_budget()
 
@@ -585,7 +684,12 @@ class DiskCache:
             entries=self.entry_count(),
             size_bytes=self._total_bytes,
             budget_bytes=self._budget_bytes,
+            read_only=self._read_only,
         )
+
+    def is_read_only(self) -> bool:
+        """True iff another instance owns the cache lock. UI uses this."""
+        return self._read_only
 
     def pending_writes(self) -> int:
         """Approximate queue depth of frames waiting to be written.
@@ -621,21 +725,37 @@ class DiskCache:
         """
         if self._shutdown.is_set():
             return
-        self._drain_pending_writes(
-            timeout_s=timeout_s,
-            progress_callback=progress_callback,
-        )
-        self._shutdown.set()
-        try:
-            self._write_queue.put_nowait(_SHUTDOWN_SENTINEL)
-        except queue.Full:
-            pass
-        self._writer_thread.join(timeout=timeout_s)
+        # Drain + join only matter when the writer thread is actually
+        # running. In read-only mode the queue is always empty and
+        # the thread was never started — calling .join() on a fresh
+        # Thread instance raises RuntimeError.
+        if not self._read_only:
+            self._drain_pending_writes(
+                timeout_s=timeout_s,
+                progress_callback=progress_callback,
+            )
+            self._shutdown.set()
+            try:
+                self._write_queue.put_nowait(_SHUTDOWN_SENTINEL)
+            except queue.Full:
+                pass
+            self._writer_thread.join(timeout=timeout_s)
+        else:
+            self._shutdown.set()
         with self._db_lock:
             try:
                 self._db.close()
             except sqlite3.Error:
                 pass
+        # Release the cross-process lock by closing the file handle.
+        # The OS auto-releases the byte-range lock on close; this also
+        # lets a second instance acquire the cache after we exit.
+        if self._lock_file is not None:
+            try:
+                self._lock_file.close()
+            except OSError:
+                pass
+            self._lock_file = None
 
     # ------------------------------------------------------------------ Internals
 

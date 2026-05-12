@@ -64,13 +64,15 @@ la polir.
 
 #### F — Multi-process safety (priorité moyenne)
 
-- **Lock file** : si l'utilisateur lance 2 instances de Flick en
-  parallèle, elles peuvent écrire concurrent dans `index.sqlite`.
-  SQLite WAL gère mais les blobs side-channel pas vraiment.
-  Implémentation : créer `<cache_dir>/.lock` au boot via `fcntl` /
-  `msvcrt.locking`. Si déjà locké → fallback à un mode "read-only"
-  (queries OK, pas de write) avec un warning log. Code à ajouter :
-  `cache/disk_cache.py::__init__()`.
+- ~~**Lock file**~~ **(livré, F)** : `<cache_dir>/.lock` acquis au
+  boot via `msvcrt.locking` (Windows) / `fcntl.flock` (POSIX) en
+  mode `LK_NBLCK` / `LOCK_NB`. Si déjà locké → `_read_only = True`,
+  writer thread non démarré, `put` / `remove` / `clear` /
+  `set_budget` no-op silencieux (ou warning explicit pour `clear`).
+  Migration + sweep aussi skipés. Statut exposé via
+  `is_read_only()` + `DiskCacheStats.read_only` ; bannière "⚠
+  Read-only — another Flick instance owns this cache" dans
+  Preferences > Disk cache.
 
 #### Perf supplémentaires (priorité basse)
 

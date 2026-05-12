@@ -555,7 +555,16 @@ class _DiskCachePage(QWidget):
         written_mb = stats.bytes_written / (1024 ** 2)
         total_reads = stats.hits + stats.misses
         hit_pct = 100.0 * stats.hit_rate if total_reads > 0 else 0.0
+        # Read-only banner appears as a prefix when another Flick
+        # instance owns the cache directory — explains why ``Writes``
+        # stays at 0 even though the user is scrubbing fresh frames.
+        readonly_prefix = ""
+        if getattr(stats, "read_only", False):
+            readonly_prefix = (
+                "⚠ Read-only — another Flick instance owns this cache.\n"
+            )
         self._usage_label.setText(
+            f"{readonly_prefix}"
             f"Used: {used_gb:.2f} GB  ·  {stats.entries} entries  ·  "
             f"Budget: {budget_str}\n"
             f"Hits: {stats.hits} / {total_reads}  "
