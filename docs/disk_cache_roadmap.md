@@ -36,12 +36,11 @@ la polir.
 
 #### E — Robustesse (priorité haute)
 
-- **Timeout shutdown plus généreux** : actuellement `DiskCache.shutdown`
-  flush avec un timeout de 2 s. Si le writer thread a 100 frames en
-  queue à 50 ms l'unité = 5 s nécessaires. Frames décodées juste avant
-  la fermeture sont perdues. Passer le timeout à 10 s + offrir un
-  retour visuel ("flushing disk cache…") si > 1 s. Code à modifier :
-  `cache/disk_cache.py::shutdown()`.
+- ~~**Timeout shutdown plus généreux**~~ **(livré, E1)** :
+  `DiskCache.shutdown` passé à 10 s + callback de progression. App
+  affiche une bulle "Flushing disk cache… (N pending)" centrée sur
+  la main window quand la queue > 5 entries au close. Préférences
+  passées en non-modal au passage. Commit `c263d53`.
 - **Nettoyage des blobs v1 orphelins** : la v1.5.0 a écrit des blobs
   sous un schéma de clé bogué. Le bump v1 → v2 les a invalidés mais
   ils restent sur disque jusqu'à éviction LRU. Au boot, scan le
@@ -57,11 +56,12 @@ la polir.
   invalider l'entrée. Attention : un re-render touche typiquement
   tous les fichiers — débouncer le watcher (~200 ms) pour éviter une
   cascade d'invalidations.
-- **Migration v1.5.0 → v1.5.4 propre** : au boot, si la version
-  enregistrée (à ajouter dans `index.sqlite` comme PRAGMA
-  `user_version`) est < 2, faire un clear automatique avec message
-  utilisateur. Évite que l'utilisateur ait à "Clear cache now" à la
-  main après mise à jour.
+- ~~**Migration v1.5.0 → v1.5.4 propre**~~ **(livré, E4)** : PRAGMA
+  `user_version` lu au boot via `_migrate_if_needed`. Si version
+  on-disk < `_CACHE_FORMAT_VERSION` (= 2 aujourd'hui) ET qu'il y a
+  des entries → wipe auto des blobs + DELETE des rows + bump.
+  Fresh DB stampée silencieusement. Plus de "Clear cache now" manuel
+  après upgrade de format.
 
 #### F — Multi-process safety (priorité moyenne)
 

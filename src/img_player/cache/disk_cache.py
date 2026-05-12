@@ -152,6 +152,19 @@ import zlib
 # the cache root. Bumped if the on-disk format ever changes.
 _BLOB_MAGIC = b"FCD1"
 
+# Current on-disk format / key version, stored as SQLite
+# ``PRAGMA user_version``. Bump alongside any change that invalidates
+# existing blobs (key schema, serialisation layout, …). When the cache
+# opens an index whose ``user_version`` is below this, it auto-clears
+# the cache once at boot rather than letting the user discover stale
+# pixels and reach for the "Clear cache now" button manually.
+#
+# History:
+#   * v0 — initial 1.5.0 ship; PRAGMA never set.
+#   * v1 — bogus key schema (live-state instead of submit-state).
+#   * v2 — corrected key schema, lz4 + half-float blobs (current).
+_CACHE_FORMAT_VERSION = 2
+
 
 def _compress(payload: bytes) -> bytes:
     if _HAS_LZ4:
@@ -279,6 +292,15 @@ class DiskCache:
                 "CREATE INDEX IF NOT EXISTS idx_last_access "
                 "ON entries(last_access)",
             )
+
+        # ---- Format-version migration (E4) ---------------------------
+        # Before spinning up the writer thread, check the on-disk
+        # format version. If it's behind the current code, the blobs
+        # are guaranteed stale (bogus keys or obsolete serialisation),
+        # so we wipe them once at boot. The user sees a single INFO
+        # log line — no dialog interrupt, no manual "Clear cache now"
+        # needed after a Flick update that bumps the format.
+        self._migrate_if_needed()
 
         # ---- Async writer --------------------------------------------
         # Bounded queue so a runaway producer (e.g. eviction storm)
@@ -602,6 +624,72 @@ class DiskCache:
                 pass
 
     # ------------------------------------------------------------------ Internals
+
+    def _migrate_if_needed(self) -> None:
+        """Auto-wipe the cache when the on-disk format version is behind.
+
+        Reads ``PRAGMA user_version``; if below
+        :data:`_CACHE_FORMAT_VERSION` AND the index actually has stale
+        entries, drop all blobs + rows. New installs (version = 0,
+        zero entries) are stamped silently to the current version.
+
+        Called from :meth:`__init__` *before* the writer thread starts,
+        so there's no need to drain a queue — we can mutate the DB
+        and unlink blobs directly under the existing ``_db_lock``.
+        """
+        with self._db_lock:
+            row = self._db.execute("PRAGMA user_version").fetchone()
+            current_version = int(row[0]) if row else 0
+            if current_version >= _CACHE_FORMAT_VERSION:
+                return
+            entry_count = self._entry_count_unlocked()
+
+            if entry_count == 0:
+                # Fresh DB (or one previously cleared by the user).
+                # Just stamp the current version and move on; no log
+                # noise on first-launch installs.
+                self._db.execute(
+                    f"PRAGMA user_version = {_CACHE_FORMAT_VERSION}"
+                )
+                return
+
+            # Real migration: pre-existing entries from an older
+            # format. Wipe blobs + rows in one transaction equivalent
+            # (PRAGMA + autocommit). The list of blob_paths is read
+            # before the DELETE so we still know which files to unlink.
+            rows = self._db.execute(
+                "SELECT blob_path, size_bytes FROM entries",
+            ).fetchall()
+            freed = 0
+            for rel, size in rows:
+                blob_path = self._cache_dir / rel
+                try:
+                    blob_path.unlink(missing_ok=True)
+                    freed += int(size)
+                except OSError as err:
+                    log.warning(
+                        "DiskCache migration: failed to remove %s (%s)",
+                        blob_path, err,
+                    )
+            self._db.execute("DELETE FROM entries")
+            self._db.execute(
+                f"PRAGMA user_version = {_CACHE_FORMAT_VERSION}"
+            )
+        # Best-effort: drop the now-empty shard sub-dirs so a fresh
+        # ``ls`` shows a tidy root. Done outside the DB lock; harmless
+        # if it races with anything (the dirs will just be recreated
+        # by the next put).
+        try:
+            self._prune_empty_dirs()
+        except Exception:  # pragma: no cover — defensive
+            log.exception("DiskCache migration: dir cleanup failed")
+        log.info(
+            "DiskCache migrated v%d → v%d (wiped %d entries, %d MB)",
+            current_version,
+            _CACHE_FORMAT_VERSION,
+            entry_count,
+            freed // (1024 * 1024),
+        )
 
     def _entry_count_unlocked(self) -> int:
         row = self._db.execute("SELECT COUNT(*) FROM entries").fetchone()
