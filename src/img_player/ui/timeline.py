@@ -99,6 +99,14 @@ class Timeline(QWidget):  # type: ignore[misc]
         # gaps). Painted distinctly from cached / missing so the user
         # reads them as "no content" rather than "slow decode".
         self._gap_frames: frozenset[int] = frozenset()
+        # Master frames whose blob exists in the on-disk cache (= a
+        # previous session decoded them). Drawn as a dimmer orange
+        # behind the bright "in RAM" cached run so the user sees at a
+        # glance which frames are "warm on disk, not yet promoted to
+        # RAM" — usually means an instant scrub away from a hit. Set
+        # difference vs ``_cached_frames`` removes overlap so the
+        # dim-orange only shows where the bright orange isn't already.
+        self._disk_available_frames: frozenset[int] = frozenset()
         self._annotated_frames: frozenset[int] = frozenset()
         self._commented_frames: frozenset[int] = frozenset()
         self._scrubbing = False
@@ -172,6 +180,17 @@ class Timeline(QWidget):  # type: ignore[misc]
         if frames == self._gap_frames:
             return
         self._gap_frames = frames
+        self.update()
+
+    def set_disk_available_frames(self, frames: frozenset[int]) -> None:
+        """Frames known to live in the on-disk cache. Painted with a
+        dim orange wash behind the bright "in RAM" cached run, so
+        the user can tell at a glance that a session reopen is
+        already warm on disk before any frame is actually scrubbed
+        back into RAM. Idempotent: same set → no repaint."""
+        if frames == self._disk_available_frames:
+            return
+        self._disk_available_frames = frames
         self.update()
 
     def set_annotated_frames(self, frames: frozenset[int]) -> None:
@@ -381,6 +400,25 @@ class Timeline(QWidget):  # type: ignore[misc]
             painter.setBrush(QColor(160, 160, 160, 110))
             painter.setPen(QPen(QColor("#909090"), 1))
             self._draw_runs(painter, self._gap_frames)
+
+        # Pass 0.5 — dim-orange wash for frames known to be on disk
+        # (but not yet promoted to RAM). Drawn before the bright
+        # "in-RAM" pass so the bright orange overpaints when a frame
+        # ends up in both sets. Set difference removes the RAM /
+        # missing / gap overlap so this pass only paints "disk-only"
+        # frames. Brush is a 50%-saturation accent + 60% alpha → reads
+        # as a subdued version of the cache bar rather than a separate
+        # colour.
+        disk_only = (
+            self._disk_available_frames
+            - self._cached_frames
+            - self._missing_frames
+            - self._gap_frames
+        )
+        if disk_only:
+            painter.setBrush(QColor(232, 144, 28, 60))
+            painter.setPen(QPen(QColor(232, 144, 28, 120), 1))
+            self._draw_runs(painter, disk_only)
 
         # Pass 1 — orange runs of *real* cached frames (cached minus
         # missing). Drawn first so the red "missing" run lands on top

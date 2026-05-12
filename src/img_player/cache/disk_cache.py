@@ -65,9 +65,43 @@ import sqlite3
 import sys
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+
+
+@dataclass(frozen=True)
+class DiskCacheStats:
+    """Snapshot of the disk-cache counters.
+
+    Updated continuously by ``get()`` / ``put()`` / writer thread;
+    sampled via :meth:`DiskCache.stats` for the Preferences readout
+    and any future telemetry / debug overlay. Counters reset to 0
+    on process restart (the SQLite index doesn't persist them — they
+    describe runtime behaviour, not on-disk state).
+    """
+
+    hits: int = 0
+    misses: int = 0
+    writes: int = 0
+    evictions: int = 0
+    errors: int = 0
+    bytes_read: int = 0
+    bytes_written: int = 0
+    entries: int = 0
+    size_bytes: int = 0
+    budget_bytes: int = 0
+
+    @property
+    def hit_rate(self) -> float:
+        """Fraction of ``get()`` calls that landed a hit. ``0.0`` when
+        no calls have been made yet (avoids a divide-by-zero in the
+        Preferences readout's percentage formatter)."""
+        total = self.hits + self.misses
+        if total == 0:
+            return 0.0
+        return self.hits / total
 
 
 def default_cache_dir() -> Path:
@@ -283,6 +317,20 @@ class DiskCache:
             ).fetchone()
         self._total_bytes = int(row[0]) if row else 0
 
+        # ---- Runtime counters --------------------------------------
+        # Simple int increments — GIL guarantees atomicity for the
+        # ``+= 1`` patterns we use (no lock needed). Surfaced via
+        # :meth:`stats` for the Preferences readout / debug telemetry.
+        # Reset to 0 on process restart by design — these are
+        # session-scoped runtime counters, not on-disk state.
+        self._hits = 0
+        self._misses = 0
+        self._writes = 0
+        self._evictions = 0
+        self._errors = 0
+        self._bytes_read = 0
+        self._bytes_written = 0
+
         log.info(
             "DiskCache ready at %s (budget=%s, entries=%d, used=%d MB, "
             "compressor=%s)",
@@ -310,6 +358,7 @@ class DiskCache:
                 "SELECT blob_path FROM entries WHERE key = ?", (key,),
             ).fetchone()
         if row is None:
+            self._misses += 1
             return None
         blob_path = self._cache_dir / row[0]
         try:
@@ -323,6 +372,8 @@ class DiskCache:
                 "DiskCache blob missing at %s (%s); dropping index entry",
                 blob_path, err,
             )
+            self._errors += 1
+            self._misses += 1
             self._remove_internal(key)
             return None
         try:
@@ -332,8 +383,12 @@ class DiskCache:
                 "DiskCache failed to deserialize blob at %s; dropping",
                 blob_path,
             )
+            self._errors += 1
+            self._misses += 1
             self._remove_internal(key)
             return None
+        self._hits += 1
+        self._bytes_read += len(blob)
         # Stash the access timestamp for batched flush by the writer
         # thread (see ``_ACCESS_FLUSH_INTERVAL``). The dict overwrite
         # collapses multiple reads of the same key in the window into
@@ -370,6 +425,40 @@ class DiskCache:
             # before we catch up. Acceptable; the disk cache is
             # opportunistic, not a guarantee.
             log.debug("DiskCache write queue full; dropping put for %s", key[:16])
+
+    def contains_keys(self, keys) -> set[str]:  # type: ignore[no-untyped-def]
+        """Bulk-existence query — return the subset of ``keys`` that
+        are present in the index.
+
+        One SQLite query (split into ~900-key chunks to stay under
+        SQLite's default ``IN`` parameter limit) instead of N
+        sequential ``get()`` calls. Used by
+        :meth:`img_player.cache.master_frame_cache.MasterFrameCache.disk_available_master_frames`
+        at session-load to pre-paint the timeline cache bar so the
+        user sees "this shot is warm on disk" before they even scrub.
+
+        Does NOT touch ``last_access`` (= bulk existence is not the
+        same intent as an actual read). Eviction will treat unread
+        but pre-detected entries as cold, which is the desired
+        behaviour for a probe.
+        """
+        unique = list({k for k in keys if k})
+        if not unique:
+            return set()
+        out: set[str] = set()
+        # SQLite's ``SQLITE_MAX_VARIABLE_NUMBER`` is 999 by default —
+        # chunk well under that so the prepared statement is accepted.
+        CHUNK = 900
+        with self._db_lock:
+            for i in range(0, len(unique), CHUNK):
+                chunk = unique[i:i + CHUNK]
+                placeholders = ",".join(["?"] * len(chunk))
+                rows = self._db.execute(
+                    f"SELECT key FROM entries WHERE key IN ({placeholders})",
+                    chunk,
+                ).fetchall()
+                out.update(r[0] for r in rows)
+        return out
 
     def remove(self, key: str) -> None:
         """Synchronous delete. No-op if the entry doesn't exist."""
@@ -440,6 +529,26 @@ class DiskCache:
 
     def cache_dir(self) -> Path:
         return self._cache_dir
+
+    def stats(self) -> DiskCacheStats:
+        """Snapshot of the runtime counters + on-disk metrics.
+
+        Used by Preferences > Disk cache for the live readout. Cheap
+        — counters are plain ints already in memory, the entry-count
+        is a single SQLite COUNT(*) which the index hits in O(1).
+        """
+        return DiskCacheStats(
+            hits=self._hits,
+            misses=self._misses,
+            writes=self._writes,
+            evictions=self._evictions,
+            errors=self._errors,
+            bytes_read=self._bytes_read,
+            bytes_written=self._bytes_written,
+            entries=self.entry_count(),
+            size_bytes=self._total_bytes,
+            budget_bytes=self._budget_bytes,
+        )
 
     def shutdown(self, timeout_s: float = 2.0) -> None:
         """Stop the writer thread and close the DB.
@@ -577,6 +686,8 @@ class DiskCache:
                 (key, str(rel).replace("\\", "/"), size, now, now),
             )
             self._total_bytes += size
+        self._writes += 1
+        self._bytes_written += size
         # Eviction outside the lock — _evict_to_budget acquires it
         # internally per batch to keep critical sections short.
         if self._budget_bytes > 0 and self._total_bytes > self._budget_bytes:
@@ -628,6 +739,7 @@ class DiskCache:
                 if self._total_bytes <= target:
                     break
         if evicted:
+            self._evictions += evicted
             log.info(
                 "DiskCache evicted %d entries (%d MB) to fit budget",
                 evicted, bytes_freed // (1024 * 1024),

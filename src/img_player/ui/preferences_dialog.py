@@ -21,7 +21,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import PyOpenColorIO as ocio
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -460,6 +460,15 @@ class _DiskCachePage(QWidget):
         self._on_enable_toggled(self._initial_enabled)
         self._refresh_usage_label()
 
+        # Live refresh — every 1.5 s while the page is visible, repull
+        # ``stats()`` so the hit / write counters and disk usage update
+        # without the user having to reopen the dialog. Stops itself
+        # when the page is hidden / destroyed.
+        self._stats_timer = QTimer(self)
+        self._stats_timer.setInterval(1500)
+        self._stats_timer.timeout.connect(self._refresh_usage_label)
+        self._stats_timer.start()
+
     # ---- Subtitle helper -----------------------------------------------
 
     def _make_subtitle(self, text: str) -> QLabel:
@@ -531,18 +540,29 @@ class _DiskCachePage(QWidget):
             )
             return
         try:
-            used = self._disk_cache.size_bytes()
-            entries = self._disk_cache.entry_count()
+            stats = self._disk_cache.stats()
             path = self._disk_cache.cache_dir()
         except Exception:  # pragma: no cover — defensive
             self._usage_label.setText("(unable to read cache stats)")
             return
-        used_gb = used / (1024 ** 3)
+        used_gb = stats.size_bytes / (1024 ** 3)
         budget_gb = self._initial_budget_gb
         budget_str = "unlimited" if budget_gb == 0 else f"{budget_gb} GB"
+        # Two-line readout: disk-usage / budget / path on line 1,
+        # session-runtime counters on line 2. Plain text — keeps the
+        # status colour the QSS already sets for the label.
+        read_mb = stats.bytes_read / (1024 ** 2)
+        written_mb = stats.bytes_written / (1024 ** 2)
+        total_reads = stats.hits + stats.misses
+        hit_pct = 100.0 * stats.hit_rate if total_reads > 0 else 0.0
         self._usage_label.setText(
-            f"Used: {used_gb:.2f} GB · {entries} entries · "
-            f"Budget: {budget_str} · Path: {path}",
+            f"Used: {used_gb:.2f} GB  ·  {stats.entries} entries  ·  "
+            f"Budget: {budget_str}\n"
+            f"Hits: {stats.hits} / {total_reads}  "
+            f"({hit_pct:.1f}%)  ·  "
+            f"Writes: {stats.writes}  ·  "
+            f"Read: {read_mb:.1f} MB  ·  Written: {written_mb:.1f} MB\n"
+            f"Path: {path}",
         )
 
     # ---- Apply ---------------------------------------------------------

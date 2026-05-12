@@ -623,6 +623,43 @@ class MasterFrameCache:
                     result.add(mf)
         return frozenset(result)
 
+    def disk_available_master_frames(self) -> frozenset[int]:
+        """Master frames whose **disk** blob is available for the
+        current chain × channel state.
+
+        Used at session-load to pre-paint the timeline cache bar so
+        the user sees that the shot is warm on disk before scrubbing.
+        Cheap one-shot operation: O(N) hash computes + one SQLite
+        bulk-IN query, typically ~50 ms for a 1000-frame sequence.
+
+        Returns an empty set when:
+          * Disk cache is disabled / not configured.
+          * The stack has no covered range.
+          * No frame's source path / mtime is yet indexed (very rare —
+            usually means the layer is mid-load).
+        """
+        if self._disk_cache is None or self._stack is None:
+            return frozenset()
+        first, last = self._stack.master_range()
+        if last <= first:
+            return frozenset()
+        keys_by_frame: dict[int, str] = {}
+        # Indexing path/mtime is required for the source key; ensure
+        # every layer in the stack has its index built before walking
+        # the range. ``_ensure_index`` is idempotent + cheap.
+        for layer in self._stack.layers():
+            self._ensure_index(layer)
+        for master_frame in range(first, last + 1):
+            key = self._source_key_at(master_frame)
+            if key is not None:
+                keys_by_frame[master_frame] = key
+        if not keys_by_frame:
+            return frozenset()
+        existing = self._disk_cache.contains_keys(keys_by_frame.values())
+        return frozenset(
+            mf for mf, k in keys_by_frame.items() if k in existing
+        )
+
     def stats(self) -> CacheStats:
         with self._lock:
             return CacheStats(

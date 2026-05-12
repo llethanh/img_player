@@ -1343,6 +1343,21 @@ class ImgPlayerApp:
             self._window.timeline.set_gap_frames(
                 self._layer_stack.gap_frames(bounds=(first, last)),
             )
+            # Disk-tier availability — paint frames that already have a
+            # blob on disk in dim orange so the user sees the session
+            # is warm before they scrub. Synchronous lookup (~50 ms
+            # for a 1000-frame sequence). Cheap relative to the rest
+            # of ``_refresh_after_stack_change`` which already runs a
+            # ``refresh_band_layers`` + cache invalidate + prefetch
+            # replan on the same call.
+            try:
+                disk_frames = self._cache.disk_available_master_frames()
+                self._window.timeline.set_disk_available_frames(disk_frames)
+            except Exception:  # pragma: no cover — defensive
+                log.exception(
+                    "disk-available probe failed (non-fatal — timeline "
+                    "just won't pre-paint)",
+                )
         if self._controller.sequence is None:
             return
         cur = self._controller.state.current_frame
