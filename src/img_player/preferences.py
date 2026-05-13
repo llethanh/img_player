@@ -101,31 +101,53 @@ _LEGACY_QSETTINGS_MIGRATIONS: tuple[tuple[str, str, Any], ...] = (
 )
 
 
-# Module-level latch so the migration runs exactly once per process, on
-# the first ``Preferences()`` construction. Subsequent constructions are
-# free.
+# Module-level latch so the migration runs at most once per process.
 _legacy_migration_done = False
+
+# QSettings flag remembering that the one-shot user-prefs migration
+# already happened on this user account. Bump if the migration logic
+# changes substantially and old data needs to be re-imported.
+_MIGRATION_VERSION = 1
+_MIGRATION_FLAG_KEY = "_user_prefs_migration_version"
 
 
 def _migrate_legacy_qsettings_once(qs: QSettings) -> None:
     """Copy v1.5.7-era QSettings values for the user-facing keys into
-    the new user TOML, but ONLY for keys the user hasn't already
-    written to the TOML.
+    the new user TOML — but exactly ONCE per user account, ever.
 
-    Conservative: we don't delete the QSettings entries (preserves
-    rollback to an older Flick build), we just stop reading from them
-    for the migrated keys.
+    The "once ever" guarantee is critical: if the migration re-ran on
+    every launch, deleting the user TOML to fall back on the site
+    default would do nothing (the next launch would re-create the
+    file from the stale QSettings values). We persist a version flag
+    in QSettings the first time it runs so subsequent launches are
+    no-ops, regardless of whether the user has since deleted the
+    user TOML.
+
+    Conservative: we don't delete the QSettings entries themselves
+    (preserves rollback to an older Flick build, and other internal
+    QSettings keys live in the same scope). We just stop reading
+    from them once the migration flag is set.
     """
     global _legacy_migration_done
     if _legacy_migration_done:
         return
     _legacy_migration_done = True
 
+    # Persistent flag: skip if a previous launch already migrated.
+    # ``qs.value`` returns the QSettings-side default when the key is
+    # absent — ``0`` means "never migrated". Cast defensively because
+    # registry-backed QSettings can return int OR string.
+    try:
+        prior = int(qs.value(_MIGRATION_FLAG_KEY, 0) or 0)
+    except (TypeError, ValueError):
+        prior = 0
+    if prior >= _MIGRATION_VERSION:
+        return
+
     store = user_prefs()
     migrated = []
     for qkey, toml_key, coerce in _LEGACY_QSETTINGS_MIGRATIONS:
-        # Don't clobber a user TOML value (e.g. user already migrated
-        # via a previous launch, or hand-edited).
+        # Don't clobber a user TOML value (e.g. user already hand-edited).
         if store.get(toml_key, _UNSET) is not _UNSET:
             continue
         raw = qs.value(qkey)
@@ -139,6 +161,11 @@ def _migrate_legacy_qsettings_once(qs: QSettings) -> None:
             continue
         store.set(toml_key, value)
         migrated.append(toml_key)
+
+    # Mark migration done EVEN IF nothing was migrated — first launch
+    # of a brand-new user has nothing in QSettings, but should still
+    # be exempt from re-running this routine forever.
+    qs.setValue(_MIGRATION_FLAG_KEY, _MIGRATION_VERSION)
 
     if migrated:
         import logging

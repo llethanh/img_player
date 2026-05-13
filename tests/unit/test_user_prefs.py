@@ -126,20 +126,25 @@ def isolated_stores(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
 
     Skips the legacy-QSettings migration too — Preferences() in test
     context shouldn't try to read the dev's real registry values into
-    our hermetic tmp store.
+    our hermetic tmp store. Also forces the SITE config to a
+    guaranteed-empty state so a real ``flick.toml`` a developer may
+    have at the repo root doesn't bleed into the test layered
+    resolution.
     """
     user_path = tmp_path / "user_flick.toml"
     monkeypatch.setattr(
         up, "_cached", up.UserPrefsStore(user_path), raising=False,
     )
-    sc.invalidate_cache()
+    # Pre-cache an empty SiteConfig so ``site_config()`` never resolves
+    # against the real filesystem during the test.
+    monkeypatch.setattr(sc, "_cached", sc.SiteConfig({}), raising=False)
     import img_player.preferences as P
     # Latch migration as already done so Preferences() doesn't try
     # to read the dev's actual QSettings into our test tmp store.
     monkeypatch.setattr(P, "_legacy_migration_done", True, raising=False)
     yield {"user_path": user_path}
     monkeypatch.setattr(up, "_cached", None, raising=False)
-    sc.invalidate_cache()
+    monkeypatch.setattr(sc, "_cached", None, raising=False)
 
 
 class TestLayeredPreferences:

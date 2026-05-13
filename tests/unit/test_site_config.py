@@ -81,8 +81,14 @@ class TestFileResolution:
         monkeypatch.setenv(
             "FLICK_SITE_CONFIG", str(tmp_path / "does-not-exist.toml"),
         )
+        # Also force the repo-root fallback path to a sentinel that
+        # doesn't exist on disk — a developer may have a real
+        # ``flick.toml`` at the repo root for their own use, but it
+        # mustn't sneak into the test result.
+        monkeypatch.setattr(
+            sc, "_SITE_FILE_NAME", "_nonexistent_under_test.toml",
+        )
         loaded = sc.site_config()
-        # No frozen mode, no repo-root toml in CI → empty.
         assert loaded.is_empty
 
     def test_malformed_toml_logs_and_yields_empty_config(
