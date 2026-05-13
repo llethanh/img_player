@@ -409,23 +409,35 @@ class _ColorManagementPage(QWidget):
         Returns ``True`` if the OCIO settings actually changed
         (regardless of reload outcome) so the parent dialog can
         decide whether to keep the dialog open or close it.
+
+        Each setter is gated by an explicit "did this field change?"
+        check. Without that gate, clicking Apply with the dialog open
+        but unchanged would call every setter unconditionally —
+        materialising a user TOML file with the resolved (= site /
+        hardcoded) values even though the user touched nothing. The
+        site-config default would then become a user-level override
+        on disk, breaking the "user TOML only contains explicit
+        choices" invariant.
         """
         new_mode = self._current_mode()
         new_path = self._path_edit.text().strip() or None
         new_builtin = self._current_builtin_uri()
-        dirty = (
-            new_mode != self._initial_mode
-            or (new_path or "") != (self._initial_path or "")
-            or new_builtin != self._initial_builtin
-        )
-        self._prefs.ocio_config_mode = new_mode
-        self._prefs.ocio_config_path = new_path
-        self._prefs.ocio_builtin_uri = new_builtin
-        # Update baseline so a second Apply in the same session doesn't
-        # re-trigger the banner unnecessarily.
-        self._initial_mode = new_mode
-        self._initial_path = new_path or ""
-        self._initial_builtin = new_builtin
+
+        mode_changed = new_mode != self._initial_mode
+        path_changed = (new_path or "") != (self._initial_path or "")
+        builtin_changed = new_builtin != self._initial_builtin
+
+        if mode_changed:
+            self._prefs.ocio_config_mode = new_mode
+            self._initial_mode = new_mode
+        if path_changed:
+            self._prefs.ocio_config_path = new_path
+            self._initial_path = new_path or ""
+        if builtin_changed:
+            self._prefs.ocio_builtin_uri = new_builtin
+            self._initial_builtin = new_builtin
+
+        dirty = mode_changed or path_changed or builtin_changed
 
         if not dirty:
             self._restart_banner.setVisible(False)

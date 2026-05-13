@@ -248,3 +248,41 @@ class TestLayeredPreferences:
         assert Preferences().disk_cache_budget_gb == 42
         up._cached.remove("disk_cache.budget_gb")
         assert Preferences().disk_cache_budget_gb == 99
+
+    def test_color_management_apply_no_op_when_no_change(
+        self, qtbot, isolated_qsettings, isolated_stores, tmp_path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Regression test: opening Preferences > Color Management and
+        clicking Apply without changing any field must NOT create a
+        user TOML. The bug we shipped in v1.5.6..v1.5.11 called every
+        setter unconditionally inside ``apply()``, materialising the
+        site-config defaults into a user-level override on disk and
+        making the next launch ignore subsequent site-config updates.
+        """
+        # Site config supplies a non-default URI so we can verify
+        # the dropdown initialises to it via the layered resolution.
+        site_toml = tmp_path / "site.toml"
+        site_toml.write_text(
+            '[color]\n'
+            'ocio_builtin_uri = "ocio://studio-config-v2.2.0_aces-v1.3_ocio-v2.4"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("FLICK_SITE_CONFIG", str(site_toml))
+        sc.invalidate_cache()
+
+        from img_player.preferences import Preferences
+        from img_player.ui.preferences_dialog import _ColorManagementPage
+
+        page = _ColorManagementPage(Preferences(), on_reload=None)
+        try:
+            # User opened the dialog, did nothing, clicks Apply.
+            assert page.apply() is False, (
+                "apply() should report no-change when fields are pristine"
+            )
+            # User TOML must NOT have been created — the headline bug.
+            assert not up._cached.exists(), (
+                "Apply with no edits must not materialise the user TOML"
+            )
+        finally:
+            page.deleteLater()
