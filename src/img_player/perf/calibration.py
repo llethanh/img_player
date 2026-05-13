@@ -159,17 +159,12 @@ def profile_path() -> Path:
     * **Linux + others** — ``$XDG_CACHE_HOME/img_player/profile.json``,
       falling back to ``~/.cache/img_player/profile.json``.
     """
-    if sys.platform == "win32":
-        base = os.environ.get("LOCALAPPDATA")
-        if base:
-            return Path(base) / "img_player" / "profile.json"
-        return Path.home() / "AppData" / "Local" / "img_player" / "profile.json"
-    if sys.platform == "darwin":
-        return Path.home() / "Library" / "Caches" / "img_player" / "profile.json"
-    xdg_cache = os.environ.get("XDG_CACHE_HOME")
-    if xdg_cache:
-        return Path(xdg_cache) / "img_player" / "profile.json"
-    return Path.home() / ".cache" / "img_player" / "profile.json"
+    # Canonical location in :mod:`img_player.app_paths`. v1.5.9
+    # renamed the parent folder from ``img_player`` → ``FlickPlayer``;
+    # ``__main__._resolve_log_dir`` calls the one-shot migration at
+    # boot so by the time this getter runs, the rename has happened.
+    from img_player.app_paths import calibration_profile_path
+    return calibration_profile_path()
 
 
 # ----------------------------------------------------------------------------

@@ -44,26 +44,18 @@ _LOG_BACKUP_COUNT = 3
 
 
 def _resolve_log_dir() -> Path:
-    """Pick the OS-appropriate per-user app-data directory.
+    """Per-user app-data directory for ``flick.log``.
 
-    Windows: ``%LOCALAPPDATA%/img_player/`` (matches the conventional
-    QSettings location prefix used elsewhere).
-    macOS / Linux: ``$XDG_STATE_HOME/img_player/`` falling back to
-    ``~/.local/state/img_player/`` then ``~/.img_player/``.
+    Centralised in :mod:`img_player.app_paths` so the v1.5.9 rename
+    (``img_player`` → ``FlickPlayer``) only happens in one place.
     """
-    if sys.platform == "win32":
-        base = os.environ.get("LOCALAPPDATA")
-        if base:
-            return Path(base) / "img_player"
-        return Path.home() / "AppData" / "Local" / "img_player"
-    xdg_state = os.environ.get("XDG_STATE_HOME")
-    if xdg_state:
-        return Path(xdg_state) / "img_player"
-    home = Path.home()
-    candidate = home / ".local" / "state" / "img_player"
-    if candidate.parent.is_dir() or not (home / ".img_player").exists():
-        return candidate
-    return home / ".img_player"
+    # Run the legacy directory migration *before* resolving — if the
+    # user has the old ``img_player`` folder, we want to rename it
+    # NOW so the rest of the boot (disk cache, user prefs, etc.)
+    # finds its data at the new path.
+    from img_player.app_paths import log_dir, migrate_legacy_dirs_once
+    migrate_legacy_dirs_once()
+    return log_dir()
 
 
 def _setup_logging(level: int) -> None:

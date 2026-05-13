@@ -125,17 +125,11 @@ def default_cache_dir() -> Path:
     is created on first :class:`DiskCache` construction; this helper
     only computes the location.
     """
-    if sys.platform.startswith("win"):
-        root = os.environ.get("LOCALAPPDATA")
-        if root:
-            return Path(root) / "img_player" / "disk_cache"
-        return Path.home() / "AppData" / "Local" / "img_player" / "disk_cache"
-    if sys.platform == "darwin":
-        return Path.home() / "Library" / "Caches" / "img_player" / "disk_cache"
-    xdg = os.environ.get("XDG_CACHE_HOME")
-    if xdg:
-        return Path(xdg) / "img_player" / "disk_cache"
-    return Path.home() / ".cache" / "img_player" / "disk_cache"
+    # Canonical location is centralised in :mod:`img_player.app_paths`
+    # so renames (img_player → FlickPlayer in v1.5.9) live in one
+    # place rather than being duplicated per-feature.
+    from img_player.app_paths import disk_cache_default_dir
+    return disk_cache_default_dir()
 
 log = logging.getLogger(__name__)
 

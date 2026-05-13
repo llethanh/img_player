@@ -36,7 +36,6 @@ from __future__ import annotations
 
 import logging
 import os
-import sys
 import tempfile
 import threading
 from pathlib import Path
@@ -55,25 +54,20 @@ _USER_FILE_NAME = "flick.toml"
 def default_user_prefs_dir() -> Path:
     """OS-conventional per-user app-data directory for Flick.
 
-    Windows  → ``%APPDATA%\\img_player\\`` (Roaming, so user prefs
-               follow them across domain machines).
-    macOS    → ``~/Library/Application Support/img_player/``
-    Linux    → ``$XDG_CONFIG_HOME/img_player/`` or ``~/.config/img_player/``
+    Windows  → ``%APPDATA%\\FlickPlayer\\`` (Roaming).
+    macOS    → ``~/Library/Application Support/FlickPlayer/``
+    Linux    → ``$XDG_CONFIG_HOME/FlickPlayer/`` or
+                ``~/.config/FlickPlayer/``.
 
     The directory is NOT created here; only :meth:`UserPrefsStore._write`
-    creates it lazily on the first user save.
+    creates it lazily on the first user save. The canonical name lives
+    in :mod:`img_player.app_paths`.
     """
-    if sys.platform == "win32":
-        appdata = os.environ.get("APPDATA")
-        if appdata:
-            return Path(appdata) / "img_player"
-        return Path.home() / "AppData" / "Roaming" / "img_player"
-    if sys.platform == "darwin":  # pragma: no cover — non-Windows
-        return Path.home() / "Library" / "Application Support" / "img_player"
-    # Linux / *nix
-    xdg = os.environ.get("XDG_CONFIG_HOME")  # pragma: no cover
-    base = Path(xdg) if xdg else Path.home() / ".config"  # pragma: no cover
-    return base / "img_player"  # pragma: no cover
+    # Lazy import to avoid a circular dep at module load (preferences.py
+    # imports user_prefs which imports app_paths which… would import
+    # nothing else, but keeping it lazy is harmless and future-proof).
+    from img_player.app_paths import user_prefs_dir as _dir
+    return _dir()
 
 
 def _toml_quote(value: str) -> str:
