@@ -521,7 +521,11 @@ class TestMultiProcessLock:
         c1 = DiskCache(cdir, budget_bytes=0)
         try:
             # Second open must succeed but flag itself read-only.
-            c2 = DiskCache(cdir, budget_bytes=0)
+            # ``lock_retry_timeout_s=0`` makes the test fast — we
+            # don't want the production 3 s retry budget here since
+            # the first instance won't release for the duration of
+            # the test anyway.
+            c2 = DiskCache(cdir, budget_bytes=0, lock_retry_timeout_s=0.0)
             try:
                 assert c2.is_read_only() is True
                 assert c2.stats().read_only is True
@@ -534,7 +538,7 @@ class TestMultiProcessLock:
         cdir = tmp_path / "c"
         c1 = DiskCache(cdir, budget_bytes=0)
         try:
-            c2 = DiskCache(cdir, budget_bytes=0)
+            c2 = DiskCache(cdir, budget_bytes=0, lock_retry_timeout_s=0.0)
             try:
                 assert c2.is_read_only()
                 # put() on a read-only instance must NOT enqueue.
@@ -552,7 +556,7 @@ class TestMultiProcessLock:
         try:
             c1.put("k" * 40, _frame())
             _wait_for_writes(c1, 1)
-            c2 = DiskCache(cdir, budget_bytes=0)
+            c2 = DiskCache(cdir, budget_bytes=0, lock_retry_timeout_s=0.0)
             try:
                 # Read-only clear returns 0 and leaves entries intact.
                 assert c2.clear() == 0
@@ -574,6 +578,47 @@ class TestMultiProcessLock:
         finally:
             c2.shutdown(timeout_s=2.0)
 
+    def test_close_then_reopen_within_retry_window_keeps_writable(
+        self, tmp_path: Path,
+    ) -> None:
+        """The bug we hit in the field: user closes Flick and
+        immediately re-launches. The previous process is still
+        draining the writer queue (E1) so the lock is still held
+        for a few hundred ms. Without retry, the new instance would
+        flip to read-only — surprising and frustrating.
+
+        Here we simulate it: first instance shuts down on a delayed
+        background thread so the second instance hits the retry
+        loop, succeeds within the retry window, and ends up
+        writable. Catches the regression if the retry logic is
+        ever stripped out.
+        """
+        import threading
+
+        cdir = tmp_path / "c"
+        c1 = DiskCache(cdir, budget_bytes=0)
+        # Release the lock ~400 ms in the future. Comfortably under
+        # the production 3 s retry window so the retry loop will
+        # catch it; comfortably above the 100 ms retry interval so
+        # at least one failed attempt happens before success.
+        release_after = 0.4
+
+        def _delayed_shutdown() -> None:
+            time.sleep(release_after)
+            c1.shutdown(timeout_s=2.0)
+
+        t = threading.Thread(target=_delayed_shutdown, daemon=True)
+        t.start()
+        try:
+            c2 = DiskCache(cdir, budget_bytes=0)
+            # Retry kicked in and the lock landed → writable!
+            assert c2.is_read_only() is False, (
+                "second instance should have acquired the lock after retry"
+            )
+            c2.shutdown(timeout_s=2.0)
+        finally:
+            t.join(timeout=5.0)
+
     def test_read_only_can_still_read(self, tmp_path: Path) -> None:
         """The owner writes; the read-only second instance must be
         able to retrieve those entries via get()."""
@@ -583,7 +628,7 @@ class TestMultiProcessLock:
             src = _frame()
             c1.put("shared" * 7, src)
             _wait_for_writes(c1, 1)
-            c2 = DiskCache(cdir, budget_bytes=0)
+            c2 = DiskCache(cdir, budget_bytes=0, lock_retry_timeout_s=0.0)
             try:
                 assert c2.is_read_only()
                 out = c2.get("shared" * 7)

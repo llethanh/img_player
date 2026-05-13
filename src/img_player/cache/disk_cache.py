@@ -218,44 +218,79 @@ _V2_HEADER_SIZE = struct.calcsize(_V2_HEADER_FMT)  # = 16
 _CACHE_FORMAT_VERSION = 2
 
 
-def _try_acquire_lock(lock_path: Path):  # type: ignore[no-untyped-def]
-    """Acquire an exclusive non-blocking file lock cross-platform.
+# Boot-time lock retry budget. Covers the common "user closes Flick
+# then immediately re-launches" case: the previous process is still
+# draining its disk-cache writer queue (up to E1's 10 s shutdown
+# budget) and hasn't released the lock yet. Without retry, the new
+# instance gives up after 1 attempt and falls back to read-only —
+# a 3-second wait at boot is invisible to the user but generously
+# covers a typical close→relaunch round-trip. If the lock is still
+# held after that, we assume a real second instance and go read-only.
+_LOCK_RETRY_TIMEOUT_S = 3.0
+_LOCK_RETRY_INTERVAL_S = 0.1
+
+
+def _try_acquire_lock(  # type: ignore[no-untyped-def]
+    lock_path: Path,
+    retry_timeout_s: float = _LOCK_RETRY_TIMEOUT_S,
+):
+    """Acquire an exclusive file lock cross-platform with brief retry.
 
     Used to detect a second Flick instance sharing the same cache
     directory. Returns the open file handle on success (caller keeps
     it alive for the duration of the lock) or ``None`` if another
-    process already holds it.
+    process actually holds it after ``retry_timeout_s`` seconds.
+
+    The retry loop handles the common case where the user closes
+    Flick and immediately re-launches: the previous process is still
+    inside its shutdown drain (which can take up to 10 s for E1's
+    writer flush). Without retry, the new instance would fall back
+    to read-only every time — surprising and frustrating since the
+    user thought they cleanly closed the app.
 
     On Windows we use :func:`msvcrt.locking` with ``LK_NBLCK``; on
     POSIX :func:`fcntl.flock` with ``LOCK_EX | LOCK_NB``. Both APIs
     release the lock when the file handle is closed, so the caller
     only has to remember to ``close()`` at shutdown.
     """
-    try:
-        fh = open(lock_path, "ab")  # noqa: SIM115 — handle held by caller
-    except OSError as err:
-        log.warning("DiskCache: could not open lock file %s (%s)", lock_path, err)
-        return None
-    try:
-        if sys.platform == "win32":
-            import msvcrt
-
-            # Lock 1 byte at offset 0; non-blocking. Re-issued by the
-            # same process is fine (re-locking own region is allowed).
-            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
-        else:  # pragma: no cover — non-Windows
-            import fcntl
-
-            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        # Another process holds the lock. Close our handle (which
-        # would otherwise leak) and signal read-only fallback.
+    deadline = time.monotonic() + max(0.0, retry_timeout_s)
+    first_attempt = True
+    while True:
         try:
-            fh.close()
+            fh = open(lock_path, "ab")  # noqa: SIM115 — handle held by caller
+        except OSError as err:
+            log.warning("DiskCache: could not open lock file %s (%s)", lock_path, err)
+            return None
+        try:
+            if sys.platform == "win32":
+                import msvcrt
+
+                msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+            else:  # pragma: no cover — non-Windows
+                import fcntl
+
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
-            pass
-        return None
-    return fh
+            # Lock is currently held by someone else. Close our handle
+            # (would otherwise leak) and either retry or give up.
+            try:
+                fh.close()
+            except OSError:
+                pass
+            if time.monotonic() >= deadline:
+                return None
+            if first_attempt:
+                # One-shot informational log so the user sees what's
+                # happening if a previous instance is still draining.
+                log.info(
+                    "DiskCache: lock held by another instance — "
+                    "waiting up to %.1f s for it to release...",
+                    retry_timeout_s,
+                )
+                first_attempt = False
+            time.sleep(_LOCK_RETRY_INTERVAL_S)
+            continue
+        return fh
 
 
 def _compress(payload: bytes) -> bytes:
@@ -418,6 +453,7 @@ class DiskCache:
         cache_dir: Path,
         budget_bytes: int = 0,
         compress: bool = True,
+        lock_retry_timeout_s: float = _LOCK_RETRY_TIMEOUT_S,
     ) -> None:
         self._cache_dir = Path(cache_dir)
         self._cache_dir.mkdir(parents=True, exist_ok=True)
@@ -436,7 +472,10 @@ class DiskCache:
         # a truncated file. If the lock is already held, we fall back
         # to read-only mode: queries (get / contains_keys) still work,
         # but puts / writes / clears become no-ops with a debug log.
-        self._lock_file = _try_acquire_lock(self._cache_dir / ".lock")
+        self._lock_file = _try_acquire_lock(
+            self._cache_dir / ".lock",
+            retry_timeout_s=lock_retry_timeout_s,
+        )
         self._read_only = self._lock_file is None
         if self._read_only:
             log.warning(
