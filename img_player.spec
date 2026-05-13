@@ -426,3 +426,17 @@ if _bundle_dir.is_dir():
         print(f"[spec] wrote version marker {_marker.name}")
     except Exception as _err:  # noqa: BLE001 — never fail the build on a marker file
         print(f"[spec] could not write version marker ({_err})")
+
+    # Copy the site-config template next to the .exe so a deployer
+    # can see the schema right there in the bundle. Renaming this
+    # file to ``flick.toml`` activates studio-wide preference
+    # defaults on the next launch — see site_config.py for the
+    # resolution order.
+    _site_example = PROJECT_ROOT / "flick.toml.example"
+    if _site_example.is_file():
+        try:
+            import shutil as _shutil
+            _shutil.copyfile(_site_example, _bundle_dir / "flick.toml.example")
+            print("[spec] copied flick.toml.example into bundle")
+        except Exception as _err:  # noqa: BLE001
+            print(f"[spec] could not copy flick.toml.example ({_err})")

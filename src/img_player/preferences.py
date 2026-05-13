@@ -9,12 +9,26 @@ directly elsewhere.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from PySide6.QtCore import QSettings
+
+from img_player.site_config import site_config
 
 _ORG = "img_player"
 _APP = "img_player"
 _RECENT_LIMIT = 10
+
+
+def _site_default(dotted_key: str, hardcoded: Any) -> Any:
+    """Return ``flick.toml[dotted_key]`` if present, else ``hardcoded``.
+
+    Used by every preference getter to honour studio-level defaults
+    without breaking the hardcoded fallback. The site config is loaded
+    lazily on first call and cached for the process lifetime, so this
+    helper is essentially free after the first hit.
+    """
+    return site_config().get(dotted_key, hardcoded)
 
 
 def _qbool(raw: object, default: bool = False) -> bool:
@@ -220,7 +234,10 @@ class Preferences:
 
     @property
     def ocio_config_mode(self) -> str:
-        raw = self._s.value("color/ocio_config_mode", "default")
+        raw = self._s.value(
+            "color/ocio_config_mode",
+            _site_default("color.ocio_config_mode", "default"),
+        )
         return raw if raw in ("default", "env", "custom") else "default"
 
     @ocio_config_mode.setter
@@ -231,7 +248,10 @@ class Preferences:
 
     @property
     def ocio_config_path(self) -> str | None:
-        raw = self._s.value("color/ocio_config_path")
+        raw = self._s.value(
+            "color/ocio_config_path",
+            _site_default("color.ocio_config_path", None),
+        )
         return str(raw) if raw else None
 
     @ocio_config_path.setter
@@ -255,8 +275,14 @@ class Preferences:
 
     @property
     def ocio_builtin_uri(self) -> str:
-        raw = self._s.value("color/ocio_builtin_uri", self._DEFAULT_OCIO_BUILTIN_URI)
-        return str(raw) if raw else self._DEFAULT_OCIO_BUILTIN_URI
+        # Studio admins typically point this at their pipeline's ACES
+        # family via flick.toml — that's the headline use case for the
+        # site-config feature.
+        site_value = _site_default(
+            "color.ocio_builtin_uri", self._DEFAULT_OCIO_BUILTIN_URI,
+        )
+        raw = self._s.value("color/ocio_builtin_uri", site_value)
+        return str(raw) if raw else site_value
 
     @ocio_builtin_uri.setter
     def ocio_builtin_uri(self, value: str) -> None:
@@ -646,7 +672,8 @@ class Preferences:
         day). Users on machines with tight SSD budgets can opt out
         from Preferences → Disk cache.
         """
-        return _qbool(self._s.value("disk_cache/enabled"), default=True)
+        site_value = _site_default("disk_cache.enabled", True)
+        return _qbool(self._s.value("disk_cache/enabled"), default=bool(site_value))
 
     @disk_cache_enabled.setter
     def disk_cache_enabled(self, value: bool) -> None:
@@ -662,7 +689,10 @@ class Preferences:
         the cache on a faster drive (NVMe scratch) or a different
         partition with more headroom.
         """
-        raw = self._s.value("disk_cache/path")
+        raw = self._s.value(
+            "disk_cache/path",
+            _site_default("disk_cache.path", None),
+        )
         if not raw:
             return None
         return Path(str(raw))
@@ -684,7 +714,10 @@ class Preferences:
         Preferences spinner UI simple; the cache converts to bytes
         internally.
         """
-        raw = self._s.value("disk_cache/budget_gb", 50)
+        raw = self._s.value(
+            "disk_cache/budget_gb",
+            _site_default("disk_cache.budget_gb", 50),
+        )
         try:
             return max(0, int(raw))
         except (TypeError, ValueError):
@@ -706,7 +739,10 @@ class Preferences:
         costs ~2× disk space. The setting only affects **new writes**;
         existing compressed blobs are still readable after the switch.
         """
-        raw = self._s.value("disk_cache/compression", True)
+        raw = self._s.value(
+            "disk_cache/compression",
+            _site_default("disk_cache.compression", True),
+        )
         if isinstance(raw, str):
             return raw.lower() in ("true", "1", "yes")
         return bool(raw)

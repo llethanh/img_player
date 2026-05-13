@@ -1,0 +1,64 @@
+# ============================================================================
+# Flick Player — Site Configuration (optional)
+# ============================================================================
+#
+# Drop a copy of this file next to FlickPlayer.exe (or at the repo root in
+# dev mode), rename it to `flick.toml`, and every user launching this build
+# will pick up these values as their DEFAULTS.
+#
+# Important semantics:
+#   * Site values only affect the DEFAULT a user sees on a fresh profile or
+#     when they've never touched that preference. Their existing QSettings
+#     choice always wins at runtime.
+#   * Comment out (or delete) a key to leave Flick's hardcoded default in
+#     place. An empty `flick.toml` is functionally identical to no file.
+#   * Edits take effect on the NEXT launch — Flick caches the file at
+#     startup (policy-file semantics).
+#
+# Alternative location: set the environment variable FLICK_SITE_CONFIG to an
+# absolute path. Useful for shared fileshare deployments.
+#
+# ============================================================================
+
+# ----- Color management ------------------------------------------------------
+[color]
+
+# Which OCIO library built-in to load when the user picks the
+# "Default (built-in ACES config)" mode.
+#
+#   ocio://cg-config-v2.2.0_aces-v1.3_ocio-v2.4   ← shipped default (ACES 1.3 CG)
+#   ocio://cg-config-v4.0.0_aces-v2.0_ocio-v2.5   ← latest, ACES 2.0 CG
+#   ocio://studio-config-v2.2.0_aces-v1.3_ocio-v2.4   ← ACES 1.3 Studio (more views)
+#   ocio://studio-config-v4.0.0_aces-v2.0_ocio-v2.5   ← ACES 2.0 Studio
+#
+# Full list visible in Preferences > Color Management > "Config" dropdown.
+ocio_builtin_uri = "ocio://cg-config-v2.2.0_aces-v1.3_ocio-v2.4"
+
+# How Flick resolves the active OCIO config at boot:
+#   "default" — use the built-in URI above
+#   "env"     — read $OCIO environment variable (legacy)
+#   "custom"  — load the file pointed to by `ocio_config_path` below
+ocio_config_mode = "default"
+
+# Project / studio OCIO config used when `ocio_config_mode = "custom"`.
+# A common pattern is to point this at a network-share path so every
+# artist machine loads the same show config.
+# ocio_config_path = "P:/shows/myshow/config/myshow.ocio"
+
+# ----- Disk cache ------------------------------------------------------------
+[disk_cache]
+
+# Whether the disk cache is enabled by default. Disable for environments
+# that don't want a local persistent cache (e.g. shared workstations).
+# enabled = true
+
+# Custom disk-cache directory. Useful for studios that want the cache on a
+# fast SSD scratch volume rather than the default %LOCALAPPDATA%.
+# path = "D:/flick_cache"
+
+# Soft upper bound on disk-cache size, in gigabytes. 0 = unlimited.
+# budget_gb = 100
+
+# Whether to lz4-compress disk-cache blobs. Set to false on fast NVMe
+# scratch drives to trade disk space for ~5 ms faster reads.
+# compression = true
