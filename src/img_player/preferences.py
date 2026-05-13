@@ -241,6 +241,30 @@ class Preferences:
         else:
             self._s.remove("color/ocio_config_path")
 
+    # ---- Built-in OCIO config selection ---------------------------------
+    # When ``ocio_config_mode == "default"``, this URI picks WHICH of the
+    # OCIO library's bundled configs to load. The shipped default is the
+    # ACES 1.3 CG config — it matches the view-transform family used by
+    # Nuke / Maya / OpenRV in the vast majority of studios (the older
+    # "RRT + ODT" curve). The newer ACES 2.0 CG config is also bundled
+    # but gives visibly different highlights / blues, so it's opt-in
+    # rather than default to avoid surprising users coming from a
+    # 1.x pipeline.
+
+    _DEFAULT_OCIO_BUILTIN_URI = "ocio://cg-config-v2.2.0_aces-v1.3_ocio-v2.4"
+
+    @property
+    def ocio_builtin_uri(self) -> str:
+        raw = self._s.value("color/ocio_builtin_uri", self._DEFAULT_OCIO_BUILTIN_URI)
+        return str(raw) if raw else self._DEFAULT_OCIO_BUILTIN_URI
+
+    @ocio_builtin_uri.setter
+    def ocio_builtin_uri(self, value: str) -> None:
+        if value:
+            self._s.setValue("color/ocio_builtin_uri", str(value))
+        else:
+            self._s.remove("color/ocio_builtin_uri")
+
     @property
     def unmarked_exr_source(self) -> str | None:
         """Source colorspace to apply on EXRs without any colorspace

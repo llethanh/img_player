@@ -25,6 +25,7 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -75,6 +76,7 @@ class _ColorManagementPage(QWidget):
         self._on_reload = on_reload
         self._initial_mode = prefs.ocio_config_mode
         self._initial_path = prefs.ocio_config_path or ""
+        self._initial_builtin = prefs.ocio_builtin_uri
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
@@ -102,6 +104,51 @@ class _ColorManagementPage(QWidget):
         for i, btn in enumerate((self._radio_default, self._radio_env, self._radio_custom)):
             self._mode_group.addButton(btn, i)
             layout.addWidget(btn)
+
+        # ---- Built-in config picker (only meaningful in default mode) ----
+        # Dropdown lists every config bundled with OCIO. Default is the
+        # ACES 1.3 CG config to match Nuke / Maya / OpenRV — ACES 2.0
+        # gives noticeably different tone-mapping that surprises users
+        # coming from a 1.x pipeline.
+        builtin_row = QHBoxLayout()
+        builtin_row.setContentsMargins(24, 0, 0, 0)
+        builtin_label = QLabel("Config:")
+        builtin_label.setStyleSheet("color: #9aa0a6;")
+        self._builtin_combo = QComboBox()
+        self._builtin_combo.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToContents,
+        )
+        builtin_row.addWidget(builtin_label)
+        builtin_row.addWidget(self._builtin_combo, 1)
+        layout.addLayout(builtin_row)
+        # Populate. ``list_builtin_configs`` returns ordered entries
+        # straight from OCIO; we just decorate the labels with ACES
+        # family + kind for readability.
+        self._builtin_uris: list[str] = []
+        from img_player.color.ocio_manager import OCIOManager
+        try:
+            entries = OCIOManager.list_builtin_configs()
+        except Exception:  # pragma: no cover — defensive
+            log.exception("Failed to enumerate OCIO builtin configs")
+            entries = []
+        for entry in entries:
+            badge = []
+            if entry.aces_family != "unknown":
+                badge.append(f"ACES {entry.aces_family}")
+            badge.append("Studio" if entry.kind == "studio" else "CG")
+            if entry.recommended:
+                badge.append("recommended")
+            label = f"{' · '.join(badge)}  —  {entry.name}"
+            self._builtin_combo.addItem(label, entry.uri)
+            self._builtin_uris.append(entry.uri)
+        # Fallback row when OCIO can't enumerate — keep something
+        # selectable so the dropdown isn't visibly empty.
+        if not self._builtin_uris:
+            self._builtin_combo.addItem(
+                "Library default  —  ocio://default",
+                "ocio://default",
+            )
+            self._builtin_uris.append("ocio://default")
 
         # ---- Path picker (only meaningful in custom mode) -----------
         path_row = QHBoxLayout()
@@ -143,10 +190,19 @@ class _ColorManagementPage(QWidget):
         self._radio_env.setChecked(self._initial_mode == "env")
         self._radio_custom.setChecked(self._initial_mode == "custom")
         self._path_edit.setText(self._initial_path)
+        # Pre-select the builtin matching the saved pref; fall back to
+        # the first entry if the saved URI is no longer available (e.g.
+        # OCIO downgrade).
+        try:
+            initial_idx = self._builtin_uris.index(self._initial_builtin)
+        except ValueError:
+            initial_idx = 0
+        self._builtin_combo.setCurrentIndex(initial_idx)
         self._sync_path_enabled()
 
         self._mode_group.idToggled.connect(self._on_mode_changed)
         self._path_edit.textChanged.connect(self._update_dirty_state)
+        self._builtin_combo.currentIndexChanged.connect(self._update_dirty_state)
 
     # ---------------------------------------------------------------- API
 
@@ -159,15 +215,20 @@ class _ColorManagementPage(QWidget):
         """
         new_mode = self._current_mode()
         new_path = self._path_edit.text().strip() or None
-        dirty = (new_mode != self._initial_mode) or (
-            (new_path or "") != (self._initial_path or "")
+        new_builtin = self._current_builtin_uri()
+        dirty = (
+            new_mode != self._initial_mode
+            or (new_path or "") != (self._initial_path or "")
+            or new_builtin != self._initial_builtin
         )
         self._prefs.ocio_config_mode = new_mode
         self._prefs.ocio_config_path = new_path
+        self._prefs.ocio_builtin_uri = new_builtin
         # Update baseline so a second Apply in the same session doesn't
         # re-trigger the banner unnecessarily.
         self._initial_mode = new_mode
         self._initial_path = new_path or ""
+        self._initial_builtin = new_builtin
 
         if not dirty:
             self._restart_banner.setVisible(False)
@@ -264,13 +325,32 @@ class _ColorManagementPage(QWidget):
 
     def _sync_path_enabled(self) -> None:
         custom = self._radio_custom.isChecked()
+        default = self._radio_default.isChecked()
         self._path_edit.setEnabled(custom)
         self._browse_btn.setEnabled(custom)
+        # The built-in dropdown only matters when "Default" is the
+        # active mode — grey it out otherwise so the UI matches the
+        # actual resolution path.
+        self._builtin_combo.setEnabled(default)
+
+    def _current_builtin_uri(self) -> str:
+        """Return the builtin URI currently selected in the dropdown.
+        Falls back to the saved pref if the dropdown is somehow empty
+        (defensive)."""
+        idx = self._builtin_combo.currentIndex()
+        if 0 <= idx < len(self._builtin_uris):
+            return self._builtin_uris[idx]
+        return self._initial_builtin
 
     def _update_dirty_state(self) -> None:
         new_mode = self._current_mode()
         new_path = self._path_edit.text().strip()
-        dirty = (new_mode != self._initial_mode) or (new_path != self._initial_path)
+        new_builtin = self._current_builtin_uri()
+        dirty = (
+            new_mode != self._initial_mode
+            or new_path != self._initial_path
+            or new_builtin != self._initial_builtin
+        )
         if dirty:
             # Reset to the amber pending message; any prior success /
             # failure banner is now stale because the user is editing
@@ -315,11 +395,12 @@ class _ColorManagementPage(QWidget):
 
         mode = self._initial_mode
         path = self._initial_path
+        builtin = self._initial_builtin or DEFAULT_BUILTIN_URI
         if mode == "custom" and path:
             try:
                 return ocio.Config.CreateFromFile(path)
             except ocio.Exception:
-                return ocio.Config.CreateFromBuiltinConfig(DEFAULT_BUILTIN_URI)
+                return ocio.Config.CreateFromBuiltinConfig(builtin)
         if mode == "env":
             env = os.environ.get("OCIO")
             if env:
@@ -327,7 +408,10 @@ class _ColorManagementPage(QWidget):
                     return ocio.Config.CreateFromFile(env)
                 except ocio.Exception:
                     pass
-        return ocio.Config.CreateFromBuiltinConfig(DEFAULT_BUILTIN_URI)
+        try:
+            return ocio.Config.CreateFromBuiltinConfig(builtin)
+        except ocio.Exception:
+            return ocio.Config.CreateFromBuiltinConfig(DEFAULT_BUILTIN_URI)
 
 
 class _DiskCachePage(QWidget):
