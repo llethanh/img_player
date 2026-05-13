@@ -33,6 +33,13 @@ desktop.ini
 logs/
 *.log
 
+# Site config — per-studio / per-machine, not project-wide. The
+# documented schema lives in flick.toml.example which IS committed;
+# a real flick.toml at the repo root is deployment-specific (your
+# studio's defaults, a personal dev override) and shouldn't be
+# shared via git.
+/flick.toml
+
 # Heavy test fixtures (to be discussed case by case)
 tests/fixtures/large/
 
