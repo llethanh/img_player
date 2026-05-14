@@ -60,27 +60,33 @@ class ContactSheetDecoder:
     def decode_all(
         self,
         layers: list[Layer],
-        contact_frame: int,
+        contact_offset: int,
     ) -> list[tuple[Layer, np.ndarray | None]]:
         """Return ``(layer, decoded_arr_or_None)`` for every layer.
 
-        ``contact_frame`` is the contact-sheet playhead position, 0
-        being "all layers' first source frame". Layers whose
-        trimmed length is ≤ ``contact_frame`` get their last
-        successfully-decoded buffer back (frozen tail). Layers that
-        failed to decode at all return ``None`` so the compositor
-        can paint the unavailable-stripes placeholder.
+        ``contact_offset`` is the **0-based playback offset** — the
+        number of frames since playback started. At offset 0 every
+        tile shows its layer's first source frame; at offset N each
+        tile shows its layer's (N+1)-th frame, clamped to the
+        layer's trim length so shorter layers freeze on their last
+        frame rather than reading out of range. The caller (=
+        ``ImgPlayerApp._render_contact_sheet``) converts the
+        master-frame number into this offset by subtracting the
+        navigable-range start.
+
+        Layers that failed to decode at all return ``None`` so the
+        compositor can paint the unavailable-stripes placeholder.
         """
         out: list[tuple[Layer, np.ndarray | None]] = []
         for layer in layers:
-            arr = self.decode_one(layer, contact_frame)
+            arr = self.decode_one(layer, contact_offset)
             out.append((layer, arr))
         return out
 
     def decode_one(
-        self, layer: Layer, contact_frame: int,
+        self, layer: Layer, contact_offset: int,
     ) -> np.ndarray | None:
-        """Decode ``layer`` at ``contact_frame``-from-start.
+        """Decode ``layer`` at ``contact_offset``-from-start.
 
         Returns the layer's last cached buffer when the requested
         frame is past the layer's trim range — the "freeze on tail"
@@ -88,8 +94,8 @@ class ContactSheetDecoder:
         lengths.
         """
         if layer.is_video:
-            return self._decode_video(layer, contact_frame)
-        return self._decode_image(layer, contact_frame)
+            return self._decode_video(layer, contact_offset)
+        return self._decode_image(layer, contact_offset)
 
     def invalidate(self, layer_id: str | None = None) -> None:
         """Drop cached buffers. ``None`` = wipe everything (used at
@@ -102,7 +108,7 @@ class ContactSheetDecoder:
     # ------------------------------------------------------------------ Internals
 
     def _decode_image(
-        self, layer: Layer, contact_frame: int,
+        self, layer: Layer, contact_offset: int,
     ) -> np.ndarray | None:
         """Image-sequence layer: pick the source frame at the requested
         contact-sheet offset, clamping to the layer's trim range so
@@ -115,7 +121,7 @@ class ContactSheetDecoder:
         if layer.is_still:
             source_frame = layer.layer_in
         else:
-            clamped = max(0, min(contact_frame, trim_length - 1))
+            clamped = max(0, min(contact_offset, trim_length - 1))
             source_frame = layer.layer_in + clamped
 
         last = self._last.get(layer.id)
@@ -145,7 +151,7 @@ class ContactSheetDecoder:
         return arr
 
     def _decode_video(
-        self, layer: Layer, contact_frame: int,
+        self, layer: Layer, contact_offset: int,
     ) -> np.ndarray | None:
         if layer.video_metadata is None:
             return None
@@ -154,7 +160,7 @@ class ContactSheetDecoder:
             return None
         # Clamp to the layer's trim length so video tiles freeze on
         # their last frame past the end — same semantic as images.
-        clamped = max(0, min(contact_frame, layer.trim_length - 1))
+        clamped = max(0, min(contact_offset, layer.trim_length - 1))
         t_seconds = clamped / float(meta.fps)
         try:
             return self._video_sources.decode_at(layer.id, meta.path, t_seconds)

@@ -1545,18 +1545,28 @@ class ImgPlayerApp:
                 master_frame,
             )
             return False
-        decodes = self._contact_sheet_decoder.decode_all(layers, master_frame)
+        # Master frame → contact-sheet offset. The controller speaks
+        # master-frame numbers (which in single-sequence mode coincide
+        # with source frame numbers, e.g. 1001..1090 — not 0..89). The
+        # decoder expects a 0-based offset since playback started so
+        # every layer can be re-aligned to "frame 0". Use the
+        # navigable-range start as the anchor — that's the playback
+        # in-point + or the master_start of the leftmost layer, which
+        # is exactly where the controller would loop back to.
+        anchor = self._controller._effective_in_frame()  # noqa: SLF001
+        contact_offset = max(0, master_frame - anchor)
+        decodes = self._contact_sheet_decoder.decode_all(layers, contact_offset)
         tiles = [arr for _, arr in decodes]
         if all(arr is None for arr in tiles):
             log.warning(
-                "[contact_sheet] render skipped at master=%d: every layer's "
-                "decode returned None (n_layers=%d)",
-                master_frame, len(layers),
+                "[contact_sheet] render skipped at master=%d (offset=%d): "
+                "every layer's decode returned None (n_layers=%d)",
+                master_frame, contact_offset, len(layers),
             )
             return False
         log.info(
-            "[contact_sheet] render master=%d, %d tiles (%d decoded)",
-            master_frame, len(layers),
+            "[contact_sheet] render master=%d (offset=%d), %d tiles (%d decoded)",
+            master_frame, contact_offset, len(layers),
             sum(1 for t in tiles if t is not None),
         )
 
