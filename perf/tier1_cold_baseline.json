@@ -1,0 +1,92 @@
+{
+  "schema_version": 2,
+  "generated_at": "2026-05-14T13:25:29Z",
+  "platform": {
+    "system": "Windows",
+    "release": "10",
+    "python": "3.11.15",
+    "machine": "AMD64"
+  },
+  "context": {
+    "sequence_label": "SH0010_Rendered_RGB.####.exr",
+    "frame_count": 90,
+    "resolution": [
+      3840,
+      2160
+    ],
+    "channels": 4,
+    "target_fps": 24.0,
+    "cache_budget_bytes": 54852049305,
+    "num_workers": 12,
+    "passes_played": 5,
+    "warmup_frames": 30
+  },
+  "tick": {
+    "samples": 450,
+    "effective_fps": 23.063488802144562,
+    "cache_hit_rate": 1.0,
+    "inter_tick_ms": {
+      "count": 449,
+      "mean": 43.35857461023047,
+      "p50": 46.999999991385266,
+      "p95": 62.999999994644895,
+      "p99": 94.00000000488944,
+      "min": 14.999999999417923,
+      "max": 156.00000000267755
+    }
+  },
+  "paint": {
+    "samples": 449,
+    "effective_fps": 23.25339977161446,
+    "upload_us": {
+      "count": 449,
+      "mean": 7207.12694862286,
+      "p50": 0.0,
+      "p95": 30999.999988125637,
+      "p99": 47600.00000591335,
+      "min": 0.0,
+      "max": 125000.0
+    },
+    "paint_us": {
+      "count": 449,
+      "mean": 8280.62360784125,
+      "p50": 0.0,
+      "p95": 31000.000002677552,
+      "p99": 62000.000005355105,
+      "min": 0.0,
+      "max": 125000.0
+    },
+    "inter_paint_ms": {
+      "count": 448,
+      "mean": 43.00446428572156,
+      "p50": 46.999999991385266,
+      "p95": 63.00000000919681,
+      "p99": 101.95000000385294,
+      "min": 0.0,
+      "max": 156.00000000267755
+    },
+    "upload_gpu_us": {
+      "count": 446,
+      "mean": 122374.70112038848,
+      "p50": 121734.54998992383,
+      "p95": 144366.0999975691,
+      "p99": 202178.13499548356,
+      "min": 63249.39998739865,
+      "max": 220864.29999035317
+    },
+    "upload_gpu_pending_count": 0
+  },
+  "decode": {
+    "samples": 0,
+    "decode_ms": {
+      "count": 0,
+      "mean": NaN,
+      "p50": NaN,
+      "p95": NaN,
+      "p99": NaN,
+      "min": NaN,
+      "max": NaN
+    },
+    "total_bytes": 0
+  }
+}
