@@ -40,7 +40,8 @@
     stack <em>multiple layers</em>, trim them on the master timeline, review in real
     OCIO color, <em>compare two takes</em> with a wipe / opacity overlay, annotate with
     the pen, comment per frame — ship the result as video or a baked sequence.
-    Background <em>channel pre-cache</em> means switching AOVs is instant.
+    A <em>persistent disk cache</em> means yesterday's shots open warm today;
+    background channel pre-cache means switching AOVs is instant.
   </p>
   <div class="ctas">
     <span
@@ -93,8 +94,8 @@
       <div class="icon">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 7 6 7 6 17 9 17"/><polyline points="9 7 12 7 12 17 15 17"/><polyline points="15 7 18 7 18 17 21 17"/></svg>
       </div>
-      <h3>Smart cache</h3>
-      <p>Multi-version key keeps a snapshot per channel selection — switching AOVs back and forth is an instant hit, not a re-decode. Smart reload diffs file mtimes; force reload (Ctrl+Shift+R) drops everything.</p>
+      <h3>3-tier cache</h3>
+      <p>RAM for hot frames, lz4 + half-float blobs on disk for "yesterday's review", OIIO decode as fallback. Re-opening the same shot is a tenth of the time. Per-channel snapshot keying means AOV toggles never re-decode. Auto-reload on file changes via QFileSystemWatcher.</p>
     </a>
     <a href="#cache" class="feature-card">
       <div class="icon">
@@ -108,7 +109,7 @@
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="13.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="13" r="2.5"/><circle cx="8" cy="20" r="2.5"/><circle cx="6.5" cy="9" r="2.5"/><line x1="6.5" y1="9" x2="13.5" y2="6.5"/><line x1="13.5" y1="6.5" x2="17.5" y2="13"/><line x1="8" y1="20" x2="6.5" y2="9"/><line x1="8" y1="20" x2="17.5" y2="13"/></svg>
       </div>
       <h3>OCIO color</h3>
-      <p>ACES 2.0 CG built-in. Source / display / view round-trip on the GPU shader — toggling is free. Auto-detect from EXR metadata (Nuke, Arnold, V-Ray, Houdini), with a per-pipeline override for unmarked sources.</p>
+      <p>8 built-in configs (ACES 1.3 / 2.0 · CG / Studio), pickable from a dropdown. Defaults to ACES 1.3 CG to match Nuke / Maya / OpenRV. Source / display / view round-trip on the GPU shader — toggling is free. Auto-detect from EXR metadata (Nuke, Arnold, V-Ray, Houdini).</p>
     </a>
     <a href="#annotations" class="feature-card">
       <div class="icon">
@@ -158,6 +159,13 @@
       </div>
       <h3>Hardware-adaptive RAM</h3>
       <p>Auto-tunes cache budget + worker count from your GPU / total RAM. Status bar shows live <em>cache used / budget · system free</em> so you can spot pressure without opening Task Manager. Re-tunes on every project open.</p>
+    </div>
+    <div class="feature-card">
+      <div class="icon">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v6H4z"/><path d="M4 14h16v6H4z"/><circle cx="8" cy="7" r="1" fill="currentColor"/><circle cx="8" cy="17" r="1" fill="currentColor"/></svg>
+      </div>
+      <h3>Studio deployment</h3>
+      <p>Drop a <code>flick.toml</code> next to <code>FlickPlayer.exe</code> to set studio-wide defaults — pinned OCIO config, custom disk-cache path, budget. Per-user overrides live in their own <code>flick.toml</code> in <code>%APPDATA%</code>, never trample the deploy. Plain TOML, hand-editable, versionable.</p>
     </div>
   </div>
 </section>
@@ -250,12 +258,23 @@
     <div class="copy">
       <h2>The cache that <span class="accent">remembers</span> your channels.</h2>
       <p>
-        Most players treat their RAM cache as a flat <em>master_frame → pixels</em>
-        map. Switch a channel and the whole range invalidates. Flick keys on
-        <em>(master_frame × signature)</em> instead, where the signature captures
-        the chain × channel selection. Switch RGB → albedo → RGB and the second
-        RGB is an instant cache hit, not a 1000-frame re-decode.
+        Three tiers: <b>RAM</b> for the active scrub, a <b>persistent disk cache</b>
+        for shots you've already reviewed, source decode as a last resort. Yesterday's
+        dailies open warm today. Switch RGB → albedo → RGB and the second RGB is an
+        instant cache hit, not a 1000-frame re-decode — Flick keys on
+        <em>(master_frame × signature)</em> at every tier, so channel toggles never
+        invalidate.
       </p>
+      <h4 style="margin-top: var(--s-md); margin-bottom: var(--s-sm);">Disk tier</h4>
+      <ul>
+        <li><b>Persistent across sessions</b> — decoded frames evicted from RAM are saved as lz4-compressed half-float blobs (≈ 25 MB per 4K frame, ~5 ms decode). Close Flick, reopen tomorrow, scrub: cache hit.</li>
+        <li><b>Per-contributor caching</b> — each layer's contribution is cached separately, so reordering or hiding a layer leaves the others hot on disk.</li>
+        <li><b>Pre-paint timeline</b> — a dim-orange wash on the cache bar shows which frames are available on disk before you even scrub to them.</li>
+        <li><b>Auto-reload on disk changes</b> — a debounced <code>QFileSystemWatcher</code> picks up re-renders within ~200 ms. No need to press Ctrl+R when comp re-publishes.</li>
+        <li><b>Multi-process safe</b> — opening Flick twice falls back to read-only mode on the second instance; no corrupt index.</li>
+        <li><b>Configurable</b> — Preferences &gt; Disk cache lets you change the location (NVMe scratch), set a budget (default 50 GB, soft cap), or turn lz4 off for ~5× faster reads on fast NVMe.</li>
+      </ul>
+      <h4 style="margin-top: var(--s-md); margin-bottom: var(--s-sm);">RAM tier</h4>
       <ul>
         <li><b>Background channel pre-cache</b> — once the active channel is fully cached, idle workers quietly pre-decode the focused layer's other groups (RGB beauty, AOVs, normals, Z…) into their own cache slots. Switching becomes free.</li>
         <li><b>Per-row progress bars</b> in the channel menu show each group's fill in real time. Same translucent-orange idiom as the timeline cache bar — visible right on the dropdown button while it's closed.</li>
@@ -349,13 +368,19 @@
     <div class="copy">
       <h2>Real <span class="accent">OCIO</span> color, on the GPU.</h2>
       <p>
-        Flick Player ships with the ACES 2.0 CG built-in config. Point it at your
-        studio's custom <code>config.ocio</code> via the <code>$OCIO</code> env var
-        if you have one. The display transform runs on the fragment shader, so
-        toggling source / display / view is free — no cache invalidation, no
-        re-decode.
+        Flick ships with 8 ACES configs (1.3 + 2.0 in both <em>CG</em> and
+        <em>Studio</em> flavours), picked from a dropdown in Preferences &gt;
+        Color Management. Default is <b>ACES 1.3 CG</b> — matches Nuke / Maya /
+        OpenRV out of the box, so your image looks identical to the rest of
+        the pipeline without any setup. Point it at your studio's custom
+        <code>config.ocio</code> when you need to. The display transform runs
+        on the fragment shader, so toggling source / display / view is free —
+        no cache invalidation, no re-decode.
       </p>
       <ul>
+        <li><b>8 built-in OCIO configs</b> — ACES 1.3 + 2.0, CG + Studio. Switch
+            from ACES 1.3 (industry default) to ACES 2.0 (new tone mapper) or
+            the broader Studio variants in one click. Hot-reload — no restart.</li>
         <li><b>Auto-detect</b> input colorspace from EXR header attributes — the
             loader sweeps for <code>colorspace</code> / <code>color_space</code>
             keys written by Nuke, Arnold, V-Ray, Houdini, and matches them
@@ -550,11 +575,15 @@
 <section id="changelog" class="changelog-teaser">
   <h2>What's <span class="accent">new</span>.</h2>
   <p class="lede">
-    Latest release: <strong>v1.4.5</strong> — Hi-DPI splash polish. Before that
-    v1.4.4 brought on-image A/B markers (mode-aware, opacity fade), numbered
-    A/B dropdowns, a permanent "Selected layers" status-bar HUD and an info-band
-    -style missing-frame placeholder. The full history — every public release,
-    what changed, why it changed — lives on its own page.
+    Latest release: <strong>v1.5.12</strong> — Apply-with-no-change no-op fix on
+    Preferences. Before that the v1.5.x line shipped a <strong>persistent
+    disk-cache tier</strong> (lz4 + half-float blobs, ~5 ms decode, survives
+    close/reopen), a <strong>user-selectable OCIO config dropdown</strong> with
+    8 built-in ACES configs (1.3 + 2.0, CG + Studio) and an <strong>ACES 1.3
+    default</strong> matching Nuke / Maya / OpenRV out of the box, plus a TOML-
+    based <strong>site &amp; user preference system</strong> for studio deployment.
+    The full history — every public release, what changed, why it changed — lives
+    on its own page.
   </p>
   <p style="margin-top: var(--s-md);">
     <a class="btn btn-primary" href="changelog.html">Read the full changelog →</a>

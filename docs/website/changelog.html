@@ -44,6 +44,233 @@
     <article class="release">
       <div class="release-meta">
         <span class="ver">
+          <a href="https://github.com/llethanh/img_player/releases/tag/v1.5.12" style="color: inherit; text-decoration: none;">v1.5.12</a>
+        </span>
+        <span class="date">2026-05-14</span>
+        <span class="tagline">Apply with no changes no longer materialises user TOML.</span>
+      </div>
+      <div class="release-body">
+        <h4>Fixes</h4>
+        <ul>
+          <li class="fix"><strong>Apply on Preferences &gt; Color Management without editing any field used to write every value to the user <code>flick.toml</code> unconditionally</strong> — silently capturing the resolved (site / hardcoded) values as user-level overrides. The next site-config update would then be ignored on that machine. Setters are now properly gated behind explicit "did this field change?" checks. A regression test makes sure it stays that way.</li>
+        </ul>
+      </div>
+    </article>
+
+    <article class="release">
+      <div class="release-meta">
+        <span class="ver">
+          <a href="https://github.com/llethanh/img_player/releases/tag/v1.5.11" style="color: inherit; text-decoration: none;">v1.5.11</a>
+        </span>
+        <span class="date">2026-05-13</span>
+        <span class="tagline">One-shot QSettings → TOML migration, not per-launch.</span>
+      </div>
+      <div class="release-body">
+        <h4>Fixes</h4>
+        <ul>
+          <li class="fix"><strong>Legacy QSettings → user TOML migration was running every launch</strong> — re-importing the same registry values back into <code>flick.toml</code> even after the user had deleted it, making "fall back on site defaults" impossible. Now persists a <code>_user_prefs_migration_version</code> flag in QSettings after the first run; subsequent launches skip migration entirely, so deleting the user TOML really does reset to site / hardcoded defaults.</li>
+        </ul>
+      </div>
+    </article>
+
+    <article class="release">
+      <div class="release-meta">
+        <span class="ver">
+          <a href="https://github.com/llethanh/img_player/releases/tag/v1.5.10" style="color: inherit; text-decoration: none;">v1.5.10</a>
+        </span>
+        <span class="date">2026-05-13</span>
+        <span class="tagline">Dedicated General tab in Preferences.</span>
+      </div>
+      <div class="release-body">
+        <h4>New</h4>
+        <ul>
+          <li><strong>New "General" tab</strong> in Preferences (sidebar, top position) showing all the canonical file-system locations Flick uses with a one-click <em>Open folder</em> button each: user preferences (<code>flick.toml</code>), site configuration, disk cache root, log file, performance profile. Read-only diagnostic surface — no apply step. Each path is selectable for copy-paste into a shell / bug report.</li>
+        </ul>
+      </div>
+    </article>
+
+    <article class="release">
+      <div class="release-meta">
+        <span class="ver">
+          <a href="https://github.com/llethanh/img_player/releases/tag/v1.5.9" style="color: inherit; text-decoration: none;">v1.5.9</a>
+        </span>
+        <span class="date">2026-05-13</span>
+        <span class="tagline">App-data folders renamed to <code>FlickPlayer</code>.</span>
+      </div>
+      <div class="release-body">
+        <h4>New</h4>
+        <ul>
+          <li><strong>User-facing rename of every on-disk folder</strong>: <code>%APPDATA%\img_player\</code> → <code>%APPDATA%\FlickPlayer\</code>, same for <code>%LOCALAPPDATA%</code> (disk cache + logs + calibration profile). Matches the executable name (<code>FlickPlayer.exe</code>) and the bundle directory. An automatic one-shot migration renames the legacy folder at boot — no data loss, no manual cleanup.</li>
+          <li><strong>Canonical paths centralised</strong> in a new <code>img_player.app_paths</code> module so any future rename only touches one place.</li>
+        </ul>
+        <h4>Notes</h4>
+        <ul>
+          <li>The QSettings org/app name stays <code>img_player/img_player</code> in the registry to preserve every user's window geometry, recent files, side-panel state, etc. across the upgrade.</li>
+        </ul>
+      </div>
+    </article>
+
+    <article class="release">
+      <div class="release-meta">
+        <span class="ver">
+          <a href="https://github.com/llethanh/img_player/releases/tag/v1.5.8" style="color: inherit; text-decoration: none;">v1.5.8</a>
+        </span>
+        <span class="date">2026-05-13</span>
+        <span class="tagline">Per-user <code>flick.toml</code> + 3-tier layered preference resolution.</span>
+      </div>
+      <div class="release-body">
+        <h4>New</h4>
+        <ul>
+          <li><strong>User-level <code>flick.toml</code></strong> at <code>%APPDATA%\FlickPlayer\flick.toml</code> captures the user's explicit preference overrides — color management + disk cache settings — in plain text. Portable: copy the file between machines and get the same setup. Hand-editable. Atomic writes (temp file + <code>os.replace</code>) so a crash mid-save can't corrupt the prefs.</li>
+          <li><strong>3-tier resolution</strong> — user TOML &gt; site TOML &gt; hardcoded. The user TOML only contains keys the user has explicitly changed (= delta vs defaults). Sorted output, comment header. Diff-friendly.</li>
+          <li><strong>Migration from QSettings</strong> — existing values for the 7 affected keys (<code>color/ocio_*</code>, <code>disk_cache/*</code>) get copied into the user TOML on first launch.</li>
+        </ul>
+      </div>
+    </article>
+
+    <article class="release">
+      <div class="release-meta">
+        <span class="ver">
+          <a href="https://github.com/llethanh/img_player/releases/tag/v1.5.7" style="color: inherit; text-decoration: none;">v1.5.7</a>
+        </span>
+        <span class="date">2026-05-13</span>
+        <span class="tagline">Site config file for studio-wide preference defaults.</span>
+      </div>
+      <div class="release-body">
+        <h4>New</h4>
+        <ul>
+          <li><strong>Studio deployment</strong> — drop a <code>flick.toml</code> next to <code>FlickPlayer.exe</code> (or set <code>$FLICK_SITE_CONFIG</code> to an absolute path for shared fileshare deployments) and every user launching this build picks up the file's values as their defaults. Users can still override individually via the Preferences UI; the site TOML supplies the baseline.</li>
+          <li><strong>Documented schema</strong> — <code>flick.toml.example</code> at the install root explains every key with comments. Loaded once at boot (policy-file semantics; mid-session edits take effect on next launch).</li>
+        </ul>
+      </div>
+    </article>
+
+    <article class="release">
+      <div class="release-meta">
+        <span class="ver">
+          <a href="https://github.com/llethanh/img_player/releases/tag/v1.5.6" style="color: inherit; text-decoration: none;">v1.5.6</a>
+        </span>
+        <span class="date">2026-05-13</span>
+        <span class="tagline">User-selectable OCIO built-in config; ACES 1.3 by default.</span>
+      </div>
+      <div class="release-body">
+        <h4>New</h4>
+        <ul>
+          <li><strong>Preferences &gt; Color Management gets a new "Config" dropdown</strong> enumerating every built-in config OCIO ships — 8 entries covering ACES 1.3 + 2.0 in both CG and Studio flavours. Labelled by ACES family + kind so the choice is obvious.</li>
+          <li><strong>Default changed</strong> from "library default" (= ACES 2.0 CG in OCIO 2.5.x) to <code>cg-config-v2.2.0_aces-v1.3_ocio-v2.4</code> (ACES 1.3 CG) — matches the view-transform family used by Nuke, Maya, OpenRV in the vast majority of studios. ACES 2.0 stays selectable for early adopters.</li>
+          <li><strong>Hot-reload</strong> — switch ACES families on the fly, no restart. The dropdown greys out when "Custom" / "$OCIO" mode is selected so the active resolution path is unambiguous.</li>
+        </ul>
+      </div>
+    </article>
+
+    <article class="release">
+      <div class="release-meta">
+        <span class="ver">
+          <a href="https://github.com/llethanh/img_player/releases/tag/v1.5.5" style="color: inherit; text-decoration: none;">v1.5.5</a>
+        </span>
+        <span class="date">2026-05-13</span>
+        <span class="tagline">Disk-cache, hardened — robustness, multi-process safety, perf.</span>
+      </div>
+      <div class="release-body">
+        <h4>New</h4>
+        <ul>
+          <li><strong>Shutdown drain budget 2s → 10s + visible "Flushing disk cache…" indicator</strong> so closing Flick with a fat writer backlog actually flushes everything instead of dropping the last few decoded frames.</li>
+          <li><strong>Orphan blob sweep at boot</strong> — scan the cache tree for <code>.bin</code> files not referenced by SQLite and unlink them. Catches pre-1.5.1 bogus-key blobs + crash-mid-write leftovers + the user-deleted-index case.</li>
+          <li><strong>Auto-reload via <code>QFileSystemWatcher</code></strong> — debounced ~200 ms so a re-render burst coalesces into one reload. Picks up comp re-publishes without Ctrl+R.</li>
+          <li><strong>Format-version migration</strong> via SQLite <code>PRAGMA user_version</code> — auto-wipe the cache once on format bump, no manual "Clear cache now".</li>
+          <li><strong>Cross-process lock</strong> at <code>&lt;cache_dir&gt;/.lock</code>. A second Flick instance falls back to read-only mode (queries OK, no writes) with a banner in Preferences — prevents corruption from concurrent writers.</li>
+          <li><strong>Perf v2 format</strong> — struct-packed 16-byte header replaces <code>np.save</code>'s NPY format (~1.5× faster reads). <strong>Perf v3 format</strong> opt-in via a "Compress blobs (lz4)" toggle — raw bytes for fast NVMe, ~5× faster reads at 2× the disk space. Both formats coexist; the reader auto-routes via the blob's magic prefix.</li>
+        </ul>
+      </div>
+    </article>
+
+    <article class="release">
+      <div class="release-meta">
+        <span class="ver">
+          <a href="https://github.com/llethanh/img_player/releases/tag/v1.5.4" style="color: inherit; text-decoration: none;">v1.5.4</a>
+        </span>
+        <span class="date">2026-05-12</span>
+        <span class="tagline">Per-contributor disk caching.</span>
+      </div>
+      <div class="release-body">
+        <h4>New</h4>
+        <ul>
+          <li><strong>Disk cache moves from composite-level to per-layer caching</strong> — each contributing layer's contribution (post-premult, pre-opaque-floor) is stored separately. Reorder / hide / add an unrelated layer → the other contributors stay hot on disk. The composite is rebuilt on the fly (~5-10 ms over-blend) instead of re-decoding every layer.</li>
+        </ul>
+      </div>
+    </article>
+
+    <article class="release">
+      <div class="release-meta">
+        <span class="ver">
+          <a href="https://github.com/llethanh/img_player/releases/tag/v1.5.3" style="color: inherit; text-decoration: none;">v1.5.3</a>
+        </span>
+        <span class="date">2026-05-12</span>
+        <span class="tagline">Pre-paint timeline for disk-available frames + live stats panel.</span>
+      </div>
+      <div class="release-body">
+        <h4>New</h4>
+        <ul>
+          <li><strong>Pre-paint timeline</strong> — a dim-orange wash on the cache bar marks frames available on disk before you scrub to them. Bulk <code>contains_keys</code> SQLite query at session-load (~50 ms for a 1000-frame single-layer sequence).</li>
+          <li><strong>Live disk-cache stats</strong> in Preferences &gt; Disk cache — hits / misses / writes / read MB / written MB, refreshed every 1.5 s. Read-only banner appears when another instance owns the cache.</li>
+        </ul>
+      </div>
+    </article>
+
+    <article class="release">
+      <div class="release-meta">
+        <span class="ver">
+          <a href="https://github.com/llethanh/img_player/releases/tag/v1.5.2" style="color: inherit; text-decoration: none;">v1.5.2</a>
+        </span>
+        <span class="date">2026-05-12</span>
+        <span class="tagline">Disk-cache perf: native float16 reads + batched access updates.</span>
+      </div>
+      <div class="release-body">
+        <h4>New</h4>
+        <ul>
+          <li><strong>Skip the float16 → float32 astype on read</strong> — the GL viewport accepts <code>GL_HALF_FLOAT</code> natively, so the cast was pure waste (~30 ms per 4K frame).</li>
+          <li><strong>Batched <code>last_access</code> SQLite updates</strong> — every get() used to fire one UPDATE; we now coalesce 2 s of hits into one transaction. Eviction sees timestamps up to ~2 s stale (fine — eviction is rare).</li>
+        </ul>
+      </div>
+    </article>
+
+    <article class="release">
+      <div class="release-meta">
+        <span class="ver">
+          <a href="https://github.com/llethanh/img_player/releases/tag/v1.5.1" style="color: inherit; text-decoration: none;">v1.5.1</a>
+        </span>
+        <span class="date">2026-05-12</span>
+        <span class="tagline">Disk-cache wrong-channel bug fix.</span>
+      </div>
+      <div class="release-body">
+        <h4>Fixes</h4>
+        <ul>
+          <li class="fix"><strong>Disk cache source key was computed from live state</strong> at decode time, not from submit state — so a user toggling channels mid-decode could end up with the alt-channel pixels stored under the live-channel key. Mixed RGBA / albedo frames in some saved sessions. Fixed by capturing the key at submit time alongside the rest of the plan; format key bumped v1 → v2 to invalidate any corrupted blobs from v1.5.0.</li>
+        </ul>
+      </div>
+    </article>
+
+    <article class="release">
+      <div class="release-meta">
+        <span class="ver">
+          <a href="https://github.com/llethanh/img_player/releases/tag/v1.5.0" style="color: inherit; text-decoration: none;">v1.5.0</a>
+        </span>
+        <span class="date">2026-05-12</span>
+        <span class="tagline">Persistent disk-cache tier — close, reopen, scrub: cache hit.</span>
+      </div>
+      <div class="release-body">
+        <h4>New</h4>
+        <ul>
+          <li><strong>3-tier cache architecture</strong> — RAM → lz4-compressed half-float blobs on disk → source decode. Decoded frames evicted from RAM are persisted; opening the same shot tomorrow finds yesterday's frames warm.</li>
+          <li><strong>SQLite WAL index</strong> for the disk tier (atomic, crash-safe). Sharded blob layout (<code>&lt;cache_dir&gt;/ab/cd/&lt;hash&gt;.bin</code>) avoids 100k files in a single directory.</li>
+          <li><strong>Preferences &gt; Disk cache</strong> — enable/disable, custom location (e.g. NVMe scratch), soft budget (default 50 GB, oldest entries evicted at 85% threshold), Clear button.</li>
+        </ul>
+      </div>
+    </article>
+
+    <article class="release">
+      <div class="release-meta">
+        <span class="ver">
           <a href="https://github.com/llethanh/img_player/releases/tag/v1.4.5" style="color: inherit; text-decoration: none;">v1.4.5</a>
         </span>
         <span class="date">2026-05-12</span>
