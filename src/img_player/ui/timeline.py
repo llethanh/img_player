@@ -116,6 +116,16 @@ class Timeline(QWidget):  # type: ignore[misc]
         # fullscreen mode where the user wants a clean review
         # surface without the review-tool chrome on top.
         self._minimal_mode: bool = False
+        # Dimmed mode: paints a semi-transparent grey film over the
+        # whole widget and ignores mouse input. Used by contact-sheet
+        # mode where the per-tile scrub-drag on the viewport is the
+        # primary interaction and the global timeline is showing the
+        # master playhead as a *read-only* reference (per-tile offsets
+        # stack on top of the master frame, so changing master via the
+        # timeline mid-contact-sheet was a foot-gun for users learning
+        # the mode). The "set / unset in/out via Ctrl-click" gesture
+        # is blocked too — same reason: keep the contact-sheet UI focused.
+        self._dimmed: bool = False
         # Drag mode for Ctrl-modified mouse interactions:
         #   None         → normal scrub
         #   "drag_in"    → moving the in-point
@@ -204,6 +214,20 @@ class Timeline(QWidget):  # type: ignore[misc]
         self._annotated_frames = frames
         self.update()
 
+    def set_dimmed(self, enabled: bool) -> None:
+        """Toggle the read-only dim-overlay used when contact-sheet
+        mode is active. Idempotent — same value → no repaint."""
+        flag = bool(enabled)
+        if flag == self._dimmed:
+            return
+        self._dimmed = flag
+        # When dimming on, also drop any in-progress drag / scrub so
+        # the next click in normal mode starts clean.
+        if flag:
+            self._scrubbing = False
+            self._drag_mode = None
+        self.update()
+
     def set_minimal_mode(self, enabled: bool) -> None:
         """Toggle the stripped-down rendering used by the fullscreen
         bottom bar — track + playhead only, no labels / cache bar /
@@ -257,6 +281,16 @@ class Timeline(QWidget):  # type: ignore[misc]
         self._draw_cache_bar(painter)
         self._draw_annotation_markers(painter)
         self._draw_comment_markers(painter)
+
+        if self._dimmed:
+            # Semi-transparent grey film matching the panel background
+            # — desaturates ticks, cache bar, in/out flags and playhead
+            # in one stroke so the user reads the timeline as "context
+            # only, not a control" while contact-sheet mode is active.
+            # Alpha tuned so the playhead is still legible (the user
+            # needs to track playback position) but the surface clearly
+            # looks disabled vs the bright normal state.
+            painter.fillRect(self.rect(), QColor(20, 20, 22, 160))
 
 
     def _usable_width(self) -> int:
@@ -556,6 +590,11 @@ class Timeline(QWidget):  # type: ignore[misc]
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() != Qt.MouseButton.LeftButton:
             return
+        # Dimmed = contact-sheet mode is active. The timeline is purely
+        # a read-only playhead indicator; per-tile scrub on the viewport
+        # is the user's only direct frame-control gesture.
+        if self._dimmed:
+            return
         x = event.position().x()
         ctrl = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
         if ctrl and self._last > self._first:
@@ -578,6 +617,8 @@ class Timeline(QWidget):  # type: ignore[misc]
         self._emit_for_x(x)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if self._dimmed:
+            return
         x = event.position().x()
         if self._drag_mode is not None:
             if self._last <= self._first:

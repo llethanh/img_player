@@ -1623,6 +1623,11 @@ class ImgPlayerApp:
         # without each call site needing its own re-push.
         if not new_enabled:
             self._window.viewer.gl.set_contact_sheet_grid(None)
+        # Dim the master timeline while in contact-sheet mode so the
+        # user reads it as a read-only playhead indicator rather than
+        # the active scrub surface. Per-tile drag-to-scrub on the
+        # viewport is the contact-sheet mode's frame-control gesture.
+        self._window.timeline.set_dimmed(new_enabled)
         # Persist + re-render at the current frame so the user sees
         # the change immediately.
         self._prefs.contact_sheet_state = self._contact_sheet_state.to_dict()
@@ -4145,6 +4150,11 @@ def _apply_preferences_to_window(app: ImgPlayerApp) -> None:
         app._controller.set_always_advance(
             app._contact_sheet_state.enabled,
         )
+        # Mirror the dim-overlay on the timeline so boot-from-prefs
+        # matches the runtime ``toggle_contact_sheet`` path: timeline
+        # reads as read-only context, viewport per-tile drag is the
+        # active gesture.
+        app._window.timeline.set_dimmed(app._contact_sheet_state.enabled)
         app._sync_contact_sheet_menu_state()
     except Exception:  # pragma: no cover — defensive
         log.exception("[contact_sheet] failed to restore prefs (using defaults)")
