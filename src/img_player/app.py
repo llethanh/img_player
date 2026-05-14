@@ -21,10 +21,29 @@ from img_player.annotate import (
     ToolKind,
     save_annotations,
 )
+# Handlers are hoisted to module top (they were lazy-imported at 17
+# call sites, several of which fire per-frame on ``_on_frame_changed``).
+# All ``*_handler`` modules TYPE_CHECKING-import ImgPlayerApp so the
+# back-edge isn't a real cycle.
+from img_player.channel_handler import (
+    on_channel_selection_changed,
+    set_channel_selection,
+)
 from img_player.color.gpu_processor import build_shader_bundle
 from img_player.color.ocio_manager import OCIOManager
 from img_player.comment import CommentStore, save_comments
+from img_player.compare_handler import (
+    render_compare as _render_compare,
+)
 from img_player.io.reader import configure_oiio
+from img_player.media_handler import (
+    close_orphan_video_sources as _close_orphan_video_sources,
+    current_layer_time as _current_layer_time,
+    decode_video_layer as _decode_video_layer,
+    pick_active_audio_layer as _pick_active_audio_layer,
+    refresh_active_audio as _refresh_active_audio,
+    reseek_active_audio_for_layer_change as _reseek_active_audio_for_layer_change,
+)
 from img_player.perf import (
     HardwareProfile,
     PerformanceTune,
@@ -1128,8 +1147,7 @@ class ImgPlayerApp:
         # decodes A and B independently and composes them via
         # numpy — the cache + composite pipeline are bypassed.
         if self._compare_state.is_active():
-            from img_player.compare_handler import render_compare
-            if render_compare(self, frame):
+            if _render_compare(self, frame):
                 self._last_displayed = frame
                 self._wait_timer.stop()
                 return
@@ -1329,8 +1347,7 @@ class ImgPlayerApp:
         return min(candidates) if candidates else max(cached_same_layer)
 
     def _close_orphan_video_sources(self) -> None:
-        from img_player.media_handler import close_orphan_video_sources
-        close_orphan_video_sources(self)
+        _close_orphan_video_sources(self)
 
     def _refresh_after_stack_change(self) -> None:
         """Re-prefetch + re-display after a LayerStack mutation.
@@ -1532,8 +1549,7 @@ class ImgPlayerApp:
         """
         cur = self._controller.state.current_frame
         if self._compare_state.is_active():
-            from img_player.compare_handler import render_compare
-            if render_compare(self, cur):
+            if _render_compare(self, cur):
                 return
         arr = self._cache.get(cur)
         if arr is not None:
@@ -1571,24 +1587,19 @@ class ImgPlayerApp:
         self._window.viewer.gl.clear_image()
 
     def _pick_active_audio_layer(self):  # type: ignore[no-untyped-def]
-        from img_player.media_handler import pick_active_audio_layer
-        return pick_active_audio_layer(self)
+        return _pick_active_audio_layer(self)
 
     def _reseek_active_audio_for_layer_change(self) -> None:
-        from img_player.media_handler import reseek_active_audio_for_layer_change
-        reseek_active_audio_for_layer_change(self)
+        _reseek_active_audio_for_layer_change(self)
 
     def _refresh_active_audio(self) -> None:
-        from img_player.media_handler import refresh_active_audio
-        refresh_active_audio(self)
+        _refresh_active_audio(self)
 
     def _current_layer_time(self, layer) -> float | None:  # type: ignore[no-untyped-def]
-        from img_player.media_handler import current_layer_time
-        return current_layer_time(self, layer)
+        return _current_layer_time(self, layer)
 
     def _decode_video_layer(self, layer, master_frame: int):  # type: ignore[no-untyped-def]
-        from img_player.media_handler import decode_video_layer
-        return decode_video_layer(self, layer, master_frame)
+        return _decode_video_layer(self, layer, master_frame)
 
     def _display_array(self, arr) -> None:  # type: ignore[no-untyped-def]
         """Push a decoded buffer to the GL viewport.
@@ -1605,7 +1616,6 @@ class ImgPlayerApp:
 
     def set_channel_selection(self, selection: ChannelSelection) -> None:
         """Switch to a new channel selection (single + optional tiles)."""
-        from img_player.channel_handler import set_channel_selection
         set_channel_selection(self, selection)
 
     def _on_state_changed(self, state: PlaybackState) -> None:
@@ -2130,7 +2140,6 @@ class ImgPlayerApp:
 
     def _on_channel_selection_changed(self, selection: object) -> None:
         """Apply a fresh :class:`ChannelSelection` from the transport menu."""
-        from img_player.channel_handler import on_channel_selection_changed
         on_channel_selection_changed(self, selection)
 
 
@@ -2245,8 +2254,7 @@ class ImgPlayerApp:
         # Routing through ``render_compare`` here keeps the wipe
         # painted continuously under the cursor.
         if self._compare_state.is_active():
-            from img_player.compare_handler import render_compare
-            if render_compare(self, frame):
+            if _render_compare(self, frame):
                 self._last_displayed = frame
                 return
             # else: fall through to the cache path so the user still

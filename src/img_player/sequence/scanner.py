@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import re
 from collections import defaultdict
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -47,6 +49,36 @@ def _safe_mtime(path: Path) -> float:
         return path.stat().st_mtime
     except (OSError, FileNotFoundError):
         return 0.0
+
+
+def _iter_image_entries(directory: Path) -> Iterator[tuple[Path, float]]:
+    """Yield ``(path, mtime)`` for every regular file in ``directory``
+    whose name doesn't start with a dot.
+
+    Uses :func:`os.scandir` so each entry's :meth:`stat` is **cached**
+    by the OS — on Windows this is ~3× faster than the
+    ``Path.iterdir() + Path.stat()`` pair we used to do per file. The
+    cached stat is what powers cheap ``mtime`` reads without a second
+    syscall per file. Matters most on Drive-synced / network folders
+    where every stat round-trip is a noticeable.
+
+    Errors during scandir (deleted directory, perm error, …) raise
+    OSError up to the caller — matches the old behaviour of
+    ``Path.iterdir()``.
+    """
+    with os.scandir(directory) as it:
+        for entry in it:
+            name = entry.name
+            if name.startswith("."):
+                continue
+            try:
+                if not entry.is_file():
+                    continue
+                mtime = entry.stat().st_mtime
+            except OSError:
+                # Entry vanished between scandir and stat — skip.
+                continue
+            yield Path(entry.path), mtime
 
 
 @dataclass(frozen=True)
@@ -116,19 +148,15 @@ def scan_all(directory: Path | str, *, probe: bool = True) -> list[SequenceInfo]
         raise SequenceNotFoundError(f"Not a directory: {directory}")
 
     groups: dict[tuple[str, int, str], list[FrameInfo]] = defaultdict(list)
-    for entry in directory.iterdir():
-        if not entry.is_file() or entry.name.startswith("."):
+    for entry_path, mtime in _iter_image_entries(directory):
+        if not is_supported(entry_path):
             continue
-        if not is_supported(entry):
-            continue
-        parsed = _parse(entry.name)
+        parsed = _parse(entry_path.name)
         if parsed is None:
             continue
         key = (parsed.base, parsed.padding, parsed.extension)
         groups[key].append(
-            FrameInfo(
-                path=entry, frame_number=parsed.frame, mtime=_safe_mtime(entry),
-            )
+            FrameInfo(path=entry_path, frame_number=parsed.frame, mtime=mtime),
         )
 
     sequences: list[SequenceInfo] = []
@@ -184,10 +212,8 @@ def _scan_from_file(file: Path, *, probe: bool = True) -> SequenceInfo:
 
     directory = file.parent
     matching_frames: list[FrameInfo] = []
-    for entry in directory.iterdir():
-        if not entry.is_file() or entry.name.startswith("."):
-            continue
-        candidate = _parse(entry.name)
+    for entry_path, mtime in _iter_image_entries(directory):
+        candidate = _parse(entry_path.name)
         if candidate is None:
             continue
         if (
@@ -196,11 +222,7 @@ def _scan_from_file(file: Path, *, probe: bool = True) -> SequenceInfo:
             and candidate.extension == parsed.extension
         ):
             matching_frames.append(
-                FrameInfo(
-                    path=entry,
-                    frame_number=candidate.frame,
-                    mtime=_safe_mtime(entry),
-                )
+                FrameInfo(path=entry_path, frame_number=candidate.frame, mtime=mtime),
             )
 
     if not matching_frames:
@@ -347,10 +369,8 @@ def rescan(sequence: SequenceInfo) -> SequenceInfo:
             channel_names=sequence.channel_names,
         )
     target_ext = sequence.extension.lstrip(".").lower()
-    for entry in directory.iterdir():
-        if not entry.is_file() or entry.name.startswith("."):
-            continue
-        parsed = _parse(entry.name)
+    for entry_path, mtime in _iter_image_entries(directory):
+        parsed = _parse(entry_path.name)
         if parsed is None:
             continue
         if (
@@ -360,9 +380,7 @@ def rescan(sequence: SequenceInfo) -> SequenceInfo:
         ):
             continue
         matching.append(
-            FrameInfo(
-                path=entry, frame_number=parsed.frame, mtime=_safe_mtime(entry),
-            )
+            FrameInfo(path=entry_path, frame_number=parsed.frame, mtime=mtime),
         )
     matching.sort(key=lambda f: f.frame_number)
     if not matching:

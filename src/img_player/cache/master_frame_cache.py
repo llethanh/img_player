@@ -123,12 +123,21 @@ def _force_alpha_one(arr: np.ndarray) -> np.ndarray:
     return out
 
 
-def _premultiply(arr: np.ndarray) -> np.ndarray:
+def _premultiply(arr: np.ndarray, *, inplace: bool = False) -> np.ndarray:
     """Multiply RGB by alpha so straight-alpha buffers can feed the
-    same over operator that premult buffers do."""
-    out = arr.copy()
-    a = out[..., 3:4]
-    out[..., :3] = out[..., :3] * a
+    same over operator that premult buffers do.
+
+    Pass ``inplace=True`` when the caller owns ``arr`` (e.g. it was
+    just produced by ``read_frame``) — at 4K that saves an HxWx4
+    float copy per contributor (~64 MiB). The default stays
+    out-of-place because callers handed read-only views from the
+    disk cache would otherwise raise on the in-place ``*=``.
+    """
+    out = arr if inplace else arr.copy()
+    # ``np.multiply(out=...)`` reads each of the RGB channels and
+    # multiplies by the alpha column in one pass — measurably
+    # cheaper than the explicit slice-multiply on big buffers.
+    np.multiply(out[..., :3], out[..., 3:4], out=out[..., :3])
     return out
 
 
@@ -623,16 +632,22 @@ class MasterFrameCache:
         currently-displayed view. Stale snapshots (different channels
         / visibility) live in ``_frames`` too but aren't surfaced
         here: the cache bar reflects the live view, not memory
-        accounting."""
+        accounting.
+
+        Called every ~200 ms by the cache-bar refresh timer, so we
+        snapshot all the keys + signatures under **one** lock
+        acquisition rather than reacquiring per key. ``_signature_at``
+        reads the layer stack (which has its own locking) but the
+        master-cache lock guards ``_frames`` only — keeping it held
+        for the whole walk is safe because the signature memo is
+        managed inside ``_signature_at`` itself.
+        """
         with self._lock:
-            keys = list(self._frames.keys())
-        result: set[int] = set()
-        # Compute under the lock-released path: signatures use only
-        # immutable layer attrs. Re-acquire the lock only for the
-        # signature memo's read+write, which is a tight critical
-        # section already.
-        for mf, sig in keys:
-            with self._lock:
+            # Snapshot to a tuple so any concurrent mutation of
+            # ``_frames`` after the lock release doesn't matter.
+            keys = tuple(self._frames.keys())
+            result: set[int] = set()
+            for mf, sig in keys:
                 if self._signature_at(mf) == sig:
                     result.add(mf)
         return frozenset(result)
@@ -642,10 +657,9 @@ class MasterFrameCache:
         unreadable) under the current signature. Same filter rule
         as :meth:`cached_frames`."""
         with self._lock:
-            keys = list(self._missing)
-        result: set[int] = set()
-        for mf, sig in keys:
-            with self._lock:
+            keys = tuple(self._missing)
+            result: set[int] = set()
+            for mf, sig in keys:
                 if self._signature_at(mf) == sig:
                     result.add(mf)
         return frozenset(result)
@@ -2216,12 +2230,22 @@ class MasterFrameCache:
                 accum = top
             else:
                 accum = top.copy()
+                # Reusable scratch buffer for the per-layer
+                # ``arr * inv_a`` product. Naive ``accum + arr * inv_a``
+                # allocates two HxWx4 floats per layer (~128 MiB at 4K
+                # for an 8-layer composite). Reusing one scratch buffer
+                # cuts that to one alloc total.
+                tmp = np.empty_like(accum)
                 for layer_plan in plan[1:]:
                     arr = self._read_contributor_cached(layer_plan)
                     if layer_plan["is_opaque_floor"]:
                         arr = _force_alpha_one(arr)
                     inv_a = (1.0 - accum[..., 3:4]).astype(accum.dtype)
-                    accum = accum + arr * inv_a
+                    # ``arr`` may be a read-only view (disk cache); we
+                    # write the product to ``tmp`` instead of into
+                    # ``arr``. ``accum`` is ours so ``+=`` is safe.
+                    np.multiply(arr, inv_a, out=tmp)
+                    accum += tmp
                     if float(accum[..., 3].min()) >= 1.0 - 1e-3:
                         break
         except FrameReadError as err:
@@ -2315,7 +2339,10 @@ class MasterFrameCache:
         arr = read_frame(entry["path"], channels=entry["channels"])
         arr = _ensure_rgba(arr)
         if entry["is_straight"]:
-            arr = _premultiply(arr)
+            # ``arr`` was just produced by ``read_frame`` (or by
+            # ``_ensure_rgba`` allocating an RGBA layout) — we own
+            # it, so premultiply in place rather than copying.
+            arr = _premultiply(arr, inplace=True)
         if disk_key and self._disk_cache is not None:
             self._disk_cache.put(disk_key, arr)
         return arr

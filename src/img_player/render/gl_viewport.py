@@ -362,6 +362,22 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
         self._image_tex = 0
         self._lut_1d_ids: dict[str, int] = {}
         self._lut_3d_ids: dict[str, int] = {}
+        # Cache of ``glGetUniformLocation`` lookups, keyed by uniform
+        # name. paintGL used to call ``glGetUniformLocation`` 15+ times
+        # every frame on names that don't change between paints — each
+        # call is a GL round-trip. Reset to ``{}`` in ``_apply_bundle``
+        # (the program id is the only thing that invalidates locations).
+        self._uniform_locs: dict[str, int] = {}
+        # Once a bundle has been applied we bind its LUT textures to
+        # fixed units (1, 2, …) and push the sampler uniforms ONCE —
+        # paintGL doesn't need to rebind every frame because GL texture
+        # unit bindings are persistent. ``_apply_bundle`` flips this
+        # to ``True``; paintGL short-circuits the LUT bind loop while
+        # set.
+        self._lut_bindings_set: bool = False
+        # Number of LUT samplers (1D + 3D); paintGL needs it to know
+        # which texture unit to use for ``uImageB``.
+        self._compare_b_unit: int = 1
         self._image_size: tuple[int, int] = (0, 0)
         self._image_channels = 4
         # Tracks the most recent texture allocation so same-sized frames
@@ -886,39 +902,28 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
 
         GL.glUseProgram(self._program)
 
-        # Bind the input image to texture unit 0.
+        # Bind the input image to texture unit 0. The unit binding
+        # persists across paints (texture units are global GL state),
+        # but rebinding here is cheap (one driver call) and removes
+        # us from worrying about other widgets that might steal
+        # unit 0 in a future multi-viewport scenario.
         GL.glActiveTexture(GL.GL_TEXTURE0)
         GL.glBindTexture(GL.GL_TEXTURE_2D, self._image_tex)
         self._set_uniform_int("uImage", 0)
 
-        # Bind OCIO LUTs to texture units starting at 1.
-        unit = 1
-        for name, tex_id in self._lut_1d_ids.items():
-            GL.glActiveTexture(GL.GL_TEXTURE0 + unit)
-            GL.glBindTexture(GL.GL_TEXTURE_1D, tex_id)
-            self._set_uniform_int(name, unit)
-            unit += 1
-        for name, tex_id in self._lut_3d_ids.items():
-            GL.glActiveTexture(GL.GL_TEXTURE0 + unit)
-            GL.glBindTexture(GL.GL_TEXTURE_3D, tex_id)
-            self._set_uniform_int(name, unit)
-            unit += 1
-
-        # Layer-B texture for compare overlay. Bound after the LUTs
-        # so it doesn't fight for unit 1+. Even when compare is off
-        # we still bind something here — the shader's
-        # ``texture(uImageB, …)`` call would otherwise read from an
-        # unbound sampler on some drivers (undefined behaviour). The
-        # mode uniform is what gates the actual lookup, so binding
-        # the same A texture here when compare is off is harmless
-        # (the shader simply doesn't sample uImageB in that case).
-        GL.glActiveTexture(GL.GL_TEXTURE0 + unit)
+        # LUTs are bound once in ``_apply_bundle`` to fixed units
+        # (1, 2, …) — paintGL doesn't need to walk the dicts every
+        # frame. The compare-B texture sits at ``_compare_b_unit``
+        # right after the last LUT.
+        compare_unit = self._compare_b_unit
+        GL.glActiveTexture(GL.GL_TEXTURE0 + compare_unit)
         GL.glBindTexture(
             GL.GL_TEXTURE_2D,
             self._compare_tex_b if self._compare_tex_b else self._image_tex,
         )
-        self._set_uniform_int("uImageB", unit)
-        unit += 1
+        # The sampler uniform's value (the texture unit number) only
+        # changes when a new bundle is applied → set once there. We
+        # still write the per-paint uniforms below.
         self._set_uniform_int("uCompareMode", self._compare_mode)
         self._set_uniform_float("uCompareSeam", self._compare_seam)
         self._set_uniform_float(
@@ -929,9 +934,9 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
         self._set_uniform_float("uGamma", self._color_params.gamma)
         # Per-channel mask + isolation flag (cf. fragment_template.glsl).
         mask = self._color_params.channel_mask
-        loc_mask = GL.glGetUniformLocation(self._program, "uChannelMask")
-        if loc_mask != -1:
-            GL.glUniform4f(loc_mask, mask[0], mask[1], mask[2], mask[3])
+        self._set_uniform_vec4(
+            "uChannelMask", mask[0], mask[1], mask[2], mask[3],
+        )
         self._set_uniform_float(
             "uChannelIsolateLuminance",
             1.0 if self._color_params.isolate_as_luminance else 0.0,
@@ -939,11 +944,10 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
         self._set_uniform_float(
             "uCheckerScale", float(self._color_params.checker_scale),
         )
-        loc_bg = GL.glGetUniformLocation(self._program, "uTransparencyBgMode")
-        if loc_bg != -1:
-            GL.glUniform1i(
-                loc_bg, int(self._color_params.transparency_bg_mode),
-            )
+        self._set_uniform_int(
+            "uTransparencyBgMode",
+            int(self._color_params.transparency_bg_mode),
+        )
         self._set_uniform_matrix4("uTransform", self._fit_matrix())
 
         GL.glBindVertexArray(self._vao)
@@ -1164,12 +1168,42 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
         if self._program:
             GL.glDeleteProgram(self._program)
         self._program = new_program
+        # New program → invalidate every cached uniform location
+        # (locations are program-scoped).
+        self._uniform_locs.clear()
+        self._lut_bindings_set = False
 
         self._release_luts()
         for tex1d in bundle.textures_1d:
             self._lut_1d_ids[tex1d.name] = _upload_lut_1d(tex1d)
         for tex3d in bundle.textures_3d:
             self._lut_3d_ids[tex3d.name] = _upload_lut_3d(tex3d)
+
+        # Bind each LUT to a fixed texture unit and push the sampler
+        # uniform value ONCE. GL texture-unit bindings persist across
+        # paints, so the per-paint rebind loop in ``paintGL`` is dead
+        # weight — eliminated below by the ``_lut_bindings_set`` flag.
+        GL.glUseProgram(self._program)
+        unit = 1
+        for name, tex_id in self._lut_1d_ids.items():
+            GL.glActiveTexture(GL.GL_TEXTURE0 + unit)
+            GL.glBindTexture(GL.GL_TEXTURE_1D, tex_id)
+            self._set_uniform_int(name, unit)
+            unit += 1
+        for name, tex_id in self._lut_3d_ids.items():
+            GL.glActiveTexture(GL.GL_TEXTURE0 + unit)
+            GL.glBindTexture(GL.GL_TEXTURE_3D, tex_id)
+            self._set_uniform_int(name, unit)
+            unit += 1
+        # paintGL uses this unit for the compare-B texture. Stash
+        # the slot so paintGL doesn't recompute it from
+        # ``len(_lut_1d_ids) + len(_lut_3d_ids) + 1`` every frame.
+        self._compare_b_unit = unit
+        # The compare-B sampler value is fixed for the lifetime of
+        # this program — set it once here too so paintGL only has
+        # to rebind the texture object, not push the sampler uniform.
+        self._set_uniform_int("uImageB", unit)
+        self._lut_bindings_set = True
 
     def _release_luts(self) -> None:
         for tex_id in self._lut_1d_ids.values():
@@ -1181,18 +1215,37 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
 
     # ------------------------------------------------------------------ Uniform helpers
 
+    def _uniform_location(self, name: str) -> int:
+        """Cached ``glGetUniformLocation`` lookup.
+
+        Locations are program-scoped — ``_apply_bundle`` clears the
+        cache on every program swap. Returns ``-1`` (the GL sentinel
+        meaning "no such active uniform") for unknown names; the
+        helpers below all check for it.
+        """
+        loc = self._uniform_locs.get(name)
+        if loc is None:
+            loc = GL.glGetUniformLocation(self._program, name)
+            self._uniform_locs[name] = loc
+        return loc
+
     def _set_uniform_int(self, name: str, value: int) -> None:
-        loc = GL.glGetUniformLocation(self._program, name)
+        loc = self._uniform_location(name)
         if loc != -1:
             GL.glUniform1i(loc, value)
 
     def _set_uniform_float(self, name: str, value: float) -> None:
-        loc = GL.glGetUniformLocation(self._program, name)
+        loc = self._uniform_location(name)
         if loc != -1:
             GL.glUniform1f(loc, value)
 
+    def _set_uniform_vec4(self, name: str, v0: float, v1: float, v2: float, v3: float) -> None:
+        loc = self._uniform_location(name)
+        if loc != -1:
+            GL.glUniform4f(loc, v0, v1, v2, v3)
+
     def _set_uniform_matrix4(self, name: str, matrix: np.ndarray) -> None:
-        loc = GL.glGetUniformLocation(self._program, name)
+        loc = self._uniform_location(name)
         if loc != -1:
             GL.glUniformMatrix4fv(loc, 1, GL.GL_FALSE, matrix)
 

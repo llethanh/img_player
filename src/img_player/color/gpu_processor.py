@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from importlib import resources
 from typing import Literal
@@ -61,6 +62,18 @@ class ShaderBundle:
     view: str = ""
 
 
+# LRU cache keyed on (id(manager), source, display, view, language).
+# ``build_shader_bundle`` is the per-color-change hot path: OCIO
+# GLSL extraction + a 32³ 3D LUT (~384 kB) are not cheap, and the
+# user toggling exposure was triggering a full rebuild despite the
+# (source, display, view) triplet being unchanged. The cache lives
+# at module scope (one process = one OCIO library in practice).
+# Bounded to 32 entries — a typical session sees ~10 distinct
+# (src, display, view) combos.
+_BUNDLE_CACHE_MAX = 32
+_bundle_cache: "OrderedDict[tuple[int, str, str, str, int], ShaderBundle]" = OrderedDict()
+
+
 def build_shader_bundle(
     manager: OCIOManager,
     *,
@@ -73,7 +86,24 @@ def build_shader_bundle(
 
     Raises :class:`PyOpenColorIO.Exception` if the transform cannot be built
     (invalid colorspace / display / view).
+
+    Results are memoised on ``(id(manager), source, display, view,
+    language)``: rebuilding the shader runs OCIO GLSL extraction and
+    uploads a ~384 kB 3D LUT, so a hit here saves significant CPU on
+    repeated calls for an unchanged transform (the common case when
+    the user toggles exposure / gamma — those don't bake into the
+    OCIO pipeline). Cache is cleared by re-instantiating
+    :class:`OCIOManager` (the ``id`` part of the key invalidates the
+    old entries).
     """
+    cache_key = (
+        id(manager), source_colorspace, display, view, int(language),
+    )
+    hit = _bundle_cache.get(cache_key)
+    if hit is not None:
+        _bundle_cache.move_to_end(cache_key)
+        return hit
+
     processor = manager.get_display_view_processor(source_colorspace, display, view)
     gpu_proc = processor.getDefaultGPUProcessor()
 
@@ -89,7 +119,7 @@ def build_shader_bundle(
     textures_1d = _collect_textures_1d(desc)
     textures_3d = _collect_textures_3d(desc)
 
-    return ShaderBundle(
+    bundle = ShaderBundle(
         vertex_source=_VERTEX_SRC,
         fragment_source=fragment_source,
         textures_1d=textures_1d,
@@ -98,6 +128,10 @@ def build_shader_bundle(
         display=display,
         view=view,
     )
+    _bundle_cache[cache_key] = bundle
+    if len(_bundle_cache) > _BUNDLE_CACHE_MAX:
+        _bundle_cache.popitem(last=False)  # evict LRU
+    return bundle
 
 
 def _collect_textures_1d(desc: ocio.GpuShaderDesc) -> tuple[Texture1D, ...]:
