@@ -27,16 +27,11 @@ from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen
 log = logging.getLogger(__name__)
 
 
-# Label band height as a fraction of the tile height. ~6 % gives a
-# readable line on a 1080p tile (= 65 px) without eating too much of
-# the image. Bigger on small tiles is wrong (text becomes huge), so
-# we also clamp to an absolute minimum of 14 px and maximum of 60 px
-# below.
-_LABEL_HEIGHT_FRACTION = 0.06
-_LABEL_MIN_PX = 14
-_LABEL_MAX_PX = 60
+# Label pill colours. The label is rendered as a rounded pill behind
+# the layer-name text, semi-transparent black so the image bleeds
+# through (= the user can still see the corner content) but the
+# text reads cleanly on any background.
 _LABEL_BG_RGBA = (0.0, 0.0, 0.0, 0.55)  # semi-transparent black
-_LABEL_FG_RGB = (1.0, 1.0, 1.0)
 
 
 def auto_grid_dimensions(
@@ -181,14 +176,9 @@ def render_contact_sheet(
     out_dtype = sample.dtype
 
     out = np.zeros((target_h, target_w, n_channels), dtype=out_dtype)
-    # The label strip eats the bottom of each tile when enabled.
-    # Compute once outside the loop so every tile gets the same band
-    # geometry.
-    label_h = 0
-    if show_labels:
-        label_h = max(_LABEL_MIN_PX, int(tile_h * _LABEL_HEIGHT_FRACTION))
-        label_h = min(label_h, _LABEL_MAX_PX, tile_h - 1)
-        label_h = max(0, label_h)
+    # Labels live ON the tile (top-left overlay) not as a separate
+    # strip — cells are fully used by the image, no vertical real
+    # estate eaten by a band. See :func:`_paint_label_overlay`.
 
     for idx in range(cols * rows):
         col = idx % cols
@@ -207,32 +197,31 @@ def render_contact_sheet(
             continue
         tile = tiles[idx]
         name = names[idx] if idx < len(names) else ""
-        image_h = cell_h - label_h
-        if image_h <= 0:
-            image_h = cell_h  # label band wouldn't fit, drop it
-            actual_label_h = 0
-        else:
-            actual_label_h = label_h
+
         if tile is None:
             # Layer fell off its range — paint a placeholder dash.
             _fill_unavailable(
-                out[y0:y0 + image_h, x0:x1],
+                out[y0:y0 + cell_h, x0:x1],
                 n_channels=n_channels,
                 dtype=out_dtype,
             )
         else:
-            # Preserve the tile's own aspect ratio: letterbox /
-            # pillarbox inside the image area of the cell. The
-            # surrounding pixels were zero-init'd by ``np.zeros``
-            # above, so they read as black (or transparent for RGBA
-            # consumers) — exactly the bars we want.
-            _letterbox_into_region(
-                out[y0:y0 + image_h, x0:x1], tile, n_channels,
-            )
+            # Stretch the tile to fill the cell exactly. Tiles touch
+            # edge-to-edge — no per-cell letterbox, no bars between
+            # neighbours. Layers with mismatched aspect ratios get
+            # mildly distorted; the trade-off the user chose when
+            # asking for "images collées".
+            resized = _resize_nearest_raw(tile, cell_w, cell_h, n_channels)
+            out[y0:y0 + cell_h, x0:x1] = resized
 
-        if show_labels and actual_label_h > 0 and name:
-            _paint_label(
-                out[y0 + image_h:y1, x0:x1],
+        # Label overlay: rendered ON the tile near the top-left
+        # corner rather than as a strip below the image, so the
+        # image stays the dominant visual + the label doesn't eat
+        # vertical space. Falls back to a no-op when ``name`` is
+        # empty (= layer has no display name, defensive).
+        if show_labels and name:
+            _paint_label_overlay(
+                out[y0:y0 + cell_h, x0:x1],
                 name=name,
                 n_channels=n_channels,
                 dtype=out_dtype,
@@ -242,51 +231,6 @@ def render_contact_sheet(
 
 
 # ----------------------------------------------------------------- internals
-
-
-def _letterbox_into_region(
-    region: np.ndarray, tile: np.ndarray, n_channels: int,
-) -> None:
-    """Resize ``tile`` to fit inside ``region`` while preserving its
-    aspect ratio, then centre-paint it.
-
-    The remaining pixels in ``region`` are left untouched — callers
-    pass in a zero-initialised slice of the composite output so the
-    untouched margins read as black (or transparent on the alpha
-    channel for RGBA consumers). This is the per-tile letterbox /
-    pillarbox the user expects: each tile keeps its native aspect,
-    the cell adapts.
-
-    No-op when either dimension of ``region`` or ``tile`` is zero.
-    """
-    cell_h, cell_w = region.shape[:2]
-    if cell_h <= 0 or cell_w <= 0:
-        return
-    src_h, src_w = tile.shape[:2]
-    if src_h <= 0 or src_w <= 0:
-        return
-    src_aspect = src_w / src_h
-    cell_aspect = cell_w / cell_h
-    if cell_aspect > src_aspect:
-        # Cell is wider than the tile → pillarbox (bars on sides).
-        target_h = cell_h
-        target_w = max(1, int(round(cell_h * src_aspect)))
-    else:
-        # Cell is taller than the tile → letterbox (bars top + bottom).
-        target_w = cell_w
-        target_h = max(1, int(round(cell_w / src_aspect)))
-    # Clamp to cell bounds in the degenerate "rounded just over"
-    # case (e.g. cell 100×100, src 100×100 → target 100×100, fine;
-    # but a 1-px float rounding under bad luck could push us 1 px
-    # past the cell — clamp to avoid an out-of-bounds slice).
-    target_w = min(target_w, cell_w)
-    target_h = min(target_h, cell_h)
-
-    resized = _resize_nearest_raw(tile, target_w, target_h, n_channels)
-    # Centre the resized tile inside the cell.
-    x0 = (cell_w - target_w) // 2
-    y0 = (cell_h - target_h) // 2
-    region[y0:y0 + target_h, x0:x0 + target_w] = resized
 
 
 def _resize_nearest_raw(
@@ -362,83 +306,140 @@ def _fill_unavailable(
     region[mask, :3] = stripe
 
 
-def _paint_label(
-    band: np.ndarray, *, name: str, n_channels: int, dtype: np.dtype,
+def _paint_label_overlay(
+    tile_region: np.ndarray, *, name: str, n_channels: int, dtype: np.dtype,
 ) -> None:
-    """Render ``name`` as a white-on-translucent-black strip into
-    ``band`` (HxWxC, the last few rows of a tile).
+    """Stamp ``name`` near the top-left of ``tile_region`` (HxWxC).
 
-    Uses QPainter for text — it gives us hinted antialiased glyphs
-    "for free" and matches the typography of the rest of the UI.
-    The painted QImage is converted to numpy and blended into the
-    band; we don't blow away whatever was there (the underlying
-    image bleeds through the semi-transparent black).
+    Two layers:
+
+    * A small **semi-transparent black pill** behind the text — just
+      a few px of padding around the glyphs so the text stays
+      readable on any background (sky, white, dark grey, …).
+    * The **white bold text** itself, antialiased via QPainter.
+
+    Both are alpha-blended into the underlying tile pixels —
+    we don't overwrite — so the image bleeds through the pill's
+    transparency. Position is the top-left corner with a small
+    inset so the label doesn't kiss the tile edge.
+
+    No-op when the tile is too small (< ~40 px on either side) to
+    render any legible label.
     """
-    h, w = band.shape[:2]
-    if h <= 0 or w <= 0:
+    h, w = tile_region.shape[:2]
+    if h < 40 or w < 40:
         return
-    img = QImage(w, h, QImage.Format.Format_ARGB32_Premultiplied)
-    # Semi-transparent black background — uses Premultiplied so the
-    # alpha math matches the numpy blend below.
-    bg = QColor(
-        0, 0, 0,
-        int(_LABEL_BG_RGBA[3] * 255),
-    )
-    img.fill(bg)
+
+    # Geometry. Inset from the tile edge so the label sits clearly
+    # inside the image rather than touching the border. Text size
+    # scales with tile height — ~3.5 % is a sweet spot that stays
+    # readable on a 540 px tile (= ~19 px) without crowding a
+    # 2160 px tile (= ~75 px).
+    inset = max(8, int(min(h, w) * 0.02))
+    px = max(14, min(int(h * 0.035), 64))
+    pad_x = max(4, px // 3)
+    pad_y = max(2, px // 5)
+
+    # Measure the text first so the pill background is sized to fit.
+    # We paint into a probe QImage just to get the text bounding
+    # box — Qt's ``QFontMetrics`` would also work but stays cheap
+    # in either direction.
+    font = QFont()
+    font.setPixelSize(px)
+    font.setBold(True)
+    from PySide6.QtGui import QFontMetrics  # noqa: PLC0415 — only here
+
+    metrics = QFontMetrics(font)
+    text_w = metrics.horizontalAdvance(name)
+    text_h = metrics.height()
+    # Clamp the label width so it doesn't push past the tile bounds
+    # on very long layer names. We let the text get elided with an
+    # ellipsis instead.
+    max_text_w = w - 2 * inset - 2 * pad_x
+    if text_w > max_text_w:
+        elided = metrics.elidedText(
+            name, Qt.TextElideMode.ElideMiddle, max_text_w,
+        )
+    else:
+        elided = name
+    text_w = min(text_w, max_text_w)
+    if text_w <= 0:
+        return
+
+    box_w = text_w + 2 * pad_x
+    box_h = text_h + 2 * pad_y
+    if box_w <= 0 or box_h <= 0:
+        return
+
+    # Allocate an RGBA buffer the size of the label box and render
+    # pill + text into it. The buffer is then alpha-blended onto
+    # the tile at ``(inset, inset)``.
+    img = QImage(box_w, box_h, QImage.Format.Format_ARGB32_Premultiplied)
+    img.fill(0)  # fully transparent
     painter = QPainter(img)
     try:
-        # Font sized to ~60 % of the band height — leaves margin so
-        # descenders aren't clipped on tight bands. Capped at the
-        # band height -2 px just in case.
-        px = max(8, int(h * 0.60))
-        px = min(px, h - 2) if h > 10 else px
-        font = QFont()
-        font.setPixelSize(px)
-        font.setBold(True)
-        painter.setFont(font)
-        painter.setPen(QPen(QColor(255, 255, 255)))
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
-        # Left-padded 6 px so the text doesn't kiss the tile edge.
+        # Rounded pill background — 6 px radius works at any text
+        # size we render here (~14..64 px). The colour matches the
+        # info-band convention: dark + semi-transparent.
+        from PySide6.QtGui import QBrush  # noqa: PLC0415
+        bg = QColor(0, 0, 0, int(_LABEL_BG_RGBA[3] * 255))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(bg))
+        radius = max(4, box_h // 4)
+        painter.drawRoundedRect(0, 0, box_w, box_h, radius, radius)
+        # Text on top — white, bold, centred vertically inside the pill.
+        painter.setPen(QPen(QColor(255, 255, 255)))
+        painter.setFont(font)
         painter.drawText(
-            6, 0, w - 12, h,
+            pad_x, 0, text_w, box_h,
             int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft),
-            name,
+            elided,
         )
     finally:
         painter.end()
 
-    # Convert QImage → numpy. Format_ARGB32_Premultiplied is BGRA
-    # in memory on little-endian — we re-channel to RGBA on read.
+    # Convert QImage → numpy RGBA (premultiplied → straight alpha
+    # math for the blend). Same dance as the missing-frame helper.
     ptr = img.constBits()
-    # bytesPerLine may include trailing padding on some Qt builds —
-    # use it to slice instead of assuming row stride.
     bytes_per_line = img.bytesPerLine()
-    raw = np.frombuffer(ptr, dtype=np.uint8, count=bytes_per_line * h)
-    bgra = raw.reshape(h, bytes_per_line)[:, : w * 4].reshape(h, w, 4)
-    # BGRA → RGBA reorder so colour math below works on the right
-    # channel positions.
+    raw = np.frombuffer(ptr, dtype=np.uint8, count=bytes_per_line * box_h)
+    bgra = raw.reshape(box_h, bytes_per_line)[:, : box_w * 4].reshape(
+        box_h, box_w, 4,
+    )
     rgba = bgra[..., [2, 1, 0, 3]]
 
-    # Premultiplied alpha → straight alpha for the blend. We were
-    # told the format is premultiplied so divide RGB by alpha when
-    # alpha > 0; on alpha==0 the source contributes nothing anyway.
     alpha = rgba[..., 3:4].astype(np.float32) / 255.0
-    # Avoid divide-by-zero: where alpha is 0 the colour will be
-    # multiplied out by alpha in the blend, so the temporary
-    # divisor doesn't matter (clamp to 1 to keep numpy quiet).
     safe_alpha = np.where(alpha > 0, alpha, 1.0)
     src_rgb_f = rgba[..., :3].astype(np.float32) / 255.0 / safe_alpha
 
-    # Convert band to float for the blend, then cast back.
+    # Carve out the destination slice on the tile. Clamp to bounds
+    # so a future change to inset / pad doesn't reach past the tile
+    # edges.
+    y0 = inset
+    x0 = inset
+    y1 = min(h, y0 + box_h)
+    x1 = min(w, x0 + box_w)
+    if y1 <= y0 or x1 <= x0:
+        return
+    src = src_rgb_f[: y1 - y0, : x1 - x0]
+    alpha_clip = alpha[: y1 - y0, : x1 - x0]
+    dst = tile_region[y0:y1, x0:x1, :3]
+
     is_uint = np.issubdtype(dtype, np.integer)
     if is_uint:
         scale = float(np.iinfo(dtype).max)
-        band_f = band[..., :3].astype(np.float32) / scale
+        dst_f = dst.astype(np.float32) / scale
     else:
         scale = 1.0
-        band_f = band[..., :3].astype(np.float32, copy=False)
-
-    out_rgb = band_f * (1.0 - alpha) + src_rgb_f * alpha
-    band[..., :3] = (out_rgb * scale).astype(dtype) if is_uint else out_rgb.astype(dtype)
+        dst_f = dst.astype(np.float32, copy=False)
+    out_rgb = dst_f * (1.0 - alpha_clip) + src * alpha_clip
+    tile_region[y0:y1, x0:x1, :3] = (
+        (out_rgb * scale).astype(dtype) if is_uint else out_rgb.astype(dtype)
+    )
+    # Force full opacity on the alpha channel under the label so the
+    # GL viewport's premultiplied path doesn't make the label
+    # appear ghostly when the tile itself has reduced alpha.
     if n_channels == 4:
-        band[..., 3] = _opaque_for(dtype)
+        tile_region[y0:y1, x0:x1, 3] = _opaque_for(dtype)
