@@ -4,13 +4,14 @@ Covers:
 
 * :class:`SaveFrameDialog.settings` builds the right path/format combo
   from the user's input (filename strip + extension swap).
-* :func:`capture_viewer` toggles overlay / annotation widgets around
-  the grab and restores them — even when ``grab`` raises.
+* The resolution-picker UX: Source preset → ``(None, None)``, named
+  presets fill the W/H spinboxes, Custom mode + Lock aspect ratio
+  mirrors W ↔ H.
 * :func:`_write_image` picks the correct Qt format hint per extension.
 
-We avoid running the full app — the dialog is constructed directly
-with QPixmap fixtures, the handler's capture path is exercised via
-plain QWidgets.
+The full render path (FrameRenderer + OCIO + compare bake) is
+exercised indirectly via the multi-frame export tests — we only test
+the save-frame-specific UI / IO surface here.
 """
 
 from __future__ import annotations
@@ -19,13 +20,13 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtGui import QImage
-from PySide6.QtWidgets import QLabel, QWidget
 
+from img_player.export.settings import RESOLUTION_PRESETS
 from img_player.preferences import _qbool
 from img_player.save_frame_handler import (
     _QT_FORMAT_FOR_EXT,
+    _opt_pos_int,
     _write_image,
-    capture_viewer,
 )
 from img_player.ui.save_frame_dialog import (
     FORMATS,
@@ -34,8 +35,17 @@ from img_player.ui.save_frame_dialog import (
 )
 
 
+# Shared fixture: minimum-required constructor args. Each test pulls
+# this dict and overrides only what it cares about, so adding a new
+# required arg to SaveFrameDialog is a single edit here.
+_DIALOG_DEFAULTS = {
+    "source_width": 1920,
+    "source_height": 1080,
+}
+
+
 # ============================================================================
-# SaveFrameDialog.settings
+# SaveFrameDialog.settings — filename / format
 # ============================================================================
 
 
@@ -46,6 +56,7 @@ class TestSaveFrameDialogSettings:
         dialog = SaveFrameDialog(
             suggested_filename="render_0042",
             suggested_dir=tmp_path,
+            **_DIALOG_DEFAULTS,
         )
         qtbot.addWidget(dialog)
         s = dialog.settings()
@@ -61,6 +72,7 @@ class TestSaveFrameDialogSettings:
             suggested_filename="render_0042",
             suggested_dir=tmp_path,
             last_format="png",
+            **_DIALOG_DEFAULTS,
         )
         qtbot.addWidget(dialog)
         dialog._filename_edit.setText("shot.jpg")
@@ -73,6 +85,7 @@ class TestSaveFrameDialogSettings:
         dialog = SaveFrameDialog(
             suggested_filename="render_0042",
             suggested_dir=tmp_path,
+            **_DIALOG_DEFAULTS,
         )
         qtbot.addWidget(dialog)
         dialog._filename_edit.setText("   ")
@@ -86,6 +99,7 @@ class TestSaveFrameDialogSettings:
             suggested_filename="x",
             suggested_dir=tmp_path,
             last_format="jpg",
+            **_DIALOG_DEFAULTS,
         )
         qtbot.addWidget(dialog)
         assert dialog.settings().fmt == "jpg"
@@ -97,6 +111,7 @@ class TestSaveFrameDialogSettings:
             suggested_filename="x",
             suggested_dir=tmp_path,
             last_format="not_a_format",
+            **_DIALOG_DEFAULTS,
         )
         qtbot.addWidget(dialog)
         assert dialog.settings().fmt == "png"
@@ -108,6 +123,7 @@ class TestSaveFrameDialogSettings:
             suggested_filename="x",
             suggested_dir=tmp_path,
             last_with_annotations=False,
+            **_DIALOG_DEFAULTS,
         )
         qtbot.addWidget(dialog)
         s = dialog.settings()
@@ -115,92 +131,146 @@ class TestSaveFrameDialogSettings:
 
 
 # ============================================================================
-# capture_viewer — widget visibility lifecycle
+# Resolution picker — Source / preset / Custom + Lock aspect
 # ============================================================================
 
 
-class _FakeViewer(QWidget):
-    """Stand-in for ViewerWidget with the two overlay attributes
-    capture_viewer reaches for via getattr."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.resize(64, 32)
-        self._info_band = QLabel("HUD", self)
-        self._info_band.setVisible(True)
-        self._overlay = QLabel("brackets", self)
-        self._overlay.setVisible(True)
-
-
-class TestCaptureViewer:
-    def test_grab_returns_qimage(self, qtbot) -> None:
-        viewer = _FakeViewer()
-        qtbot.addWidget(viewer)
-        viewer.show()
-        qtbot.waitExposed(viewer)
-        anno = QLabel("anno", viewer)
-        anno.setVisible(True)
-        img = capture_viewer(
-            viewer,
-            annotation_overlay=anno,
-            with_annotations=True,
-        )
-        assert isinstance(img, QImage)
-        assert not img.isNull()
-        # On HiDPI screens the image is the widget size × DPR, so we
-        # don't assert exact dimensions — just that the grab produced
-        # a non-empty buffer of at least the logical widget size.
-        assert img.width() >= viewer.width()
-        assert img.height() >= viewer.height()
-
-    def test_overlay_widgets_always_hidden_then_restored(self, qtbot) -> None:
-        """Overlay (HUD + brackets) is always excluded from capture
-        regardless of the annotations toggle, and restored after."""
-        viewer = _FakeViewer()
-        qtbot.addWidget(viewer)
-        viewer.show()
-        qtbot.waitExposed(viewer)
-        info_band_was = viewer._info_band.isVisible()
-        brackets_was = viewer._overlay.isVisible()
-        capture_viewer(
-            viewer,
-            annotation_overlay=None,
-            with_annotations=True,
-        )
-        # After capture, visibility is back to what it was before.
-        assert viewer._info_band.isVisible() == info_band_was
-        assert viewer._overlay.isVisible() == brackets_was
-
-    def test_annotations_off_hides_only_annotation_overlay(
-        self, qtbot,
+class TestResolutionPicker:
+    def test_source_preset_returns_none_dims(
+        self, qtbot, tmp_path: Path,
     ) -> None:
-        viewer = _FakeViewer()
-        qtbot.addWidget(viewer)
-        viewer.show()
-        qtbot.waitExposed(viewer)
-        anno = QLabel("anno", viewer)
-        anno.setVisible(True)
-        capture_viewer(
-            viewer,
-            annotation_overlay=anno,
-            with_annotations=False,
+        """The Source preset is the dialog's "keep input size" sentinel
+        — settings.width and settings.height both come back as None so
+        the handler can branch on a single None check."""
+        dialog = SaveFrameDialog(
+            suggested_filename="x",
+            suggested_dir=tmp_path,
+            source_width=2048,
+            source_height=858,
         )
-        # Restored after capture.
-        assert anno.isVisible() is True
+        qtbot.addWidget(dialog)
+        # Default selection is the first preset (Source).
+        assert dialog._res_combo.currentIndex() == 0
+        s = dialog.settings()
+        assert s.width is None
+        assert s.height is None
 
-    def test_already_hidden_widget_stays_hidden(self, qtbot) -> None:
-        """Capture must not turn ON a widget the user had hidden."""
-        viewer = _FakeViewer()
-        qtbot.addWidget(viewer)
-        viewer.show()
-        qtbot.waitExposed(viewer)
-        viewer._info_band.setVisible(False)
-        capture_viewer(
-            viewer,
-            annotation_overlay=None,
-            with_annotations=True,
+    def test_named_preset_returns_preset_dims(
+        self, qtbot, tmp_path: Path,
+    ) -> None:
+        """Picking 1080p fills the spinboxes with 1920×1080 and the
+        returned settings carry those exact dims."""
+        dialog = SaveFrameDialog(
+            suggested_filename="x",
+            suggested_dir=tmp_path,
+            **_DIALOG_DEFAULTS,
         )
-        assert viewer._info_band.isVisible() is False
+        qtbot.addWidget(dialog)
+        # Find the 1080p preset index by label.
+        idx = next(
+            i for i, (label, _w, _h) in enumerate(RESOLUTION_PRESETS)
+            if "1080p" in label
+        )
+        dialog._res_combo.setCurrentIndex(idx)
+        s = dialog.settings()
+        assert s.width == 1920
+        assert s.height == 1080
+
+    def test_custom_preset_uses_spin_values(
+        self, qtbot, tmp_path: Path,
+    ) -> None:
+        dialog = SaveFrameDialog(
+            suggested_filename="x",
+            suggested_dir=tmp_path,
+            **_DIALOG_DEFAULTS,
+        )
+        qtbot.addWidget(dialog)
+        custom_idx = len(RESOLUTION_PRESETS) - 1
+        dialog._res_combo.setCurrentIndex(custom_idx)
+        dialog._width_spin.setValue(1234)
+        dialog._height_spin.setValue(720)
+        s = dialog.settings()
+        assert s.width == 1234
+        assert s.height == 720
+
+    def test_lock_aspect_mirrors_width_to_height(
+        self, qtbot, tmp_path: Path,
+    ) -> None:
+        """In Custom mode with Lock aspect ON, editing W rewrites H
+        to preserve the captured ratio."""
+        dialog = SaveFrameDialog(
+            suggested_filename="x",
+            suggested_dir=tmp_path,
+            source_width=1920,
+            source_height=1080,  # ratio 16:9
+        )
+        qtbot.addWidget(dialog)
+        custom_idx = len(RESOLUTION_PRESETS) - 1
+        dialog._res_combo.setCurrentIndex(custom_idx)
+        # Pre-fill with a known ratio then lock aspect.
+        dialog._width_spin.setValue(1920)
+        dialog._height_spin.setValue(1080)
+        dialog._lock_aspect_chk.setChecked(True)
+        # Halving W should halve H.
+        dialog._width_spin.setValue(960)
+        assert dialog._height_spin.value() == 540
+
+    def test_lock_aspect_disabled_outside_custom(
+        self, qtbot, tmp_path: Path,
+    ) -> None:
+        """Lock aspect only makes sense in Custom mode — disabled on
+        Source / named presets so its state can't influence them."""
+        dialog = SaveFrameDialog(
+            suggested_filename="x",
+            suggested_dir=tmp_path,
+            **_DIALOG_DEFAULTS,
+        )
+        qtbot.addWidget(dialog)
+        # Default = Source preset → lock disabled.
+        assert not dialog._lock_aspect_chk.isEnabled()
+        # Switch to Custom → enabled.
+        custom_idx = len(RESOLUTION_PRESETS) - 1
+        dialog._res_combo.setCurrentIndex(custom_idx)
+        assert dialog._lock_aspect_chk.isEnabled()
+
+    def test_last_dims_round_trip_custom(
+        self, qtbot, tmp_path: Path,
+    ) -> None:
+        """Stored prefs with dims that don't match a named preset
+        restore the Custom mode + the exact W/H values."""
+        dialog = SaveFrameDialog(
+            suggested_filename="x",
+            suggested_dir=tmp_path,
+            source_width=1920,
+            source_height=1080,
+            last_width=2570,
+            last_height=1090,  # arbitrary non-preset dims
+        )
+        qtbot.addWidget(dialog)
+        custom_idx = len(RESOLUTION_PRESETS) - 1
+        assert dialog._res_combo.currentIndex() == custom_idx
+        assert dialog._width_spin.value() == 2570
+        assert dialog._height_spin.value() == 1090
+
+    def test_last_dims_round_trip_named_preset(
+        self, qtbot, tmp_path: Path,
+    ) -> None:
+        """Stored prefs matching a named preset's dims restore that
+        preset (not Custom)."""
+        dialog = SaveFrameDialog(
+            suggested_filename="x",
+            suggested_dir=tmp_path,
+            source_width=1920,
+            source_height=1080,
+            last_width=1280,
+            last_height=720,  # 720p preset
+        )
+        qtbot.addWidget(dialog)
+        idx = next(
+            i for i, (label, _w, _h) in enumerate(RESOLUTION_PRESETS)
+            if "720p" in label
+        )
+        assert dialog._res_combo.currentIndex() == idx
 
 
 # ============================================================================
@@ -245,7 +315,33 @@ class TestWriteImage:
 
 
 # ============================================================================
-# _qbool
+# _opt_pos_int — QSettings nullable-int parser
+# ============================================================================
+
+
+class TestOptPosInt:
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            (None, None),
+            ("None", None),
+            ("none", None),
+            ("", None),
+            ("0", None),  # non-positive → None (= "Source" fallback)
+            ("-5", None),
+            ("garbage", None),
+            (0, None),
+            (-3, None),
+            (1920, 1920),
+            ("1080", 1080),
+        ],
+    )
+    def test_parsing(self, value: object, expected: int | None) -> None:
+        assert _opt_pos_int(value) == expected
+
+
+# ============================================================================
+# _qbool — kept here because the handler reads QSettings via it
 # ============================================================================
 
 
