@@ -530,6 +530,30 @@ class Preferences:
             return
 
     @property
+    def prefs_dialog_section(self) -> int:
+        """Index of the active section in the Preferences dialog's
+        sidebar (General = 0, Color Management = 1, Disk cache = 2…).
+
+        Persisted so the dialog reopens on the same section the user
+        was reading last — both within a session (close + reopen the
+        dialog) and across app launches. The dialog clamps the
+        returned value to its actual section count at open time, so
+        a future refactor that drops sections doesn't crash on an
+        out-of-range index pulled from a stale prefs file.
+        """
+        try:
+            return int(self._s.value("prefs_dialog/section", 0))
+        except (TypeError, ValueError):
+            return 0
+
+    @prefs_dialog_section.setter
+    def prefs_dialog_section(self, value: int) -> None:
+        try:
+            self._s.setValue("prefs_dialog/section", int(value))
+        except (TypeError, ValueError):
+            return
+
+    @property
     def display_timecode(self) -> bool:
         """``True`` if the View → Show timecode toggle was on at last
         close. The Ctrl+T action mirrors this in the menu state.

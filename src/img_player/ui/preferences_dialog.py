@@ -1013,7 +1013,31 @@ class PreferencesDialog(QDialog):
         )
 
         self._sidebar.currentRowChanged.connect(self._stack.setCurrentIndex)
-        self._sidebar.setCurrentRow(0)
+        # Persist the active section so the next dialog open lands
+        # on the same tab — covers both "user closes + reopens within
+        # the session" and "user quits + relaunches the app". The
+        # write fires on every row change rather than only on close
+        # so a crash between rows still preserves the user's last
+        # navigation. Cheap: QSettings flushes lazily.
+        self._sidebar.currentRowChanged.connect(self._persist_section)
+        # Restore the last-used section, clamped to a valid index in
+        # case the prefs file was written by a build that had more
+        # sections than the current one (= reverted feature). The
+        # setter routes through the same ``currentRowChanged`` signal
+        # so :attr:`_stack` syncs without a separate call.
+        initial = max(0, min(prefs.prefs_dialog_section, self._sidebar.count() - 1))
+        self._sidebar.setCurrentRow(initial)
+
+    # ---------------------------------------------------------------- Persistence
+
+    def _persist_section(self, idx: int) -> None:
+        """Write the active section index back to prefs.
+
+        Wrapped in a method (rather than a lambda) so the underlying
+        try / except stays inside :class:`Preferences` itself — keeps
+        the dialog's signal-handler list readable.
+        """
+        self._prefs.prefs_dialog_section = int(idx)
 
     # ---------------------------------------------------------------- API
 
