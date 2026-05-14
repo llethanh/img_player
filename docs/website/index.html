@@ -575,15 +575,17 @@
 <section id="changelog" class="changelog-teaser">
   <h2>What's <span class="accent">new</span>.</h2>
   <p class="lede">
-    Latest release: <strong>v1.5.12</strong> — Apply-with-no-change no-op fix on
-    Preferences. Before that the v1.5.x line shipped a <strong>persistent
-    disk-cache tier</strong> (lz4 + half-float blobs, ~5 ms decode, survives
-    close/reopen), a <strong>user-selectable OCIO config dropdown</strong> with
-    8 built-in ACES configs (1.3 + 2.0, CG + Studio) and an <strong>ACES 1.3
-    default</strong> matching Nuke / Maya / OpenRV out of the box, plus a TOML-
-    based <strong>site &amp; user preference system</strong> for studio deployment.
-    The full history — every public release, what changed, why it changed — lives
-    on its own page.
+    Latest release: <strong>v1.5.13</strong> — smoother playback (paint mean
+    −25 %, paint max −92 %, no more visible spikes) plus a deep code-health
+    pass: long methods split, dead code removed, the full test suite finally
+    back at 971 / 0 / 0. Before that the v1.5.x line shipped a
+    <strong>persistent disk-cache tier</strong> (lz4 + half-float blobs,
+    ~5 ms decode, survives close/reopen), a <strong>user-selectable OCIO
+    config dropdown</strong> with 8 built-in ACES configs (1.3 + 2.0,
+    CG + Studio) and an <strong>ACES 1.3 default</strong> matching Nuke /
+    Maya / OpenRV out of the box, plus a TOML-based <strong>site &amp; user
+    preference system</strong> for studio deployment. The full history — every
+    public release, what changed, why it changed — lives on its own page.
   </p>
   <p style="margin-top: var(--s-md);">
     <a class="btn btn-primary" href="changelog.html">Read the full changelog →</a>

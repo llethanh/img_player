@@ -2489,6 +2489,16 @@ class MasterFrameCache:
                 return layer
         return None
 
+    # ``-inf`` makes beauty (RGB/RGBA) snapshots sort lower than any
+    # real first-cached timestamp → evicted LAST within tier 0.
+    _AGE_BEAUTY_PIN = float("-inf")
+
+    # Priority threshold for ``drop_above_priority`` after an eviction
+    # round. Matches ``PlayerController._ALT_CHANNEL_BASE_PRIORITY`` —
+    # any task whose priority is at or above this is an alt-channel
+    # decode that's safe to drop in bulk under memory pressure.
+    _ALT_TASK_PRIORITY_THRESHOLD = 1_000_000
+
     def _evict_if_over_budget(self) -> None:
         """Multi-tier eviction prioritising live frames over stale
         snapshots. Tiers, evicted in order:
@@ -2513,126 +2523,15 @@ class MasterFrameCache:
         start touching live frames. That's exactly what the user
         asked for: keep channel snapshots, surrender them under
         memory pressure.
+
+        Used to be a 180-LOC method with three nested closures; now
+        a 25-LOC orchestrator that delegates classification and
+        eviction to dedicated helpers below.
         """
         if self._bytes_used <= self._budget:
             return
-        cur = self._current_frame
-        d = self._direction
-        penalty = _BEHIND_PLAYHEAD_PENALTY
-        loop_lo = self._loop_lo
-        loop_hi = self._loop_hi
-        loop_on = (
-            self._loop_enabled
-            and loop_lo is not None
-            and loop_hi is not None
-        )
-        ring_size = (loop_hi - loop_lo + 1) if loop_on else 0
 
-        # Snapshot the set of currently-visible layer ids once —
-        # cheap, and avoids repeated attribute reads during the
-        # per-key tier classification below.
-        visible_ids = {
-            layer.id for layer in self._stack.layers() if layer.visible
-        }
-
-        def distance_score(f: int) -> float:
-            delta_signed = (f - cur) * d
-            if -_NEAR_REAR_WINDOW <= delta_signed < 0:
-                return -delta_signed  # 1, 2, 3, ... 8
-            if loop_on and loop_lo <= f <= loop_hi:
-                if d >= 0:
-                    return float((f - cur) % ring_size)
-                return float((cur - f) % ring_size)
-            if delta_signed < 0:
-                return -delta_signed * penalty
-            return float(delta_signed)
-
-        def signature_refs_invisible(sig: str) -> bool:
-            """True when the signature mentions at least one
-            currently-hidden layer id. Empty signatures (= no layer
-            covered the frame) don't count."""
-            if not sig:
-                return False
-            for token in sig.split("|"):
-                # ``layer_id@selection_label#flags`` — peel the id off.
-                lid = token.split("@", 1)[0]
-                if lid and lid not in visible_ids:
-                    return True
-            return False
-
-        def signature_is_beauty(sig: str) -> bool:
-            """True when *any* contributor token in the signature uses
-            the beauty-pass label (``RGB`` / ``RGBA``).
-
-            The beauty pass is the visual "anchor" — the user almost
-            always wants it preserved across channel switches so they
-            can flip back to a familiar view instantly. We bias the
-            eviction to keep beauty snapshots last; only when every
-            non-beauty alt has been freed AND we're still over budget
-            do beauty entries become evictable.
-
-            Heuristic for multi-layer stacks: if *any* layer in the
-            chain shows beauty, the whole snapshot is "beauty-
-            anchored" and gets the preservation bonus. Imperfect but
-            cheap, and the common case is single-layer EXR review
-            where this collapses to "exactly the RGB(A) snapshot".
-            """
-            if not sig:
-                return False
-            for token in sig.split("|"):
-                # token shape: "layer_id@LABEL#flags+off+lin"
-                at_idx = token.find("@")
-                if at_idx < 0:
-                    continue
-                hash_idx = token.find("#", at_idx + 1)
-                if hash_idx < 0:
-                    continue
-                label = token[at_idx + 1:hash_idx]
-                if label in ("RGB", "RGBA"):
-                    return True
-            return False
-
-        # Tier each cached entry. Tier 0 = stale-sig (drop first),
-        # Tier 1 = sig refs an invisible layer, Tier 2 = live frame.
-        # Within tier 0:
-        #   * **Beauty (RGB/RGBA) snapshots evicted LAST** — they're
-        #     the visual anchor the user flips back to; pinning them
-        #     under budget pressure means swapping to RGBA stays
-        #     instant even after a long AOV browse session.
-        #   * Non-beauty snapshots: oldest signature first.
-        #   * Same-signature frames clump together (sig in the sort
-        #     key) so we drop a whole channel before touching
-        #     another. Without the sig in the key, every alt-prefetch
-        #     wave stamps similar timestamps on every group → ages
-        #     collide → the tertiary distance_score becomes the real
-        #     discriminator → eviction spreads across all groups
-        #     instead of clearing one whole group at a time.
-        # Tiers 1 and 2 keep the original distance-only secondary
-        # order (sig field is constant within those tiers anyway).
-        _AGE_BEAUTY_PIN = float("-inf")  # sort lowest → evicted last
-
-        def key_tier(item: tuple[int, str]) -> tuple[int, float, str, float]:
-            mf, sig = item
-            current_sig = self._signature_at(mf)
-            if sig != current_sig:
-                tier = 0
-                if signature_is_beauty(sig):
-                    age = _AGE_BEAUTY_PIN
-                else:
-                    # Negate so older (smaller first_cached) sorts
-                    # higher under reverse=True → evicted first.
-                    # Sigs without a first-cached stamp default to
-                    # 0.0 → ``age = 0`` → highest priority for
-                    # eviction (covers placeholder-only sigs that
-                    # never had a real frame stored).
-                    age = -self._signature_first_cached.get(sig, 0.0)
-            elif signature_refs_invisible(sig):
-                tier = 1
-                age = 0.0
-            else:
-                tier = 2
-                age = 0.0
-            return (-tier, age, sig, distance_score(mf))
+        visible_ids = self._visible_layer_ids_snapshot()
 
         # Sort: tier 0 first (smallest -tier), then tier 1, then
         # tier 2. Within tier 0, oldest signature first (beauty
@@ -2641,16 +2540,159 @@ class MasterFrameCache:
         # signature still groups but secondary ordering is distance.
         by_priority = sorted(
             self._frames.keys(),
-            key=key_tier,
+            key=lambda item: self._eviction_sort_key(item, visible_ids),
             reverse=True,
         )
-        # Track whether we had to enter eviction at all — if we did,
-        # any pending alt-channel tasks are about to land in the same
-        # over-budget regime and will trip more evictions. Drop them
-        # in bulk below so the worker pool stops churning. Threshold
-        # = 1_000_000 matches ``PlayerController._ALT_CHANNEL_BASE_PRIORITY``.
-        we_had_to_evict = True
-        for k in by_priority:
+
+        self._evict_in_order(by_priority)
+
+        # Cull queued alt-channel tasks. Without this the worker
+        # pool keeps decoding stale alts that immediately re-
+        # trigger eviction → constant 32 MB alloc/free cycles →
+        # Python heap fragmentation → process RSS climbs even
+        # though ``_bytes_used`` stays at budget.
+        self._pool.drop_above_priority(self._ALT_TASK_PRIORITY_THRESHOLD)
+
+    # --- Eviction helpers ---------------------------------------------------
+
+    def _visible_layer_ids_snapshot(self) -> set[str]:
+        """Set of layer ids currently flagged visible. Snapshotted
+        once at the start of an eviction round so we don't pay the
+        per-key attribute read during sorting."""
+        return {layer.id for layer in self._stack.layers() if layer.visible}
+
+    def _eviction_distance_score(self, frame: int) -> float:
+        """Score a frame by its signed distance from the playhead,
+        with behind-penalty + loop-ring awareness. Lower = closer to
+        the playhead = preserved longer.
+
+        Encodes the three core eviction policies:
+
+        * Frames in a small "near-rear window" behind the playhead
+          stay cheap so a quick scrub-back doesn't fall off cache.
+        * Frames inside an active loop range use modular distance
+          (= a frame "behind" the playhead in loop mode is one
+          full ring trip ahead, the cheapest of all).
+        * Frames truly behind (no loop, outside near-rear) get
+          multiplied by :data:`_BEHIND_PLAYHEAD_PENALTY` — we'd
+          rather drop them than the frames coming up next.
+        """
+        cur = self._current_frame
+        d = self._direction
+        delta_signed = (frame - cur) * d
+        if -_NEAR_REAR_WINDOW <= delta_signed < 0:
+            return -delta_signed  # 1, 2, 3, ... 8
+        loop_lo = self._loop_lo
+        loop_hi = self._loop_hi
+        if (
+            self._loop_enabled
+            and loop_lo is not None
+            and loop_hi is not None
+            and loop_lo <= frame <= loop_hi
+        ):
+            ring_size = loop_hi - loop_lo + 1
+            if d >= 0:
+                return float((frame - cur) % ring_size)
+            return float((cur - frame) % ring_size)
+        if delta_signed < 0:
+            return -delta_signed * _BEHIND_PLAYHEAD_PENALTY
+        return float(delta_signed)
+
+    @staticmethod
+    def _signature_refs_invisible(sig: str, visible_ids: set[str]) -> bool:
+        """True when the signature mentions at least one
+        currently-hidden layer id. Empty signatures (= no layer
+        covered the frame) don't count."""
+        if not sig:
+            return False
+        for token in sig.split("|"):
+            # ``layer_id@selection_label#flags`` — peel the id off.
+            lid = token.split("@", 1)[0]
+            if lid and lid not in visible_ids:
+                return True
+        return False
+
+    @staticmethod
+    def _signature_is_beauty(sig: str) -> bool:
+        """True when *any* contributor token in the signature uses
+        the beauty-pass label (``RGB`` / ``RGBA``).
+
+        The beauty pass is the visual "anchor" — the user almost
+        always wants it preserved across channel switches so they
+        can flip back to a familiar view instantly. We bias the
+        eviction to keep beauty snapshots last; only when every
+        non-beauty alt has been freed AND we're still over budget
+        do beauty entries become evictable.
+
+        Heuristic for multi-layer stacks: if *any* layer in the
+        chain shows beauty, the whole snapshot is "beauty-
+        anchored" and gets the preservation bonus. Imperfect but
+        cheap, and the common case is single-layer EXR review
+        where this collapses to "exactly the RGB(A) snapshot".
+        """
+        if not sig:
+            return False
+        for token in sig.split("|"):
+            # token shape: "layer_id@LABEL#flags+off+lin"
+            at_idx = token.find("@")
+            if at_idx < 0:
+                continue
+            hash_idx = token.find("#", at_idx + 1)
+            if hash_idx < 0:
+                continue
+            label = token[at_idx + 1:hash_idx]
+            if label in ("RGB", "RGBA"):
+                return True
+        return False
+
+    def _eviction_sort_key(
+        self,
+        item: tuple[int, str],
+        visible_ids: set[str],
+    ) -> tuple[int, float, str, float]:
+        """Build the 4-tuple sort key for one cache entry.
+
+        Tier 0 = stale-sig (drop first), Tier 1 = sig refs an
+        invisible layer, Tier 2 = live frame. Within tier 0,
+        beauty snapshots are pinned at ``-inf`` age so they sort
+        below every real timestamp → evicted last. Other stale sigs
+        sort by negated first-cached timestamp (older → earlier
+        evicted). ``sig`` is the third key so same-sig frames clump
+        together — without it, every alt-prefetch wave stamps
+        similar timestamps and eviction spreads across all groups
+        instead of clearing one whole group at a time.
+        """
+        mf, sig = item
+        current_sig = self._signature_at(mf)
+        if sig != current_sig:
+            tier = 0
+            if self._signature_is_beauty(sig):
+                age = self._AGE_BEAUTY_PIN
+            else:
+                # Negate so older (smaller first_cached) sorts
+                # higher under reverse=True → evicted first.
+                # Sigs without a first-cached stamp default to
+                # 0.0 → ``age = 0`` → highest priority for
+                # eviction (covers placeholder-only sigs that
+                # never had a real frame stored).
+                age = -self._signature_first_cached.get(sig, 0.0)
+        elif self._signature_refs_invisible(sig, visible_ids):
+            tier = 1
+            age = 0.0
+        else:
+            tier = 2
+            age = 0.0
+        return (-tier, age, sig, self._eviction_distance_score(mf))
+
+    def _evict_in_order(self, ordered_keys: list[tuple[int, str]]) -> None:
+        """Walk ``ordered_keys`` (highest-priority-to-evict first)
+        and remove entries until ``_bytes_used`` is within budget.
+
+        ``ordered_keys`` is already sorted by the caller; this is
+        the pure side-effect loop split out so the sort key + the
+        actual eviction can be tested in isolation.
+        """
+        for k in ordered_keys:
             if self._bytes_used <= self._budget:
                 break
             arr = self._frames.pop(k)
@@ -2658,14 +2700,3 @@ class MasterFrameCache:
                 self._bytes_used -= arr.nbytes
             self._missing.discard(k)
             self._evictions += 1
-
-        if we_had_to_evict:
-            # Cull queued alt-channel tasks. Without this the worker
-            # pool keeps decoding stale alts that immediately re-
-            # trigger eviction → constant 32 MB alloc/free cycles →
-            # Python heap fragmentation → process RSS climbs even
-            # though ``_bytes_used`` stays at budget. 1_000_000 is the
-            # base priority used by the controller for alt-channel
-            # decodes (see ``PlayerController._ALT_CHANNEL_BASE_PRIORITY``);
-            # live decodes use priorities well below that.
-            self._pool.drop_above_priority(1_000_000)

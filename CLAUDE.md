@@ -79,21 +79,36 @@ Pour wrap en installer Inno Setup voir `installer/README.md`.
 
 ## État courant (mai 2026)
 
-- **v1.5.5** sur main — release "Disk cache, hardened"
+- **v1.5.13** sur main — release "Smoother playback + code health"
+- **Perf hot path (Tier 1)** : OpenGL uniform-location caching +
+  LUT bind-once → paint mean −25 % (6 802 → 5 089 µs), paint max
+  −92 % (593 → 47 ms, plus de spikes visibles). OCIO shader bundle
+  LRU. Composite math `np.multiply(out=tmp)` scratch buffer.
+  Scanner `os.scandir`. Lazy imports hot-path hoistés.
+- **Refacto structurel (Tier 2)** : 180-LOC `_evict_if_over_budget`
+  split en 25 + 5 helpers ; `_on_frame_changed` + `_refresh_after_stack_change`
+  splittés en helpers nommés ; `cache/_common.py` extrait ; canonical
+  `enrich_with_header` ; `_signature_token` helper.
+- **Dette de tests purgée** : suite 971/0/0 (avant : 20 failed,
+  16 errors, 3 deselected). Causes racines : Mock `spec=FrameCache`
+  rejetait nouvelles méthodes ; master-frame vs source-frame
+  confusion ; comportement changé non répercuté ; features UI
+  obsolètes.
 - Disk cache 3-tiers (RAM → disque lz4+half-float → source decode)
-  livré. Survit close/reopen. Pre-paint timeline en orange clair
-  pour les frames disponibles disque. Stats live dans
-  Preferences > Disk cache.
-- **Roadmap entière E + F livrée** (voir
-  [`docs/disk_cache_roadmap.md`](docs/disk_cache_roadmap.md)) :
+  livré v1.5.5. Survit close/reopen. Pre-paint timeline en orange
+  clair pour les frames disponibles disque.
+- **Disk cache roadmap E + F livrée** :
   E1 shutdown drain 10s + FlushIndicator, E2 sweep blobs orphelins,
   E3 auto-reload via QFileSystemWatcher, E4 PRAGMA user_version
   migration, F lock cross-process + read-only fallback.
 - **Perf disk-cache** : format v2 struct-header (1.5× faster) +
   v3 no-compression option pour NVMe rapides (5.3× faster, toggle
   dans Preferences > Disk cache > Storage).
-- 59 tests unit + integration pour la feature disk-cache (passent
-  en ~7s).
+- **3-tier prefs system** (v1.5.8+) : user TOML > site TOML >
+  hardcoded. `flick.toml` à côté de `FlickPlayer.exe` ou dans
+  `%APPDATA%\FlickPlayer\flick.toml`.
+- **8 builtin OCIO configs** (v1.5.10) : ACES 1.3 / 2.0, CG / Studio,
+  default ACES 1.3 matchant Nuke / Maya / OpenRV.
 - Lecture vidéo (mp4/mov/mkv/m4v/avi) + audio sounddevice opérationnels
 - Toggles M/S par layer pour mute/solo audio
 - PlayerController en mode wall-clock (anti-drift A/V)

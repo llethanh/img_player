@@ -97,7 +97,7 @@ def log_dir() -> Path:
 # .. deprecated:: v1.5.9
 #    Added when the app-data folder was renamed
 #    ``img_player`` → ``FlickPlayer``. Most users have migrated as
-#    of v1.5.12 (the current line). Scheduled for removal in v1.7 —
+#    of v1.5.13 (the current line). Scheduled for removal in v1.7 —
 #    by then anyone still on a pre-1.5.9 appdata layout is two minor
 #    releases behind and can rename the folder manually.
 # ============================================================================

@@ -44,6 +44,49 @@
     <article class="release">
       <div class="release-meta">
         <span class="ver">
+          <a href="https://github.com/llethanh/img_player/releases/tag/v1.5.13" style="color: inherit; text-decoration: none;">v1.5.13</a>
+        </span>
+        <span class="date">2026-05-14</span>
+        <span class="tagline">Smoother playback + the codebase grew up: +3.4% FPS, no more paint spikes, zero test debt.</span>
+      </div>
+      <div class="release-body">
+        <h4>Performance — hot-path tuning</h4>
+        <ul>
+          <li class="new"><strong>OpenGL paint pipeline overhauled</strong>. The viewport used to re-resolve every shader uniform location (15+ per paint) and rebind every OCIO LUT to its texture unit on every frame. Now uniform locations are cached at program-link time, and the LUT samplers + bindings are pushed once when the OCIO bundle is applied. Result: <strong>paint mean −25 % (6 802 µs → 5 089 µs)</strong>, <strong>paint p95 unchanged at 16 ms</strong>, and the worst-case paint spike collapsed from <strong>593 ms to 47 ms (−92 %)</strong> — no more visible hoquets during playback.</li>
+          <li class="new"><strong>OCIO shader bundle now LRU-cached</strong> on <code>(manager, source, display, view, language)</code>. Toggling exposure / gamma used to silently rebuild a 384 kB 3D LUT every time even though those uniforms don't bake into the OCIO pipeline; now it's a dict hit.</li>
+          <li class="new"><strong>Per-frame composite math allocates one buffer instead of three</strong>. The over-operator inner loop used to materialise <code>arr * inv_a</code> as a fresh ndarray per layer (~64 MiB at 4K); reused scratch buffer + in-place premultiply when the caller owns the read-frame output.</li>
+          <li class="new"><strong>Cache-bar timer holds the lock once per tick</strong>, not once per cached key. <code>cached_frames()</code> / <code>missing_frames()</code> fire every 200 ms with O(N) lock acquisitions before; one acquisition now.</li>
+          <li class="new"><strong>Scanner uses <code>os.scandir()</code></strong> with cached <code>DirEntry.stat()</code> — ~3× faster than <code>iterdir + Path.stat</code> on Windows, more on networked / Drive-synced filesystems.</li>
+          <li class="new"><strong>17 lazy handler imports hoisted</strong> in <code>app.py</code> — the per-frame import dict-lookups were a measurable slice of the <code>frame_changed</code> handler at 24 fps.</li>
+        </ul>
+        <h4>Code health — long methods split, dead code removed, tests revived</h4>
+        <ul>
+          <li class="new"><strong>180-LOC <code>_evict_if_over_budget</code></strong> split into a 25-LOC orchestrator + 5 named helpers (<code>_eviction_distance_score</code>, <code>_signature_refs_invisible</code>, <code>_signature_is_beauty</code>, <code>_eviction_sort_key</code>, <code>_evict_in_order</code>). The tiered "stale-sig → invisible-layer-only → live" policy is now scannable in one pass.</li>
+          <li class="new"><strong>Frame-changed dispatch</strong> (<code>app.py</code>) split into <code>_sync_per_frame_widgets</code> / <code>_try_compare_then_video</code> / <code>_try_display_cached_frame</code> / <code>_handle_no_coverage_gap</code> / <code>_handle_cache_miss</code> — each path is its own named method instead of a 115-LOC if-cascade.</li>
+          <li class="new"><strong>Stack-change refresh</strong> similarly split: <code>_sync_compare_band_for_stack_change</code>, <code>_sync_navigable_range_to_layer_panel</code>, <code>_redisplay_current_frame_or_show_gap</code>.</li>
+          <li class="new"><strong>Shared cache constants + helpers</strong> live in <code>cache/_common.py</code> — <code>CacheStats</code>, <code>DEFAULT_BUDGET_BYTES</code>, <code>BEHIND_PLAYHEAD_PENALTY</code>, <code>expected_filename</code> are no longer duplicated between the single-layer and multi-layer cache flavours.</li>
+          <li class="new"><strong>One canonical <code>enrich_with_header</code></strong> in <code>sequence/scanner</code> replaces the two near-identical copies the live-load flow and the session loader were carrying.</li>
+          <li class="new"><strong>One signature-token helper</strong> (<code>_signature_token</code>) replaces 3 hand-coded copies of the per-layer cache-key format.</li>
+          <li class="fix"><strong>Dead code removed</strong>: <code>_source_key_at</code> (70 LOC, never called since 1.5.1), <code>VideoWriter.set_output_basename</code> (broken-by-design API), various stranded headers + stale docstrings.</li>
+          <li class="fix"><strong>QSettings bool coercion deduplicated</strong> — <code>preferences</code> and <code>export.settings</code> were carrying separate copies of the same coercer with subtle drift. Both route through <code>_value_coerce.qsettings_bool</code> now.</li>
+          <li class="fix"><strong>Narrowed exception handling</strong> in audio, GL cleanup, PyAV decode paths — typed exceptions where the failure mode is known, defensive <code>Exception</code> with explicit log only at the outer boundary.</li>
+          <li class="fix"><strong>Full test suite now green</strong>: 971 passed / 0 failed / 0 errors. The 20 fails + 16 errors + 3 deselected tests that had been bit-rotting (Mock <code>spec=FrameCache</code> rejected new methods; tests using source-frame numbers as master-frame numbers; obsolete UI features) are now either revived or replaced with tests that match the documented contracts.</li>
+        </ul>
+        <p style="opacity: 0.7; font-size: 0.92em; margin-top: 1em;">
+          Methodology note: perf numbers measured on RTX 3080 / 32-thread CPU,
+          4K EXR sequence × 5 passes / 30 warmup frames, baseline vs Tier 1
+          warm-cache runs. Tier 2 + the test pass are zero-impact on perf
+          (paint p50 / p95 identical) — the gains above all come from Tier 1.
+          Cold-cache benches are <a href="https://github.com/llethanh/img_player/blob/main/perf/tier1_cold_baseline.json">also captured</a>
+          for traceability but the decode-worker background activity dominates
+          the signal; see commit <code>1d3ae17</code> for the analysis.
+        </p>
+      </div>
+    </article>
+
+    <article class="release">
+      <div class="release-meta">
+        <span class="ver">
           <a href="https://github.com/llethanh/img_player/releases/tag/v1.5.12" style="color: inherit; text-decoration: none;">v1.5.12</a>
         </span>
         <span class="date">2026-05-14</span>

@@ -1109,19 +1109,46 @@ class ImgPlayerApp:
     # ------------------------------------------------------------------ Handlers
 
     def _on_frame_changed(self, frame: int) -> None:
-        # Bottom info band first — fast text updates and we want its
-        # paint event queued before the heavyweight decode/display
-        # work below. Without this, the band's "Layer xxx" / "Frame xxx"
-        # readouts visibly trail the timeline cursor by a frame during
-        # fast scrub & playback because Qt processes paints in queue
-        # order, and the GL viewport's paint hogs the slot ahead of
-        # the QLabels' if they were enqueued last.
+        """Top-level frame-changed dispatch — fast UI sync first,
+        then pick the right display path.
+
+        Split into 4 helpers so the per-frame hot path stays scannable:
+
+        * :meth:`_sync_per_frame_widgets` — fast text / overlay /
+          layer-panel updates (queued first so their paint events
+          land before the GL viewport's heavyweight one).
+        * :meth:`_try_compare_then_video` — compare and video early
+          outs; either consumes the frame or returns False.
+        * :meth:`_try_display_cached_frame` — cache hit fast path.
+        * :meth:`_handle_no_coverage_gap` / :meth:`_handle_cache_miss`
+          — terminal paths for the two remaining branches.
+        """
+        self._sync_per_frame_widgets(frame)
+        if self._try_compare_then_video(frame):
+            return
+        if self._try_display_cached_frame(frame):
+            return
+        if self._handle_no_coverage_gap(frame):
+            return
+        self._handle_cache_miss(frame)
+
+    def _sync_per_frame_widgets(self, frame: int) -> None:
+        """Fast text / overlay / panel updates that should land
+        BEFORE the heavyweight decode + GL upload.
+
+        Order matters: queueing these paint events first means Qt
+        processes them ahead of the GL viewport's paint, so the
+        bottom info band's "Layer xxx" readout stays in sync with
+        the timeline cursor during fast scrub. If we queued them
+        last, the GL paint would hog the slot and the QLabels would
+        visibly trail by a frame.
+        """
         self._refresh_info_band_frames(frame)
-        # Re-evaluate the active audio layer first — the playhead may
-        # have crossed a coverage boundary (entered / exited a clip)
-        # which changes whether any layer should be feeding samples.
-        # Cheap when the active layer is unchanged: just walks the
-        # stack and early-returns.
+        # Re-evaluate the active audio layer — the playhead may have
+        # crossed a coverage boundary (entered / exited a clip) which
+        # changes whether any layer should be feeding samples. Cheap
+        # when the active layer is unchanged: just walks the stack
+        # and early-returns.
         self._refresh_active_audio()
         self._window.timeline.set_current_frame(frame)
         # The viewport needs to know the current frame so the next
@@ -1133,8 +1160,7 @@ class ImgPlayerApp:
         panel = getattr(self._window, "_layer_panel", None)
         if panel is not None:
             panel.set_playhead(frame)
-        # The annotation overlay paints strokes for the current
-        # frame — keep it in sync.
+        # The annotation overlay paints strokes for the current frame.
         self._annotation_overlay.set_current_frame(frame)
         # The comment panel re-renders its thread for the new frame.
         self._window.comment_panel.set_current_frame(frame)
@@ -1142,24 +1168,26 @@ class ImgPlayerApp:
         # playhead position vs the annotated set — re-evaluate.
         self._refresh_annotation_nav_buttons()
 
-        # Compare-mode early-out: when the user is comparing two
-        # layers, hijack the upload entirely. The compare path
-        # decodes A and B independently and composes them via
-        # numpy — the cache + composite pipeline are bypassed.
-        if self._compare_state.is_active():
-            if _render_compare(self, frame):
-                self._last_displayed = frame
-                self._wait_timer.stop()
-                return
-            # else: render_compare returned False (decode failed
-            # for both layers, or stale ids); fall through to the
-            # normal path so the user still sees something.
+    def _try_compare_then_video(self, frame: int) -> bool:
+        """Run compare-mode and video early-outs in turn.
 
-        # Video early-out: when the topmost-visible layer is video,
-        # bypass the per-frame OIIO cache and decode through the
-        # PyAV-backed VideoSourceManager. Long-GOP video doesn't fit
-        # the random-access cache model — the manager's single-frame
-        # cache + seek-then-decode-forward strategy is the right shape.
+        Returns ``True`` when either path produced a complete frame
+        upload (caller stops there). ``False`` means neither was
+        applicable / both fell through — caller continues to the
+        regular cache lookup.
+        """
+        # Compare mode hijacks the upload entirely: A and B are
+        # decoded independently and composed via numpy — the cache
+        # + composite pipeline is bypassed.
+        if self._compare_state.is_active() and _render_compare(self, frame):
+            self._last_displayed = frame
+            self._wait_timer.stop()
+            return True
+
+        # Video early-out: the topmost-visible layer is a video clip
+        # whose long-GOP decode doesn't fit the random-access cache.
+        # ``VideoSourceManager`` does seek-then-decode-forward with
+        # a single-frame cache.
         displayed = (
             self._layer_stack.topmost_visible_at(frame)
             if self._layer_stack else None
@@ -1167,61 +1195,65 @@ class ImgPlayerApp:
         if displayed is not None and displayed.is_video:
             try:
                 arr = self._decode_video_layer(displayed, frame)
-                if arr is not None:
-                    self._display_array(arr)
-                    self._last_displayed = frame
-                    self._wait_timer.stop()
-                    return
             except Exception:
                 log.exception("video decode failed at master frame %d", frame)
+                return False
+            if arr is not None:
+                self._display_array(arr)
+                self._last_displayed = frame
+                self._wait_timer.stop()
+                return True
+        return False
 
+    def _try_display_cached_frame(self, frame: int) -> bool:
+        """Cache hit fast path: if the RAM cache already has this
+        frame, upload it and stop the wait timer. Returns ``True``
+        when the upload happened, ``False`` on a cache miss."""
         arr = self._cache.get(frame)
-        if arr is not None:
-            self._display_array(arr)
-            self._last_displayed = frame
-            self._wait_timer.stop()
-            return
+        if arr is None:
+            return False
+        self._display_array(arr)
+        self._last_displayed = frame
+        self._wait_timer.stop()
+        return True
 
-        # No-coverage gap: nothing in the stack covers this master
-        # frame (e.g. layer A ends at 1030, layer B starts at 1036 —
-        # frames 1031-1035 belong to nobody, OR the playhead landed
-        # before the first scanned frame because the source has
-        # missing files at the boundary). The cache will never
-        # decode something here, so without an explicit upload the
-        # viewport keeps displaying the previously-uploaded image
-        # which leaks visually as the user scrubs through the gap.
-        # Show the MISSING FRAME placeholder — same visual the cache
-        # uses for missing source files inside the layer's range, so
-        # the user gets one consistent "there's nothing to show"
-        # feedback regardless of why coverage is missing.
-        if (
-            self._layer_stack
-            and self._layer_stack.topmost_visible_at(frame) is None
-        ):
-            try:
-                self._show_gap_placeholder()
-            except Exception:
-                log.exception("[gap] failed to render placeholder at frame %d", frame)
-            self._last_displayed = None
-            self._wait_timer.stop()
-            return
+    def _handle_no_coverage_gap(self, frame: int) -> bool:
+        """When no layer covers this master frame (e.g. inter-layer
+        gap, or playhead before the first scanned frame), upload the
+        MISSING FRAME placeholder so the viewport doesn't keep
+        showing the previously-displayed image.
 
-        # Cache miss. What we do depends on whether we're playing.
+        Returns ``True`` when a placeholder was rendered (terminal
+        path), ``False`` when the frame IS covered by some layer
+        (= regular cache miss, caller continues).
+        """
+        if not self._layer_stack:
+            return False
+        if self._layer_stack.topmost_visible_at(frame) is not None:
+            return False
+        try:
+            self._show_gap_placeholder()
+        except Exception:
+            log.exception("[gap] failed to render placeholder at frame %d", frame)
+        self._last_displayed = None
+        self._wait_timer.stop()
+        return True
+
+    def _handle_cache_miss(self, frame: int) -> None:
+        """Cache miss: show the nearest already-decoded fallback when
+        playing (keeps motion visible) or start the wait timer when
+        parked (so the display snaps to the exact requested frame
+        as soon as the prefetcher lands it).
+        """
         if self._controller.state.is_playing:
-            # Don't freeze the view — show the nearest already-decoded
-            # frame behind the playhead so the user sees continuous
-            # (slower but moving) progress while the prefetcher catches up.
             fallback = self._nearest_cached_fallback(frame)
             if fallback is not None and fallback != self._last_displayed:
                 fallback_arr = self._cache.get(fallback)
                 if fallback_arr is not None:
                     self._display_array(fallback_arr)
                     self._last_displayed = fallback
-        else:
-            # Parked on this frame (user scrubbed / stopped) — poll until
-            # it lands so the display snaps to the exact requested frame.
-            if not self._wait_timer.isActive():
-                self._wait_timer.start()
+        elif not self._wait_timer.isActive():
+            self._wait_timer.start()
 
     def _refresh_info_band_frames(self, master_frame: int) -> None:
         """Push local-layer / global-timeline frame readouts to the
@@ -1367,107 +1399,108 @@ class ImgPlayerApp:
            user sees black instead of the previous frame.
         3. The displayed-layer didn't change (= a non-visual layer
            tweak) → the redisplay is a cheap idempotent no-op.
+
+        Split into 4 helpers so each concern is independently
+        scannable: compare-band bookkeeping, navigable-range sync,
+        prefetch replan, current-frame redisplay-or-gap.
         """
-        # Compare-mode bookkeeping: refresh the band's dropdown
-        # entries (layer added / removed) and gate the transport
-        # button on having ≥ 2 layers to compare against.
-        from img_player.compare_handler import (
+        self._sync_compare_band_for_stack_change()
+        # Selected-layer readout — a stack mutation can renumber rows
+        # (insert / remove) or drop a previously-selected layer.
+        self._refresh_status_selected_layers()
+        # Layer mutation may have invalidated decoder caches (offset
+        # change → different pixel for the same master frame).
+        self._compare_decoder.invalidate()
+        self._sync_navigable_range_to_layer_panel()
+        if self._controller.sequence is None:
+            return
+        # Re-plan prefetch over the FULL navigable range (not just the
+        # close window). The MasterFrameCache wiped everything on the
+        # ``layers_changed`` signal, so a 35-frame window would leave
+        # every frame outside it grey on the cache bar until playback
+        # rolls the playhead through them. ``replan_prefetch`` issues
+        # a priority-ranked submit for every frame in the nav range;
+        # ``request`` dedups against already-cached / already-pending
+        # so the call is cheap and idempotent across repeated stack
+        # mutations.
+        self._controller.replan_prefetch()
+        self._redisplay_current_frame_or_show_gap()
+
+    def _sync_compare_band_for_stack_change(self) -> None:
+        """Refresh the compare band's dropdown entries + gate the
+        transport button on having ≥ 2 layers. Auto-exits compare
+        mode when the stack drops below 2 layers (otherwise the
+        band's "B" dropdown is stuck on a stale layer id).
+        """
+        from img_player.compare_handler import (  # noqa: PLC0415 — lazy: cold path
             refresh_band_layers,
             toggle_compare,
         )
         layer_count = len(list(self._layer_stack.layers()))
         self._window.transport.set_compare_enabled(layer_count >= 2)
-        # Auto-exit compare mode when the stack drops below 2 layers —
-        # there's nothing left to compare against, the band's "B"
-        # dropdown would be empty (or stuck on a stale id), and the
-        # user otherwise has to click ✕ manually after each removal.
-        # Routed through ``toggle_compare`` so it handles the band
-        # visibility + GL uniform cleanup + overlay state in one place.
         if layer_count < 2 and self._compare_state.enabled:
             toggle_compare(self)
         refresh_band_layers(self)
-        # Selected-layer readout — a stack mutation can renumber rows
-        # (insert / remove) or drop a previously-selected layer; the
-        # status-bar text needs to follow. Cheap: O(N) over layers,
-        # one ``setText`` on a QLabel.
-        self._refresh_status_selected_layers()
-        # Layer mutation may have invalidated decoder caches (offset
-        # change → different pixel for the same master frame).
-        self._compare_decoder.invalidate()
-        # Sync the main timeline's range with the layer panel's broad
-        # master range (= union of every layer's source-potential). Without
-        # this the timeline keeps the loaded sequence's range, while the
-        # layer bars use the broad master range — the two scrubbers then
-        # paint at different scales, and dragging the timeline moves the
-        # layer-bar playhead at a visibly different speed.
+
+    def _sync_navigable_range_to_layer_panel(self) -> None:
+        """Push the layer-panel's broad master range to timeline /
+        controller / GL viewport, and update the timeline's gap /
+        disk-availability overlays.
+
+        The broad master range is the union of every layer's
+        source-potential — wider than the loaded sequence's bounds
+        when later-added layers extend past the original sequence
+        end. Without this sync the timeline keeps the loaded
+        sequence's range while layer bars use the broad range, and
+        the two scrubbers paint at different scales (dragging the
+        timeline moves the layer-bar playhead at a visibly different
+        speed).
+        """
         panel = getattr(self._window, "_layer_panel", None)
-        if panel is not None and self._layer_stack:
-            first, last = panel.broad_master_range()
-            if last > first:
-                self._window.timeline.set_range(first, last)
-                # Tell the controller the same. Without this its
-                # ``_clamp_to_sequence`` (called by ``seek``) caps
-                # scrubbing at the controller's held sequence bounds —
-                # i.e. the FIRST loaded layer — so the user can't move
-                # the playhead onto a region that only later layers
-                # cover. The override also widens the prefetch range
-                # so background decode keeps up across the full master
-                # timeline.
-                self._controller.set_navigable_range(first, last)
-                # Same range to the GL viewport so its drag-scrub
-                # clamps at the boundaries — without it the user can
-                # drag the cursor past the last frame and watch the
-                # transport readout count up into never-never land
-                # while the cache flashes adjacent frames.
-                self._window.viewer.gl.set_navigable_range(first, last)
-            # Push the current gap set to the timeline so the cache
-            # bar can paint multi-layer gaps in a distinct grey —
-            # tells the user "no layer covers these frames" at a
-            # glance instead of leaving them as the same black as
-            # not-yet-cached slots.
-            # Use the broad master range (= the timeline's range) so
-            # gaps past the last layer's trimmed OUT also paint grey.
-            # Without this override, those frames fall outside
-            # ``stack.master_range`` and the timeline draws them as
-            # empty cache slots — same colour as not-yet-decoded.
-            self._window.timeline.set_gap_frames(
-                self._layer_stack.gap_frames(bounds=(first, last)),
-            )
-            # Disk-tier availability — paint frames that already have a
-            # blob on disk in dim orange so the user sees the session
-            # is warm before they scrub. Synchronous lookup (~50 ms
-            # for a 1000-frame sequence). Cheap relative to the rest
-            # of ``_refresh_after_stack_change`` which already runs a
-            # ``refresh_band_layers`` + cache invalidate + prefetch
-            # replan on the same call.
-            try:
-                disk_frames = self._cache.disk_available_master_frames()
-                self._window.timeline.set_disk_available_frames(disk_frames)
-            except Exception:  # pragma: no cover — defensive
-                log.exception(
-                    "disk-available probe failed (non-fatal — timeline "
-                    "just won't pre-paint)",
-                )
-        if self._controller.sequence is None:
+        if panel is None or not self._layer_stack:
             return
+        first, last = panel.broad_master_range()
+        if last > first:
+            self._window.timeline.set_range(first, last)
+            # Tell the controller the same. Without this its
+            # ``_clamp_to_sequence`` (called by ``seek``) caps
+            # scrubbing at the controller's held sequence bounds.
+            self._controller.set_navigable_range(first, last)
+            # Same range to the GL viewport so its drag-scrub
+            # clamps at the boundaries — without it the user can
+            # drag the cursor past the last frame.
+            self._window.viewer.gl.set_navigable_range(first, last)
+        # Multi-layer gaps painted in a distinct grey so the user
+        # sees "no layer covers these frames" at a glance instead
+        # of mistaking them for not-yet-cached slots. Use the broad
+        # master range so gaps past the last layer's trimmed OUT
+        # also paint grey.
+        self._window.timeline.set_gap_frames(
+            self._layer_stack.gap_frames(bounds=(first, last)),
+        )
+        # Disk-tier availability — paint frames that already have a
+        # blob on disk in dim orange so the user sees the session is
+        # warm before they scrub. Synchronous lookup (~50 ms for a
+        # 1000-frame sequence). Cheap relative to the rest of
+        # ``_refresh_after_stack_change``.
+        try:
+            disk_frames = self._cache.disk_available_master_frames()
+            self._window.timeline.set_disk_available_frames(disk_frames)
+        except Exception:  # pragma: no cover — defensive
+            log.exception(
+                "disk-available probe failed (non-fatal — timeline "
+                "just won't pre-paint)",
+            )
+
+    def _redisplay_current_frame_or_show_gap(self) -> None:
+        """After cache invalidation, either re-trigger
+        :meth:`_on_frame_changed` so the freshly-decoded frame lands,
+        or upload the gap placeholder when no layer covers the
+        playhead anymore."""
         cur = self._controller.state.current_frame
-        # Re-plan prefetch over the FULL navigable range (not just the
-        # close window). The MasterFrameCache wiped everything on the
-        # ``layers_changed`` signal, so a 35-frame window would leave
-        # every frame outside it grey on the cache bar until playback
-        # rolls the playhead through them — exactly the "des zones qui
-        # ne sont pas mis en cache" symptom users hit after add-layer
-        # or session-load. ``replan_prefetch`` issues a priority-ranked
-        # submit for every frame in the nav range; ``request`` dedups
-        # against already-cached / already-pending so the call is cheap
-        # and idempotent across repeated stack mutations.
-        self._controller.replan_prefetch()
-        # If no layer covers the current master frame anymore (=
-        # user just hid the only visible coverage), wipe the viewport
-        # so the stale image doesn't linger. Phase 4 will replace
-        # the wipe with a "black frame uploaded" path so the timeline
-        # cache bar reflects the empty region too.
         if self._layer_stack.topmost_visible_at(cur) is None:
+            # No coverage at the playhead — wipe the viewport so the
+            # stale image doesn't linger.
             try:
                 self._show_gap_placeholder()
             except Exception:
