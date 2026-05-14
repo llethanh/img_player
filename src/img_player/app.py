@@ -892,6 +892,15 @@ class ImgPlayerApp:
         w.contact_sheet_divisor_changed.connect(
             self._on_contact_sheet_divisor_changed,
         )
+        # Transport bar's contact-sheet button — same toggle flow as
+        # the View menu entry. The chevron menu is populated lazily
+        # on each open so checkmarks reflect the live state.
+        w.transport.contact_sheet_toggled.connect(
+            self._on_contact_sheet_toggle,
+        )
+        w.transport.contact_sheet_menu.aboutToShow.connect(
+            self._build_transport_contact_sheet_menu,
+        )
         # Edit menu — wire to the same chained handlers the keyboard
         # shortcut (Ctrl+Z / Ctrl+Shift+Z) uses, so menu and shortcut
         # produce identical behaviour (annotations first, layer
@@ -1289,15 +1298,114 @@ class ImgPlayerApp:
             self._wait_timer.start()
 
     def _on_contact_sheet_toggle(self) -> None:
-        """Slot for ``MainWindow.contact_sheet_toggle_requested``.
+        """Slot for both ``MainWindow.contact_sheet_toggle_requested``
+        (= View menu) and ``transport.contact_sheet_toggled`` (=
+        toolbar button). Either entry point lands here.
 
-        Flips the state, syncs the menu checkmark, and re-renders.
+        Flips the state, syncs the View menu checkmark + transport
+        button checkmark, and re-renders.
         """
         self.toggle_contact_sheet()
         self._window.set_contact_sheet_enabled(
             self._contact_sheet_state.enabled,
         )
+        self._window.transport.set_contact_sheet_checked(
+            self._contact_sheet_state.enabled,
+        )
         self._sync_contact_sheet_menu_state()
+
+    def _build_transport_contact_sheet_menu(self) -> None:
+        """Populate the QMenu attached to the transport bar's
+        contact-sheet button on each ``aboutToShow``. Mirrors the
+        layout of ``View → Contact sheet settings`` so the user has
+        the same options without leaving the toolbar.
+
+        Re-uses the window's settings builder for consistency: the
+        QActions there carry the wiring we want; we just clone them
+        into the transport menu and trigger the parent action on
+        click so signals route through one path.
+        """
+        from PySide6.QtGui import QAction  # noqa: PLC0415 — UI-only
+        from PySide6.QtWidgets import QInputDialog  # noqa: PLC0415 — UI-only
+        menu = self._window.transport.contact_sheet_menu
+        menu.clear()
+        cs = self._contact_sheet_state
+
+        # Header — toggle entry. Useful when the user opened the
+        # menu by accident and wants to flip the mode from inside it.
+        toggle_act = QAction(
+            "Active (contact sheet on)" if cs.enabled else "Activate", self._window,
+            checkable=True,
+        )
+        toggle_act.setChecked(cs.enabled)
+        toggle_act.triggered.connect(self._on_contact_sheet_toggle)
+        menu.addAction(toggle_act)
+        menu.addSeparator()
+
+        # Auto + grid presets.
+        auto_act = QAction("Auto (smart)", self._window, checkable=True)
+        auto_act.setChecked(cs.cols is None and cs.rows is None)
+        auto_act.triggered.connect(
+            lambda: self._on_contact_sheet_grid_changed(-1, -1),
+        )
+        menu.addAction(auto_act)
+        presets = (
+            ("1 × 2", 1, 2), ("1 × 3", 1, 3), ("1 × 4", 1, 4),
+            ("2 × 1", 2, 1), ("2 × 2", 2, 2), ("2 × 3", 2, 3),
+            ("3 × 2", 3, 2), ("3 × 3", 3, 3), ("4 × 4", 4, 4),
+        )
+        for label, c, r in presets:
+            act = QAction(label, self._window, checkable=True)
+            act.setChecked(cs.cols == c and cs.rows == r)
+            act.triggered.connect(
+                lambda _chk, cc=c, rr=r: self._on_contact_sheet_grid_changed(cc, rr),
+            )
+            menu.addAction(act)
+
+        def _ask_custom() -> None:
+            cols, ok = QInputDialog.getInt(
+                self._window, "Contact sheet — columns",
+                "Number of columns:",
+                value=cs.cols or 2, min=1, max=16,
+            )
+            if not ok:
+                return
+            rows, ok = QInputDialog.getInt(
+                self._window, "Contact sheet — rows",
+                "Number of rows:",
+                value=cs.rows or 2, min=1, max=16,
+            )
+            if not ok:
+                return
+            self._on_contact_sheet_grid_changed(cols, rows)
+
+        custom_act = QAction("Custom grid…", self._window)
+        custom_act.triggered.connect(_ask_custom)
+        menu.addAction(custom_act)
+        menu.addSeparator()
+
+        labels_act = QAction(
+            "Show labels on tiles", self._window, checkable=True,
+        )
+        labels_act.setChecked(cs.show_labels)
+        labels_act.triggered.connect(
+            lambda checked: self.set_contact_sheet_labels(bool(checked)),
+        )
+        menu.addAction(labels_act)
+        menu.addSeparator()
+
+        # Output divisor sub-menu — same presets as the View menu.
+        divisor_menu = menu.addMenu("Output size")
+        for div, label in (
+            (1, "Full (÷1)"), (2, "Half (÷2)"), (3, "Third (÷3)"),
+            (4, "Quarter (÷4)"), (6, "Sixth (÷6)"), (8, "Eighth (÷8)"),
+        ):
+            act = QAction(label, self._window, checkable=True)
+            act.setChecked(cs.output_divisor == div)
+            act.triggered.connect(
+                lambda _chk, d=div: self._on_contact_sheet_divisor_changed(d),
+            )
+            divisor_menu.addAction(act)
 
     def _on_contact_sheet_grid_changed(self, cols: int, rows: int) -> None:
         """Slot for ``MainWindow.contact_sheet_grid_changed``.
@@ -1333,12 +1441,35 @@ class ImgPlayerApp:
         from a previous session), forces a re-display at the
         current frame, and pushes the new state to QSettings so
         the choice persists.
+
+        Also toggles two mode-coupled flags:
+
+        * ``controller.set_always_advance(enabled)`` — bypasses the
+          master-cache-stall guard so playback advances regardless
+          of whether the regular composite is cached (the contact
+          sheet has its own decoder so the master cache emptiness
+          is no longer a reason to freeze the playhead).
+        * Auto-exits compare mode when entering contact-sheet (the
+          two are mutually exclusive — both hijack the GL upload).
         """
-        self._contact_sheet_state.enabled = not self._contact_sheet_state.enabled
+        new_enabled = not self._contact_sheet_state.enabled
+        self._contact_sheet_state.enabled = new_enabled
         self._contact_sheet_decoder.invalidate()
+        # Bypass cache-stall when in contact-sheet (per-layer decoder
+        # owns the pixels) and re-engage on exit so regular playback
+        # gets its smooth cache-bound behaviour back.
+        self._controller.set_always_advance(new_enabled)
+        # Auto-exit compare mode: the two are mutually exclusive
+        # because both hijack the GL upload in ``_on_frame_changed``.
+        if new_enabled and self._compare_state.enabled:
+            from img_player.compare_handler import toggle_compare  # noqa: PLC0415
+            toggle_compare(self)
         # Persist + re-render at the current frame so the user sees
         # the change immediately.
         self._prefs.contact_sheet_state = self._contact_sheet_state.to_dict()
+        # Re-sync the compare button's enabled state — contact sheet
+        # entry / exit changes the mutex condition.
+        self._sync_compare_band_for_stack_change()
         cur = self._controller.state.current_frame
         self._last_displayed = None
         self._on_frame_changed(cur)
@@ -1644,8 +1775,17 @@ class ImgPlayerApp:
             toggle_compare,
         )
         layer_count = len(list(self._layer_stack.layers()))
-        self._window.transport.set_compare_enabled(layer_count >= 2)
-        if layer_count < 2 and self._compare_state.enabled:
+        # Compare needs ≥ 2 layers AND it can't coexist with
+        # contact-sheet (both hijack the GL upload). Greying it out
+        # when contact-sheet is active makes the mutex visible to
+        # the user rather than letting them click a button that
+        # would silently do nothing.
+        compare_allowed = (
+            layer_count >= 2
+            and not self._contact_sheet_state.enabled
+        )
+        self._window.transport.set_compare_enabled(compare_allowed)
+        if not compare_allowed and self._compare_state.enabled:
             toggle_compare(self)
         refresh_band_layers(self)
 
@@ -3766,6 +3906,19 @@ def _apply_preferences_to_window(app: ImgPlayerApp) -> None:
         cs_dict = prefs.contact_sheet_state
         app._contact_sheet_state = ContactSheetState.from_dict(cs_dict)
         app._window.set_contact_sheet_enabled(
+            app._contact_sheet_state.enabled,
+        )
+        # Sync the transport bar's contact-sheet toggle too so the
+        # toolbar checkmark matches the restored state.
+        app._window.transport.set_contact_sheet_checked(
+            app._contact_sheet_state.enabled,
+        )
+        # Sync the controller's always-advance flag — without this,
+        # restoring an "enabled" contact-sheet state across launches
+        # would leave the controller in its cache-stall default
+        # state, and the user would see playback freeze on cold
+        # cache despite the contact sheet being active.
+        app._controller.set_always_advance(
             app._contact_sheet_state.enabled,
         )
         app._sync_contact_sheet_menu_state()

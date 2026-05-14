@@ -130,6 +130,29 @@ _TEMPLATES: dict[str, str] = {
         'stroke="{color}" stroke-width="1.6" stroke-linecap="square"/>'
         "</svg>"
     ),
+    # Contact sheet — a 2×2 grid of small filled rectangles
+    # surrounded by a stroked outer frame, reading instantly as
+    # "tiled view" / "grid of thumbnails". Same outer rectangle
+    # geometry as the compare icon so the two review-mode toggles
+    # look like siblings in the transport bar.
+    "grid": (
+        '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">'
+        '<rect x="1.4" y="2.6" width="13.2" height="10.8" rx="1.2" '
+        'fill="none" stroke="{color}" stroke-width="1.4"/>'
+        # Top-left cell.
+        '<rect x="2.6" y="3.8" width="5.0" height="3.8" '
+        'fill="{color}"/>'
+        # Top-right cell.
+        '<rect x="8.4" y="3.8" width="5.0" height="3.8" '
+        'fill="{color}"/>'
+        # Bottom-left cell.
+        '<rect x="2.6" y="8.4" width="5.0" height="3.8" '
+        'fill="{color}"/>'
+        # Bottom-right cell.
+        '<rect x="8.4" y="8.4" width="5.0" height="3.8" '
+        'fill="{color}"/>'
+        "</svg>"
+    ),
     # Vertical compare — same shape as the ``compare`` icon above
     # but without the A/B labels: just the two halves of an image
     # separated by a vertical seam handle that slightly overshoots

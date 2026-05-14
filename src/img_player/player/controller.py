@@ -112,6 +112,13 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
         # shrink mid-playback when the cache hit rate drops. Initialised
         # to the class default so existing call sites stay correct.
         self._prefetch_ahead: int = type(self).PREFETCH_AHEAD
+        # When True, ``_tick`` bypasses the "stall on cache miss"
+        # guard and advances unconditionally. Used by modes that have
+        # their own decode path (e.g. contact-sheet's per-layer
+        # decoder) so the master cache's emptiness isn't a barrier —
+        # the alternative path will produce something to display.
+        # Off by default; flipped via :meth:`set_always_advance`.
+        self._always_advance: bool = False
         # Navigable master-frame range override. ``None`` falls back to
         # the loaded sequence's first/last frame (single-layer legacy
         # behaviour). When the multi-layer stack is active, ``app.py``
@@ -171,6 +178,20 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
         """Current prefetch window size. Mirrors ``PREFETCH_AHEAD`` until
         the runtime monitor decides to shrink it mid-playback."""
         return self._prefetch_ahead
+
+    def set_always_advance(self, enabled: bool) -> None:
+        """Toggle the cache-stall bypass.
+
+        When ``True``, ``_tick`` skips the "stall when the next
+        master frame isn't cached" guard and advances unconditionally.
+        Used by the contact-sheet path (which has its own per-layer
+        decoder, completely independent from the master cache) so
+        playback doesn't freeze just because the master cache is
+        cold or pointed at the wrong composite. Re-enabling stall
+        on contact-sheet exit re-engages the normal cache-bound
+        playback behaviour.
+        """
+        self._always_advance = bool(enabled)
 
     def set_prefetch_ahead(self, value: int) -> None:
         """Adjust the prefetch window at runtime.
@@ -545,7 +566,12 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
             hasattr(self._cache, "is_gap_frame")
             and self._cache.is_gap_frame(next_frame)
         )
-        if not should_stop and not is_gap and not self._cache.contains(next_frame):
+        if (
+            not should_stop
+            and not is_gap
+            and not self._always_advance
+            and not self._cache.contains(next_frame)
+        ):
             # Stay on the current frame. Re-issue the prefetch so the
             # worker pool keeps loading toward the would-be next
             # frame. Direction matters for the prefetch heuristic.

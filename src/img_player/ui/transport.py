@@ -200,6 +200,10 @@ class TransportBar(QWidget):  # type: ignore[misc]
     # Compare-mode toggle (v1.2). Carries no payload — the receiver
     # checks the button's ``isChecked()`` state via the public API.
     compare_toggled = Signal()
+    # Contact-sheet toggle (v1.5.14). Same shape as compare — the
+    # main click area flips on/off; the small arrow on the right
+    # opens a popup with the grid / divisor / labels presets.
+    contact_sheet_toggled = Signal()
     # Reload button (v0.5.1) — smart re-scan of the source folder,
     # keeping cached frames whose mtime hasn't changed.
     reload_clicked = Signal()
@@ -454,6 +458,57 @@ class TransportBar(QWidget):  # type: ignore[misc]
         # button still reads "not actionable yet" without the bottom
         # edge collapsing into a neighbouring border.
         self._compare_btn.setEnabled(False)
+
+        # --- Contact sheet --------------------------------------------------
+        # QToolButton with ``MenuButtonPopup`` — main click area
+        # toggles contact-sheet mode, the small chevron on the right
+        # opens a popup menu the app populates (grid presets, output
+        # divisor, label toggle). Same icon styling family as the
+        # compare button so the two review-mode toggles read as a
+        # group.
+        from PySide6.QtWidgets import QMenu  # noqa: PLC0415 — local to this section
+        self._contact_sheet_btn = QToolButton(self)
+        self._contact_sheet_btn.setIcon(
+            make_icon(
+                "grid",
+                color=H.ACCENT,
+                size=22,
+                disabled_color=H.TEXT_DISABLED,
+            ),
+        )
+        self._contact_sheet_btn.setIconSize(QSize(22, 22))
+        self._contact_sheet_btn.setCheckable(True)
+        self._contact_sheet_btn.setToolTip(
+            "Contact sheet — all layers tiled in a grid, "
+            "each re-aligned to frame 0 (Ctrl+G). "
+            "Arrow opens the settings menu."
+        )
+        # Push the toggle on the main button only — the menu side
+        # button uses the QMenu's own ``aboutToShow`` flow.
+        self._contact_sheet_btn.clicked.connect(
+            self.contact_sheet_toggled.emit,
+        )
+        # MenuButtonPopup splits the button: the larger left half is
+        # the toggle, the smaller right chevron opens the menu.
+        self._contact_sheet_btn.setPopupMode(
+            QToolButton.ToolButtonPopupMode.MenuButtonPopup,
+        )
+        # Empty menu — populated by the app's
+        # ``set_contact_sheet_settings_menu`` whenever the state
+        # changes. The aboutToShow signal lets us rebuild it lazily
+        # on each open without keeping a parallel mirror.
+        self._contact_sheet_menu = QMenu(self._contact_sheet_btn)
+        self._contact_sheet_btn.setMenu(self._contact_sheet_menu)
+        # Same QSS family as the compare button so they look like
+        # siblings in the toolbar. Reuses the four pinned border rules
+        # so the button paints all 4 edges in every Qt style.
+        self._contact_sheet_btn.setStyleSheet(
+            self._compare_btn.styleSheet(),
+        )
+        self._contact_sheet_btn.setFixedHeight(G.BTN_TRANSPORT_H)
+        # Width: a touch wider than compare to make room for the
+        # chevron without cropping the icon.
+        self._contact_sheet_btn.setMinimumWidth(G.BTN_TRANSPORT_H + 12)
 
         # --- FPS ------------------------------------------------------------
         # Plain editable line — no dropdown of presets. The user
@@ -765,6 +820,26 @@ class TransportBar(QWidget):  # type: ignore[misc]
     @property
     def compare_button(self) -> QPushButton:
         return self._compare_btn
+
+    @property
+    def contact_sheet_button(self) -> "QToolButton":
+        return self._contact_sheet_btn
+
+    @property
+    def contact_sheet_menu(self) -> "QMenu":
+        """Access the QMenu attached to the chevron half of the
+        contact-sheet button. The app populates it on-demand via
+        ``aboutToShow`` with the current grid / divisor / labels
+        presets."""
+        return self._contact_sheet_menu
+
+    def set_contact_sheet_checked(self, on: bool) -> None:
+        """Sync the contact-sheet toggle's checked state from
+        outside — used when the user enters / exits via the View
+        menu or the Ctrl+G shortcut."""
+        self._contact_sheet_btn.blockSignals(True)
+        self._contact_sheet_btn.setChecked(bool(on))
+        self._contact_sheet_btn.blockSignals(False)
 
     def set_compare_enabled(self, enabled: bool) -> None:
         """Grey out the compare button when the layer stack has < 2

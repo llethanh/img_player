@@ -1059,8 +1059,12 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         buttons_layout.setContentsMargins(0, 0, S.MD, 0)
         buttons_layout.setSpacing(S.SM)
         # Compare sits LEFT of reload — review-mode action first,
-        # then file-level commands (reload, export).
+        # then file-level commands (reload, export). Contact sheet
+        # is the sibling review-mode toggle next to compare; the two
+        # are mutually exclusive (both hijack the GL upload) so the
+        # app greys out the inactive one when its sibling is on.
         buttons_layout.addWidget(self._transport.compare_button)
+        buttons_layout.addWidget(self._transport.contact_sheet_button)
         buttons_layout.addWidget(self._transport.reload_button)
         buttons_layout.addWidget(self._transport.export_button)
         # Channel selector + RGBA mode selector, grouped tight.
