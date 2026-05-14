@@ -1575,10 +1575,12 @@ class ImgPlayerApp:
                 # the *current* state, not the long-stale one.
                 if hasattr(self, "_panel_collapsed_pre_cs"):
                     delattr(self, "_panel_collapsed_pre_cs")
-        # Per-tile scrub: wipe stale offsets on exit so a fresh enable
-        # starts every tile at offset 0 again.
-        if not new_enabled:
-            self._contact_sheet_state.per_layer_offsets.clear()
+        # Per-tile offsets persist across toggle off/on within a
+        # session — the user's drag-positioned tiles come back where
+        # they were last left. Cross-session persistence isn't useful
+        # (layer ids are UUIDs, regenerated at construction) so we
+        # don't push these to QSettings; ``per_layer_offsets`` lives
+        # only on the in-memory state.
         # Tell the GL viewport about (or clear) the active grid so
         # its drag-to-scrub path routes mouse drags to per-tile
         # scrub instead of the master timeline. Set BEFORE the
@@ -1708,12 +1710,26 @@ class ImgPlayerApp:
         # starting frame without disturbing the others. The decoder
         # itself stays oblivious to per-layer offsets — we just hand
         # it the pre-computed effective offset per layer.
+        # ``effective_source_frames`` mirrors the decoder's clamp so
+        # the per-tile label can display the source frame number
+        # actually on screen (useful for cross-referencing what's on
+        # disk vs. what's shown in the grid).
         per_offsets = self._contact_sheet_state.per_layer_offsets
         decodes: list[tuple[object, object]] = []
+        effective_source_frames: list[int] = []
         for layer in layers:
             layer_offset = global_offset + per_offsets.get(layer.id, 0)
             arr = self._contact_sheet_decoder.decode_one(layer, layer_offset)
             decodes.append((layer, arr))
+            # Mirror the decoder's clamp so the label matches the
+            # pixels: stills always show ``layer_in``; sequences /
+            # video clamp the offset into [0, trim_length-1] before
+            # adding ``layer_in``.
+            if layer.is_still or layer.trim_length <= 0:
+                effective_source_frames.append(int(layer.layer_in))
+            else:
+                clamped = max(0, min(layer_offset, layer.trim_length - 1))
+                effective_source_frames.append(int(layer.layer_in + clamped))
         tiles = [arr for _, arr in decodes]
         if all(arr is None for arr in tiles):
             log.warning(
@@ -1753,7 +1769,15 @@ class ImgPlayerApp:
         target_w = max(1, (cols * src_w) // div)
         target_h = max(1, (rows * src_h) // div)
 
-        names = [layer.name for layer, _ in decodes]
+        # Label = "<layer name> · <source frame>" so the user can
+        # cross-reference each tile with what's actually on disk
+        # (matching the bottom info band's frame readout). The "·"
+        # middle-dot is the same separator the rest of the UI uses
+        # for "name + secondary detail" pairs.
+        names = [
+            f"{layer.name} · {frame}"
+            for (layer, _), frame in zip(decodes, effective_source_frames)
+        ]
         composite = render_contact_sheet(
             tiles,
             names=names,
