@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import gc
 import logging
+import re
 import sys
 from pathlib import Path
 
@@ -92,6 +93,38 @@ DEFAULT_NUM_WORKERS = 6
 # memcpy on the Qt main thread. Empirically threads=1 with 6 workers
 # gives +47% playback fps vs threads=16. See perf/BASELINE.md.
 DEFAULT_OIIO_THREADS: int | None = 1
+
+
+# Used by the contact-sheet tile labels to substitute a sequence's
+# ``####`` placeholder with the current source frame, zero-padded
+# to the same width the pattern used. Captured at module level so
+# the regex isn't recompiled on every render.
+_HASH_RUN = re.compile(r"#+")
+
+
+def _format_tile_label(name: str, frame: int) -> str:
+    """Build the per-tile contact-sheet label.
+
+    When ``name`` contains a run of ``#`` characters (= a sequence
+    display pattern like ``"render.####.exr"``), the run is replaced
+    by ``frame`` zero-padded to the run's length. Otherwise we
+    append ``" · {frame}"`` to keep the frame number visible on
+    custom-named layers.
+
+    Substituting in-place is more readable than appending: the user
+    sees the actual on-disk filename for each tile
+    (``render.1042.exr``) instead of the abstract pattern plus a
+    secondary readout (``render.####.exr · 1042``).
+    """
+    match = _HASH_RUN.search(name)
+    if match is None:
+        return f"{name} · {frame}"
+    width = match.end() - match.start()
+    padded = f"{frame:0{width}d}"
+    # ``count=1`` so a pathological filename with two ``####`` groups
+    # only substitutes the first — the second remains intentionally
+    # for the user to see something's off with their pattern.
+    return _HASH_RUN.sub(padded, name, count=1)
 
 
 class ImgPlayerApp:
@@ -1769,13 +1802,15 @@ class ImgPlayerApp:
         target_w = max(1, (cols * src_w) // div)
         target_h = max(1, (rows * src_h) // div)
 
-        # Label = "<layer name> · <source frame>" so the user can
-        # cross-reference each tile with what's actually on disk
-        # (matching the bottom info band's frame readout). The "·"
-        # middle-dot is the same separator the rest of the UI uses
-        # for "name + secondary detail" pairs.
+        # Label = the layer's display pattern with ``####`` substituted
+        # by the current source frame number — so the user reads the
+        # exact filename on disk for that tile ("render.1042.exr"
+        # rather than "render.####.exr · 1042"). Falls back to the
+        # ``name · frame`` separator style when the layer name has
+        # no ``#`` placeholder (= the user renamed the layer to
+        # something custom).
         names = [
-            f"{layer.name} · {frame}"
+            _format_tile_label(layer.name, frame)
             for (layer, _), frame in zip(decodes, effective_source_frames)
         ]
         composite = render_contact_sheet(
