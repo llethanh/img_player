@@ -39,29 +39,91 @@ _LABEL_BG_RGBA = (0.0, 0.0, 0.0, 0.55)  # semi-transparent black
 _LABEL_FG_RGB = (1.0, 1.0, 1.0)
 
 
-def auto_grid_dimensions(n: int, image_aspect: float) -> tuple[int, int]:
-    """Pick ``(cols, rows)`` so the composite output's aspect ratio
-    stays close to ``image_aspect`` (= source frame W/H).
+def auto_grid_dimensions(
+    n: int,
+    image_aspect: float = 1.0,
+    canvas_aspect: float | None = None,
+) -> tuple[int, int]:
+    """Pick ``(cols, rows)`` for ``n`` tiles given the tile aspect
+    and (optionally) the canvas aspect we're rendering into.
 
-    Math: with all tiles sharing the source aspect, the output
-    aspect is ``(cols / rows) × image_aspect``. For the composite to
-    preserve the source aspect we'd want ``cols / rows == 1`` —
-    i.e. a square grid. The classic ``cols = ceil(sqrt(n))`` does
-    exactly that, with the bottom row partially empty when ``n``
-    isn't a perfect square.
+    Two strategies:
 
-    ``image_aspect`` is currently unused but kept on the signature
-    because a future change (e.g. fill the empty trailing cells
-    with extra rows of a different aspect) would want it. Passing
-    it is also forward-compat with a tighter optimisation that
-    actually does ``cols / rows = source_aspect / output_aspect``
-    for non-square outputs.
+    * **No canvas hint** (``canvas_aspect is None``) — fall back to
+      the classic ``cols = ceil(sqrt(n))`` square-ish grid. Used as
+      a defensive default for code paths that don't have a viewport
+      size yet (boot, headless tests).
+
+    * **With a canvas hint** — :func:`smart_grid_dimensions`. Picks
+      ``(cols, rows)`` to maximise the per-tile usable area inside
+      the canvas, accounting for both the per-tile aspect (= tiles
+      are letterboxed inside their cells when the cell aspect
+      differs from the image aspect) and the canvas aspect (= the
+      whole composite gets letterboxed inside the GL viewport if
+      its aspect mismatches).
     """
-    del image_aspect  # see docstring
+    if canvas_aspect is None:
+        n = max(1, n)
+        cols = max(1, int(math.ceil(math.sqrt(n))))
+        rows = max(1, int(math.ceil(n / cols)))
+        return (cols, rows)
+    return smart_grid_dimensions(n, image_aspect, canvas_aspect)
+
+
+def smart_grid_dimensions(
+    n: int,
+    image_aspect: float,
+    canvas_aspect: float,
+) -> tuple[int, int]:
+    """Pick the grid that maximises composite efficiency.
+
+    Score per ``(c, r)`` candidate with ``c × r ≥ n``:
+
+    * **Cell efficiency** — fraction of cells actually filled,
+      ``n / (c × r)``. A 3×3 layout for 7 tiles wastes 2/9 of the
+      canvas; a 4×2 lays out the same 7 tiles wasting 1/8. Higher
+      is better.
+    * **Composite aspect match** — how close ``cols / rows ×
+      image_aspect`` (the composite's natural aspect with all
+      tiles at source aspect) is to ``canvas_aspect`` (the GL
+      viewport's). Mismatch makes the GL viewport letterbox the
+      whole composite on top of the per-tile letterboxing, wasting
+      pixels. Computed as ``min(a, b) / max(a, b) ∈ (0, 1]`` so
+      ties are symmetric.
+
+    The two factors are multiplied — the best grid keeps both
+    cells full and the composite aspect close to the viewport.
+    """
     n = max(1, n)
-    cols = max(1, int(math.ceil(math.sqrt(n))))
-    rows = max(1, int(math.ceil(n / cols)))
-    return (cols, rows)
+    image_aspect = max(image_aspect, 0.01)
+    canvas_aspect = max(canvas_aspect, 0.01)
+    # The candidate space is small (n options) so we materialise
+    # the per-candidate stats and pick with a deterministic
+    # multi-key sort instead of an in-loop best-tracker. Reads
+    # cleaner and makes the tie-breaking hierarchy explicit.
+    candidates: list[tuple[int, int, float, float, int]] = []
+    for cols in range(1, n + 1):
+        rows = int(math.ceil(n / cols))
+        composite_aspect = (cols / rows) * image_aspect
+        a, b = composite_aspect, canvas_aspect
+        ar_eff = (min(a, b) / max(a, b)) if max(a, b) > 0 else 0.0
+        cell_eff = n / (cols * rows)
+        landscape_bias = 1 if cols >= rows else 0
+        candidates.append((cols, rows, ar_eff * cell_eff, cell_eff, landscape_bias))
+
+    # Sort key (descending priority):
+    # 1. Combined score (ar_eff × cell_eff) — primary efficiency.
+    # 2. cell_eff — among ties, prefer the layout with fewer empty
+    #    cells (= 3×3 over 4×3 for 9 tiles). Psychological / UX win:
+    #    a complete grid feels "right", holes feel like a bug.
+    # 3. landscape_bias — prefer cols ≥ rows on ties. Photographic
+    #    contact sheets are wider-than-tall by convention; landscape
+    #    monitors render that layout better.
+    # The negatives flip the sort to descending without ``reverse=True``
+    # (so the secondary keys can stay ascending where appropriate).
+    candidates.sort(key=lambda c: (-c[2], -c[3], -c[4]))
+    best_cols, best_rows, _score, _cell, _bias = candidates[0]
+    return (best_cols, best_rows)
 
 
 def render_contact_sheet(
@@ -159,8 +221,14 @@ def render_contact_sheet(
                 dtype=out_dtype,
             )
         else:
-            resized = _resize_nearest(tile, cell_w, image_h, n_channels)
-            out[y0:y0 + image_h, x0:x1] = resized
+            # Preserve the tile's own aspect ratio: letterbox /
+            # pillarbox inside the image area of the cell. The
+            # surrounding pixels were zero-init'd by ``np.zeros``
+            # above, so they read as black (or transparent for RGBA
+            # consumers) — exactly the bars we want.
+            _letterbox_into_region(
+                out[y0:y0 + image_h, x0:x1], tile, n_channels,
+            )
 
         if show_labels and actual_label_h > 0 and name:
             _paint_label(
@@ -176,25 +244,70 @@ def render_contact_sheet(
 # ----------------------------------------------------------------- internals
 
 
-def _resize_nearest(
+def _letterbox_into_region(
+    region: np.ndarray, tile: np.ndarray, n_channels: int,
+) -> None:
+    """Resize ``tile`` to fit inside ``region`` while preserving its
+    aspect ratio, then centre-paint it.
+
+    The remaining pixels in ``region`` are left untouched — callers
+    pass in a zero-initialised slice of the composite output so the
+    untouched margins read as black (or transparent on the alpha
+    channel for RGBA consumers). This is the per-tile letterbox /
+    pillarbox the user expects: each tile keeps its native aspect,
+    the cell adapts.
+
+    No-op when either dimension of ``region`` or ``tile`` is zero.
+    """
+    cell_h, cell_w = region.shape[:2]
+    if cell_h <= 0 or cell_w <= 0:
+        return
+    src_h, src_w = tile.shape[:2]
+    if src_h <= 0 or src_w <= 0:
+        return
+    src_aspect = src_w / src_h
+    cell_aspect = cell_w / cell_h
+    if cell_aspect > src_aspect:
+        # Cell is wider than the tile → pillarbox (bars on sides).
+        target_h = cell_h
+        target_w = max(1, int(round(cell_h * src_aspect)))
+    else:
+        # Cell is taller than the tile → letterbox (bars top + bottom).
+        target_w = cell_w
+        target_h = max(1, int(round(cell_w / src_aspect)))
+    # Clamp to cell bounds in the degenerate "rounded just over"
+    # case (e.g. cell 100×100, src 100×100 → target 100×100, fine;
+    # but a 1-px float rounding under bad luck could push us 1 px
+    # past the cell — clamp to avoid an out-of-bounds slice).
+    target_w = min(target_w, cell_w)
+    target_h = min(target_h, cell_h)
+
+    resized = _resize_nearest_raw(tile, target_w, target_h, n_channels)
+    # Centre the resized tile inside the cell.
+    x0 = (cell_w - target_w) // 2
+    y0 = (cell_h - target_h) // 2
+    region[y0:y0 + target_h, x0:x0 + target_w] = resized
+
+
+def _resize_nearest_raw(
     arr: np.ndarray, w: int, h: int, n_channels: int,
 ) -> np.ndarray:
-    """Nearest-neighbour resize via numpy fancy-index.
+    """Nearest-neighbour resize via numpy fancy-index, no aspect
+    preservation — exact ``(h, w)`` output regardless of input
+    shape. Used as the low-level engine of
+    :func:`_letterbox_into_region` after the caller has computed
+    the aspect-preserving ``(h, w)`` target.
 
     Faster than calling out to cv2 / PIL for our scale (~1 ms on a
     1080p → 540p downsample) and avoids a heavy dependency on the
-    composite path. The compose runs on every frame change in
-    contact-sheet mode, so this matters.
-
-    Also normalises the input channel count to ``n_channels`` —
-    padding RGB → RGBA with full alpha or trimming RGBA → RGB.
+    composite path. Also normalises the input channel count to
+    ``n_channels`` — padding RGB → RGBA with full alpha or
+    trimming RGBA → RGB.
     """
     src_h, src_w = arr.shape[:2]
-    # Generate index arrays once, broadcast.
     ys = (np.arange(h) * src_h // h).astype(np.intp)
     xs = (np.arange(w) * src_w // w).astype(np.intp)
     if arr.ndim == 2:
-        # Grayscale — broadcast to 3 channels then re-channel below.
         sampled = arr[ys[:, None], xs[None, :]]
         sampled = np.stack([sampled, sampled, sampled], axis=2)
     else:
@@ -204,7 +317,6 @@ def _resize_nearest(
     if src_channels == n_channels:
         return sampled
     if src_channels < n_channels:
-        # Pad with full alpha (1.0 for float, 255 for uint8).
         pad = np.full(
             (h, w, n_channels - src_channels),
             _opaque_for(arr.dtype),

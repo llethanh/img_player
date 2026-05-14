@@ -51,18 +51,26 @@ class ContactSheetState:
         return self.enabled
 
     def effective_grid(
-        self, n_layers: int, image_aspect: float,
+        self,
+        n_layers: int,
+        image_aspect: float,
+        canvas_aspect: float | None = None,
     ) -> tuple[int, int]:
         """Resolve the active ``(cols, rows)`` pair.
 
         When the user picked a manual grid (both ``cols`` and ``rows``
         set to positives) returns that. Otherwise computes an auto
-        grid via :func:`auto_grid_dimensions` so the composite output
-        roughly preserves ``image_aspect`` (= source frame W/H).
+        grid via :func:`auto_grid_dimensions`:
+
+        * If ``canvas_aspect`` is given, runs
+          :func:`smart_grid_dimensions` — picks the grid that
+          maximises composite efficiency given the tile aspect AND
+          the target canvas aspect (= GL viewport size).
+        * Without a canvas hint, falls back to the classic
+          ``ceil(sqrt(n))`` square grid.
 
         Clamps to at least ``(1, 1)`` so the caller never has to
-        guard against zero — useful when ``n_layers == 0`` and the
-        contact sheet is on by accident.
+        guard against zero.
         """
         from img_player.contact_sheet.compose import auto_grid_dimensions  # noqa: PLC0415 — avoid cycle
         if (
@@ -70,7 +78,9 @@ class ContactSheetState:
             and self.rows is not None and self.rows > 0
         ):
             return (self.cols, self.rows)
-        return auto_grid_dimensions(max(1, n_layers), image_aspect)
+        return auto_grid_dimensions(
+            max(1, n_layers), image_aspect, canvas_aspect,
+        )
 
     def to_dict(self) -> dict[str, object]:
         """JSON-friendly dump for prefs persistence."""

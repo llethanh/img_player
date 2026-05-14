@@ -1369,6 +1369,18 @@ class ImgPlayerApp:
         ``layer.layer_in + master_frame`` (clamped to the layer's
         trim range) — so layers with different timeline offsets
         look like they all started at master 0.
+
+        Grid + canvas sizing:
+
+        * **Smart grid.** The cols × rows pick uses
+          :func:`smart_grid_dimensions` with the GL viewport's
+          current aspect — picks the layout that maximises
+          per-tile area inside the canvas while keeping the
+          composite aspect close to the viewport.
+        * **Canvas aspect == viewport aspect.** The composite's
+          width/height ratio matches the viewport so the GL
+          viewport doesn't add an outer letterbox on top of the
+          per-tile letterboxing inside the composite.
         """
         from img_player.contact_sheet import render_contact_sheet  # noqa: PLC0415 — cold path
         layers = [
@@ -1382,25 +1394,41 @@ class ImgPlayerApp:
         if all(arr is None for arr in tiles):
             return False
 
-        # Pick the composite output size + aspect from the first
-        # successfully-decoded tile. We size the output to that
-        # tile's dimensions so the GL viewport doesn't re-rescale
-        # and the user sees pixel-perfect content within each tile
-        # (modulo the tile-resize step inside the compositor).
+        # Reference tile = first decoded layer. Drives both the
+        # "image_aspect" hint for the smart grid (per-tile aspect)
+        # and the output pixel resolution (= one tile's longest
+        # dimension, scaled by cols/rows below).
         first_arr = next(arr for arr in tiles if arr is not None)
-        out_h, out_w = first_arr.shape[:2]
-        image_aspect = out_w / out_h if out_h > 0 else 16 / 9
+        src_h, src_w = first_arr.shape[:2]
+        image_aspect = src_w / src_h if src_h > 0 else 16 / 9
+
+        # Viewport aspect drives the smart grid + the composite's
+        # outer aspect. ``self._window.viewer.gl`` is the QOpenGLWidget
+        # — its current widget size is the canvas the user will see.
+        gl_widget = self._window.viewer.gl
+        vp_w = max(1, gl_widget.width())
+        vp_h = max(1, gl_widget.height())
+        canvas_aspect = vp_w / vp_h
         cols, rows = self._contact_sheet_state.effective_grid(
-            len(layers), image_aspect,
+            len(layers), image_aspect, canvas_aspect=canvas_aspect,
         )
+
+        # Compose target size: each tile gets ~source resolution
+        # (no upscale beyond what we have) and we lay them out in
+        # the chosen grid. The output is large but the GL viewport
+        # handles arbitrary sizes — keeps detail when the user
+        # zooms.
+        target_w = cols * src_w
+        target_h = rows * src_h
+
         names = [layer.name for layer, _ in decodes]
         composite = render_contact_sheet(
             tiles,
             names=names,
             cols=cols,
             rows=rows,
-            target_w=out_w,
-            target_h=out_h,
+            target_w=target_w,
+            target_h=target_h,
             show_labels=self._contact_sheet_state.show_labels,
         )
         self._display_array(composite)
