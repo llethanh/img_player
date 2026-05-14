@@ -336,6 +336,22 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
     # ``Signal()`` (no args): consumers ask for the current state via
     # :meth:`current_transform` / :meth:`image_size` when they need it.
     transform_changed = Signal()
+    # Contact-sheet per-tile scrub. Carries ``(tile_idx, delta_frames)``
+    # where ``tile_idx`` is the 0-based index of the tile under the
+    # initial mouse-press (row-major: ``row * cols + col``) and
+    # ``delta_frames`` is the cumulative horizontal drag distance
+    # since the press, in frames. Emitted only when the viewport's
+    # contact-sheet grid layout has been set via
+    # :meth:`set_contact_sheet_grid` (which routes the press through
+    # the per-tile path instead of the regular master-timeline scrub).
+    contact_sheet_tile_scrub_requested = Signal(int, int)
+    # Lifecycle bookends for the per-tile drag gesture. The app side
+    # uses ``started(tile_idx)`` to snapshot the per-layer offset
+    # *at press time* so move events can compute delta-from-anchor
+    # rather than cumulative-across-gestures. ``finished`` lets the
+    # app clear any per-gesture state.
+    contact_sheet_tile_scrub_started = Signal(int)
+    contact_sheet_tile_scrub_finished = Signal()
 
     # ------------------------------------------------------------------ Lifecycle
 
@@ -422,6 +438,20 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
         self._current_frame = 0
         self._drag_base_frame: int | None = None
         self._drag_start_x: float = 0.0
+        # Contact-sheet per-tile scrub state. ``_cs_grid`` is the
+        # ``(cols, rows)`` layout the GL viewport thinks is active —
+        # set via :meth:`set_contact_sheet_grid` whenever the app
+        # toggles contact-sheet mode or changes the grid. ``None``
+        # means "not in contact-sheet mode", and the drag-to-scrub
+        # path falls back to its usual master-timeline behaviour.
+        # ``_cs_drag_tile`` and ``_cs_drag_start_x`` track the
+        # current per-tile drag gesture. The viewport doesn't own
+        # the per-tile offsets themselves — it just emits delta
+        # frames; the app side accumulates them into
+        # ``ContactSheetState.per_layer_offsets``.
+        self._cs_grid: tuple[int, int] | None = None
+        self._cs_drag_tile: int | None = None
+        self._cs_drag_start_x: float = 0.0
         # Navigable frame bounds — set by the app via
         # :meth:`set_navigable_range`. ``None`` = no clamp (used at
         # init and after :meth:`detach`-ing the sequence).
@@ -597,6 +627,54 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
             self._nav_first = int(first)
             self._nav_last = int(last)
 
+    def _cs_tile_at(self, x: float, y: float) -> int | None:
+        """Map widget-space cursor coords to a 0-based tile index.
+
+        Returns ``None`` when contact-sheet mode is off or the
+        cursor falls outside the widget bounds. Assumes the
+        composite fills the widget — see the
+        :meth:`set_contact_sheet_grid` docstring for why this is a
+        safe simplification in practice.
+        """
+        if self._cs_grid is None:
+            return None
+        cols, rows = self._cs_grid
+        w = max(1, self.width())
+        h = max(1, self.height())
+        if x < 0 or y < 0 or x >= w or y >= h:
+            return None
+        col = int(x / w * cols)
+        row = int(y / h * rows)
+        col = max(0, min(col, cols - 1))
+        row = max(0, min(row, rows - 1))
+        return row * cols + col
+
+    def set_contact_sheet_grid(self, grid: tuple[int, int] | None) -> None:
+        """Tell the viewport about the active contact-sheet grid.
+
+        ``grid = (cols, rows)`` activates per-tile drag-to-scrub:
+        the next ``mousePressEvent`` inside the widget maps to a
+        tile index via the cursor's (x, y) position and the press
+        starts a per-tile scrub gesture (emitting
+        ``contact_sheet_tile_scrub_requested(tile_idx, delta_frames)``
+        on each move). ``None`` reverts to the regular master-
+        timeline scrub used outside contact-sheet mode.
+
+        The viewport assumes the composite fills the widget. The
+        smart-grid path in ``ImgPlayerApp._render_contact_sheet``
+        picks the grid that matches the viewport aspect, so the
+        small residual letterbox at the composite edges is at most
+        a few percent and doesn't break tile mapping in practice.
+        """
+        if grid is None or grid[0] <= 0 or grid[1] <= 0:
+            self._cs_grid = None
+        else:
+            self._cs_grid = (int(grid[0]), int(grid[1]))
+        # Any in-progress drag should be discarded — switching mode
+        # mid-gesture would emit the wrong signal type otherwise.
+        self._cs_drag_tile = None
+        self._drag_base_frame = None
+
     def set_pbo_enabled(self, enabled: bool) -> None:
         """Toggle the async PBO upload path on or off.
 
@@ -676,6 +754,22 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
+            # Contact-sheet mode: identify which tile the cursor
+            # sits in and start a per-tile scrub. The regular
+            # master-timeline scrub stays disabled until the user
+            # leaves contact sheet — global scrubbing lives on the
+            # dedicated timeline widget below the viewer.
+            if self._cs_grid is not None:
+                tile_idx = self._cs_tile_at(
+                    event.position().x(), event.position().y(),
+                )
+                if tile_idx is not None:
+                    self._cs_drag_tile = tile_idx
+                    self._cs_drag_start_x = event.position().x()
+                    self.setCursor(Qt.CursorShape.SplitHCursor)
+                    self.contact_sheet_tile_scrub_started.emit(tile_idx)
+                    event.accept()
+                    return
             self._drag_base_frame = self._current_frame
             self._drag_start_x = event.position().x()
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
@@ -695,6 +789,17 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if self._cs_drag_tile is not None:
+            # Per-tile scrub: horizontal pixels → frame delta. Same
+            # ``DRAG_PIXELS_PER_FRAME`` ratio as the master scrub so
+            # the gesture feels consistent.
+            delta_px = event.position().x() - self._cs_drag_start_x
+            delta_frames = int(delta_px / self.DRAG_PIXELS_PER_FRAME)
+            self.contact_sheet_tile_scrub_requested.emit(
+                self._cs_drag_tile, delta_frames,
+            )
+            event.accept()
+            return
         if self._drag_base_frame is not None:
             delta_px = event.position().x() - self._drag_start_x
             delta_frames = int(delta_px / self.DRAG_PIXELS_PER_FRAME)
@@ -730,6 +835,15 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and self._cs_drag_tile is not None
+        ):
+            self._cs_drag_tile = None
+            self.setCursor(Qt.CursorShape.SizeHorCursor)
+            self.contact_sheet_tile_scrub_finished.emit()
+            event.accept()
+            return
         if event.button() == Qt.MouseButton.LeftButton and self._drag_base_frame is not None:
             self._drag_base_frame = None
             self.setCursor(Qt.CursorShape.SizeHorCursor)

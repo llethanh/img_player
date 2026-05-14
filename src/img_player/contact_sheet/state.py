@@ -11,7 +11,7 @@ choice survives across sessions.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -45,6 +45,14 @@ class ContactSheetState:
     # compose + upload, suitable for review at viewer scale).
     # The user picks the divisor to trade detail for performance.
     output_divisor: int = 1
+    # Per-layer scrub offset, added on top of the global contact-sheet
+    # playback offset. Lets the user pick a different "starting frame"
+    # for each tile — drag horizontally on a tile to shift its offset
+    # by ±N frames. Resets when contact-sheet mode is toggled off so
+    # a stale offset from a previous session doesn't surprise the
+    # user. Not persisted: per-tile offsets are workflow state, not
+    # configuration.
+    per_layer_offsets: dict[str, int] = field(default_factory=dict)
 
     def is_active(self) -> bool:
         """True when the GL upload should be hijacked.

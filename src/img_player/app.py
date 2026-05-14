@@ -845,6 +845,24 @@ class ImgPlayerApp:
             panel.selection_changed.connect(
                 self._on_layer_selection_changed,
             )
+
+        # Contact-sheet per-tile scrub: the GL viewport emits
+        # ``(tile_idx, delta_frames)`` on each mouse-move during a
+        # left-button drag while contact-sheet grid mode is active.
+        # We translate the tile index back to a layer id and store
+        # the offset relative to the press-time anchor. The
+        # started / finished pair lets us refresh the anchor between
+        # gestures so each drag is "absolute from the cursor's
+        # press position", not cumulative across gestures.
+        self._window.viewer.gl.contact_sheet_tile_scrub_requested.connect(
+            self._on_contact_sheet_tile_scrub,
+        )
+        self._window.viewer.gl.contact_sheet_tile_scrub_started.connect(
+            self._on_contact_sheet_tile_scrub_started,
+        )
+        self._window.viewer.gl.contact_sheet_tile_scrub_finished.connect(
+            self._on_contact_sheet_tile_scrub_finished,
+        )
             # NB: timeline ↔ layer-bar alignment used to be a runtime
             # signal (``bar_inset_changed`` → ``set_content_insets``).
             # That's been replaced by ``MasterTimelinePanel`` which
@@ -1423,6 +1441,71 @@ class ImgPlayerApp:
         self.set_contact_sheet_output_divisor(divisor)
         self._sync_contact_sheet_menu_state()
 
+    def _on_contact_sheet_tile_scrub_started(self, tile_idx: int) -> None:
+        """Snapshot the per-tile offset at drag press so subsequent
+        move events compute the new offset as ``anchor + delta``
+        rather than ``cumulative_delta + 0``. Keyed on layer id so
+        a multi-tile drag (rare — Qt only delivers one button at a
+        time) wouldn't collide either."""
+        if not self._contact_sheet_state.is_active():
+            return
+        visible_layers = [
+            layer for layer in self._layer_stack.layers() if layer.visible
+        ]
+        if tile_idx < 0 or tile_idx >= len(visible_layers):
+            return
+        layer = visible_layers[tile_idx]
+        # One anchor at a time: a fresh press wipes any leftover
+        # anchor and stores the current offset for this layer.
+        self._cs_tile_scrub_anchor = (
+            layer.id,
+            self._contact_sheet_state.per_layer_offsets.get(layer.id, 0),
+        )
+
+    def _on_contact_sheet_tile_scrub_finished(self) -> None:
+        """Clear the per-gesture anchor so the next drag starts
+        from the post-gesture offset."""
+        self._cs_tile_scrub_anchor = None
+
+    def _on_contact_sheet_tile_scrub(
+        self, tile_idx: int, delta_frames: int,
+    ) -> None:
+        """Slot for ``GLViewport.contact_sheet_tile_scrub_requested``.
+
+        Translates ``tile_idx`` to a layer id (= the same ordering
+        :meth:`_render_contact_sheet` uses — visible layers in
+        stack order) and writes ``anchor + delta_frames`` into the
+        layer's ``per_layer_offsets`` slot. The anchor was snapped
+        at press time by :meth:`_on_contact_sheet_tile_scrub_started`.
+
+        Re-renders the contact sheet at the current master frame so
+        the dragged tile updates under the cursor in real time.
+        """
+        if not self._contact_sheet_state.is_active():
+            return
+        anchor = getattr(self, "_cs_tile_scrub_anchor", None)
+        if anchor is None:
+            return  # press signal didn't fire (mode mismatch?) — bail
+        visible_layers = [
+            layer for layer in self._layer_stack.layers() if layer.visible
+        ]
+        if tile_idx < 0 or tile_idx >= len(visible_layers):
+            return
+        layer = visible_layers[tile_idx]
+        anchor_layer_id, anchor_offset = anchor
+        if anchor_layer_id != layer.id:
+            # Tile under the cursor changed mid-drag (e.g. the user
+            # dragged way off the original tile and the cursor now
+            # sits over a different one). Ignore — the viewport
+            # locks the drag to the press-time tile via
+            # ``_cs_drag_tile``, so this branch is defensive.
+            return
+        new_offset = anchor_offset + delta_frames
+        self._contact_sheet_state.per_layer_offsets[layer.id] = new_offset
+        cur = self._controller.state.current_frame
+        self._last_displayed = None
+        self._on_frame_changed(cur)
+
     def _sync_contact_sheet_menu_state(self) -> None:
         """Push the current ContactSheetState to the window so the
         settings sub-menu's checkmarks match reality on next open."""
@@ -1442,7 +1525,7 @@ class ImgPlayerApp:
         current frame, and pushes the new state to QSettings so
         the choice persists.
 
-        Also toggles two mode-coupled flags:
+        Side-effects coupled to the mode:
 
         * ``controller.set_always_advance(enabled)`` — bypasses the
           master-cache-stall guard so playback advances regardless
@@ -1451,6 +1534,15 @@ class ImgPlayerApp:
           is no longer a reason to freeze the playhead).
         * Auto-exits compare mode when entering contact-sheet (the
           two are mutually exclusive — both hijack the GL upload).
+        * Auto-collapses the layer panel on entry to reclaim screen
+          real estate; restores the previous collapse state on exit
+          so the user gets their panel back exactly as they left it.
+        * Tells the GL viewport about the active grid so its
+          drag-to-scrub handler can map cursor coordinates to a tile
+          for per-tile offset edits.
+        * Wipes ``per_layer_offsets`` on exit — those are workflow
+          state, not config, and a stale offset from a previous
+          contact-sheet session would surprise the user.
         """
         new_enabled = not self._contact_sheet_state.enabled
         self._contact_sheet_state.enabled = new_enabled
@@ -1464,6 +1556,61 @@ class ImgPlayerApp:
         if new_enabled and self._compare_state.enabled:
             from img_player.compare_handler import toggle_compare  # noqa: PLC0415
             toggle_compare(self)
+        # Auto-collapse the layer panel to reclaim screen real estate.
+        # Save the prior state so we restore it on exit.
+        panel = getattr(self._window, "_layer_panel", None)
+        if panel is not None:
+            if new_enabled:
+                # First entry: remember the user's collapse state so
+                # we can restore it on exit. Idempotent — toggling
+                # contact-sheet on twice in a row doesn't overwrite
+                # the stored state (we only set if not already set).
+                if not hasattr(self, "_panel_collapsed_pre_cs"):
+                    self._panel_collapsed_pre_cs = panel.is_collapsed()
+                panel.set_collapsed(True)
+            else:
+                prior = getattr(self, "_panel_collapsed_pre_cs", False)
+                panel.set_collapsed(bool(prior))
+                # Clear the snapshot so the next toggle-on captures
+                # the *current* state, not the long-stale one.
+                if hasattr(self, "_panel_collapsed_pre_cs"):
+                    delattr(self, "_panel_collapsed_pre_cs")
+        # Per-tile scrub: wipe stale offsets on exit so a fresh enable
+        # starts every tile at offset 0 again.
+        if not new_enabled:
+            self._contact_sheet_state.per_layer_offsets.clear()
+        # Tell the GL viewport about (or clear) the active grid so
+        # its drag-to-scrub path routes mouse drags to per-tile
+        # scrub instead of the master timeline. Set BEFORE the
+        # re-render call below so the grid is in place when the user
+        # presses their first scrub.
+        gl = self._window.viewer.gl
+        if new_enabled:
+            # Resolve the effective grid now so the viewport has
+            # accurate (cols, rows). Match the same image_aspect /
+            # canvas_aspect inputs the renderer uses.
+            try:
+                layers = [
+                    layer for layer in self._layer_stack.layers()
+                    if layer.visible
+                ]
+                if layers and layers[0].sequence.width:
+                    src_w = layers[0].sequence.width or 1920
+                    src_h = layers[0].sequence.height or 1080
+                else:
+                    src_w, src_h = 1920, 1080
+                vp_w = max(1, gl.width())
+                vp_h = max(1, gl.height())
+                cols, rows = self._contact_sheet_state.effective_grid(
+                    max(1, len(layers)),
+                    image_aspect=src_w / max(1, src_h),
+                    canvas_aspect=vp_w / vp_h,
+                )
+                gl.set_contact_sheet_grid((cols, rows))
+            except Exception:  # pragma: no cover — defensive
+                log.exception("[contact_sheet] failed to push grid to viewport")
+        else:
+            gl.set_contact_sheet_grid(None)
         # Persist + re-render at the current frame so the user sees
         # the change immediately.
         self._prefs.contact_sheet_state = self._contact_sheet_state.to_dict()
@@ -1554,21 +1701,27 @@ class ImgPlayerApp:
         # in-point + or the master_start of the leftmost layer, which
         # is exactly where the controller would loop back to.
         anchor = self._controller._effective_in_frame()  # noqa: SLF001
-        contact_offset = max(0, master_frame - anchor)
-        decodes = self._contact_sheet_decoder.decode_all(layers, contact_offset)
+        global_offset = max(0, master_frame - anchor)
+
+        # Each tile decodes at ``global_offset + per_layer_offsets[id]``
+        # so the user can scrub-drag a single tile to shift its
+        # starting frame without disturbing the others. The decoder
+        # itself stays oblivious to per-layer offsets — we just hand
+        # it the pre-computed effective offset per layer.
+        per_offsets = self._contact_sheet_state.per_layer_offsets
+        decodes: list[tuple[object, object]] = []
+        for layer in layers:
+            layer_offset = global_offset + per_offsets.get(layer.id, 0)
+            arr = self._contact_sheet_decoder.decode_one(layer, layer_offset)
+            decodes.append((layer, arr))
         tiles = [arr for _, arr in decodes]
         if all(arr is None for arr in tiles):
             log.warning(
                 "[contact_sheet] render skipped at master=%d (offset=%d): "
                 "every layer's decode returned None (n_layers=%d)",
-                master_frame, contact_offset, len(layers),
+                master_frame, global_offset, len(layers),
             )
             return False
-        log.info(
-            "[contact_sheet] render master=%d (offset=%d), %d tiles (%d decoded)",
-            master_frame, contact_offset, len(layers),
-            sum(1 for t in tiles if t is not None),
-        )
 
         # Reference tile = first decoded layer. Drives both the
         # "image_aspect" hint for the smart grid (per-tile aspect)
