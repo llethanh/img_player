@@ -798,6 +798,35 @@ class Preferences:
     def save_frame_settings(self, data: dict[str, object]) -> None:
         _qsettings_set_dict(self._s, "save_frame", data)
 
+    # ------------------------------------------------------------------ Contact sheet (v1.5.14)
+
+    @property
+    def contact_sheet_state(self) -> dict[str, object]:
+        """Round-trip the last contact-sheet config (enabled flag,
+        grid dims, label toggle). Same dict shape as
+        :meth:`ContactSheetState.to_dict` — the app instantiates the
+        state from this on boot.
+
+        ``cols`` / ``rows`` are stored as strings (``"None"`` for
+        auto, the integer otherwise) since QSettings has no native
+        ``int | None``; the parsing in
+        :meth:`ContactSheetState.from_dict` understands both.
+        """
+        keys = ("enabled", "cols", "rows", "show_labels")
+        return _qsettings_dict(self._s, "contact_sheet", keys)
+
+    @contact_sheet_state.setter
+    def contact_sheet_state(self, data: dict[str, object]) -> None:
+        # Normalise ``None`` → the string "None" so the QSettings
+        # round-trip preserves the auto-grid marker (a stored ``None``
+        # comes back as the empty string on POSIX .conf files,
+        # ambiguous with "user wrote 0").
+        normalised = {
+            key: ("None" if value is None else value)
+            for key, value in data.items()
+        }
+        _qsettings_set_dict(self._s, "contact_sheet", normalised)
+
     # ------------------------------------------------------------------ Disk cache (v1.5)
 
     @property

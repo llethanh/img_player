@@ -452,6 +452,18 @@ class ImgPlayerApp:
         self._compare_state: CompareState = CompareState()
         self._compare_decoder = CompareDecoder(self._video_sources)
 
+        # Contact-sheet mode (multi-layer grid view, layers aligned to
+        # the same "frame 0" regardless of timeline offset). Same
+        # shape as compare-mode: state held here, edited from the
+        # View menu / a small settings band on the viewer.
+        from img_player.contact_sheet import (
+            ContactSheetDecoder,
+            ContactSheetState,
+        )
+
+        self._contact_sheet_state: ContactSheetState = ContactSheetState()
+        self._contact_sheet_decoder = ContactSheetDecoder(self._video_sources)
+
     # ------------------------------------------------------------------ Lifecycle
 
     def run(self, initial_path: Path | None = None) -> int:
@@ -870,6 +882,13 @@ class ImgPlayerApp:
         w.transport.reload_clicked.connect(self._on_reload_sequence)
         w.force_reload_sequence_requested.connect(self._on_force_reload_sequence)
         w.clear_cache_requested.connect(self._on_clear_cache_action)
+
+        # Contact sheet — toggle + settings band wiring. The grid /
+        # labels signals carry the new values directly; ``-1`` /
+        # ``-1`` from the band means "auto".
+        w.contact_sheet_toggle_requested.connect(self._on_contact_sheet_toggle)
+        w.contact_sheet_grid_changed.connect(self._on_contact_sheet_grid_changed)
+        w.contact_sheet_labels_toggled.connect(self.set_contact_sheet_labels)
         # Edit menu — wire to the same chained handlers the keyboard
         # shortcut (Ctrl+Z / Ctrl+Shift+Z) uses, so menu and shortcut
         # produce identical behaviour (annotations first, layer
@@ -1170,13 +1189,23 @@ class ImgPlayerApp:
         self._refresh_annotation_nav_buttons()
 
     def _try_compare_then_video(self, frame: int) -> bool:
-        """Run compare-mode and video early-outs in turn.
+        """Run contact-sheet, compare-mode and video early-outs in turn.
 
-        Returns ``True`` when either path produced a complete frame
-        upload (caller stops there). ``False`` means neither was
-        applicable / both fell through — caller continues to the
+        Returns ``True`` when one of the paths produced a complete
+        frame upload (caller stops there). ``False`` means none was
+        applicable / they fell through — caller continues to the
         regular cache lookup.
         """
+        # Contact-sheet mode hijacks the upload BEFORE compare —
+        # compare with the same enable flag would be ambiguous. The
+        # contact sheet's decoder bypasses the master cache entirely
+        # and composes a grid from every visible layer, re-aligned
+        # to "frame 0".
+        if self._contact_sheet_state.is_active() and self._render_contact_sheet(frame):
+            self._last_displayed = frame
+            self._wait_timer.stop()
+            return True
+
         # Compare mode hijacks the upload entirely: A and B are
         # decoded independently and composed via numpy — the cache
         # + composite pipeline is bypassed.
@@ -1255,6 +1284,127 @@ class ImgPlayerApp:
                     self._last_displayed = fallback
         elif not self._wait_timer.isActive():
             self._wait_timer.start()
+
+    def _on_contact_sheet_toggle(self) -> None:
+        """Slot for ``MainWindow.contact_sheet_toggle_requested``.
+
+        Flips the state, syncs the menu checkmark, and re-renders.
+        """
+        self.toggle_contact_sheet()
+        self._window.set_contact_sheet_enabled(
+            self._contact_sheet_state.enabled,
+        )
+        self._sync_contact_sheet_menu_state()
+
+    def _on_contact_sheet_grid_changed(self, cols: int, rows: int) -> None:
+        """Slot for ``MainWindow.contact_sheet_grid_changed``.
+
+        ``-1`` / ``-1`` from the menu means "auto"; map to
+        ``None`` for the state.
+        """
+        c: int | None = None if cols < 1 else cols
+        r: int | None = None if rows < 1 else rows
+        self.set_contact_sheet_grid(c, r)
+        self._sync_contact_sheet_menu_state()
+
+    def _sync_contact_sheet_menu_state(self) -> None:
+        """Push the current ContactSheetState to the window so the
+        settings sub-menu's checkmarks match reality on next open."""
+        self._window.set_contact_sheet_grid_state(
+            self._contact_sheet_state.cols,
+            self._contact_sheet_state.rows,
+            self._contact_sheet_state.show_labels,
+        )
+
+    def toggle_contact_sheet(self) -> None:
+        """View → Contact sheet toggle entry point.
+
+        Flips ``ContactSheetState.enabled``, drops the per-layer
+        decode cache (so a fresh enable doesn't paint stale tiles
+        from a previous session), forces a re-display at the
+        current frame, and pushes the new state to QSettings so
+        the choice persists.
+        """
+        self._contact_sheet_state.enabled = not self._contact_sheet_state.enabled
+        self._contact_sheet_decoder.invalidate()
+        # Persist + re-render at the current frame so the user sees
+        # the change immediately.
+        self._prefs.contact_sheet_state = self._contact_sheet_state.to_dict()
+        cur = self._controller.state.current_frame
+        self._last_displayed = None
+        self._on_frame_changed(cur)
+
+    def set_contact_sheet_grid(
+        self, cols: int | None, rows: int | None,
+    ) -> None:
+        """Update the manual cols / rows pair. Passing ``None`` for
+        either falls back to the auto grid (cf. ``effective_grid``).
+        Re-renders the current frame so the change is immediate."""
+        self._contact_sheet_state.cols = cols
+        self._contact_sheet_state.rows = rows
+        self._prefs.contact_sheet_state = self._contact_sheet_state.to_dict()
+        if self._contact_sheet_state.is_active():
+            cur = self._controller.state.current_frame
+            self._last_displayed = None
+            self._on_frame_changed(cur)
+
+    def set_contact_sheet_labels(self, show: bool) -> None:
+        """Toggle the per-tile name overlay."""
+        self._contact_sheet_state.show_labels = bool(show)
+        self._prefs.contact_sheet_state = self._contact_sheet_state.to_dict()
+        if self._contact_sheet_state.is_active():
+            cur = self._controller.state.current_frame
+            self._last_displayed = None
+            self._on_frame_changed(cur)
+
+    def _render_contact_sheet(self, master_frame: int) -> bool:
+        """Decode every visible layer at the contact-sheet offset,
+        compose them into a grid, push to GL. Returns ``False`` when
+        no layer was decodable (caller falls back to the normal
+        path so the user still sees something).
+
+        The contact-sheet "frame" is ``master_frame`` interpreted as
+        an offset-from-zero, NOT a master-timeline frame: every
+        visible layer's tile is decoded at
+        ``layer.layer_in + master_frame`` (clamped to the layer's
+        trim range) — so layers with different timeline offsets
+        look like they all started at master 0.
+        """
+        from img_player.contact_sheet import render_contact_sheet  # noqa: PLC0415 — cold path
+        layers = [
+            layer for layer in self._layer_stack.layers()
+            if layer.visible
+        ]
+        if not layers:
+            return False
+        decodes = self._contact_sheet_decoder.decode_all(layers, master_frame)
+        tiles = [arr for _, arr in decodes]
+        if all(arr is None for arr in tiles):
+            return False
+
+        # Pick the composite output size + aspect from the first
+        # successfully-decoded tile. We size the output to that
+        # tile's dimensions so the GL viewport doesn't re-rescale
+        # and the user sees pixel-perfect content within each tile
+        # (modulo the tile-resize step inside the compositor).
+        first_arr = next(arr for arr in tiles if arr is not None)
+        out_h, out_w = first_arr.shape[:2]
+        image_aspect = out_w / out_h if out_h > 0 else 16 / 9
+        cols, rows = self._contact_sheet_state.effective_grid(
+            len(layers), image_aspect,
+        )
+        names = [layer.name for layer, _ in decodes]
+        composite = render_contact_sheet(
+            tiles,
+            names=names,
+            cols=cols,
+            rows=rows,
+            target_w=out_w,
+            target_h=out_h,
+            show_labels=self._contact_sheet_state.show_labels,
+        )
+        self._display_array(composite)
+        return True
 
     def _refresh_info_band_frames(self, master_frame: int) -> None:
         """Push local-layer / global-timeline frame readouts to the
@@ -1412,6 +1562,10 @@ class ImgPlayerApp:
         # Layer mutation may have invalidated decoder caches (offset
         # change → different pixel for the same master frame).
         self._compare_decoder.invalidate()
+        # Contact-sheet decoder lives parallel to compare's and
+        # benefits from the same "drop the per-layer slot when
+        # anything changed" invariant.
+        self._contact_sheet_decoder.invalidate()
         self._sync_navigable_range_to_layer_panel()
         if self._controller.sequence is None:
             return
@@ -2498,6 +2652,10 @@ class ImgPlayerApp:
             self._window.viewer.gl.clear_compare()
             self._window.transport.set_compare_checked(False)
             self._window.set_compare_band_visible(False)
+        # Contact-sheet decoder lives parallel to compare's and
+        # benefits from the same "drop the per-layer slot when
+        # anything changed" invariant.
+        self._contact_sheet_decoder.invalidate()
         # File → New is a project-load entry point too — re-tune the
         # cache budget so the next project opened from this empty
         # state benefits from any RAM the user has freed in the
@@ -3256,6 +3414,10 @@ class ImgPlayerApp:
             restored = CompareState.from_dict(result.compare_state)
             self._compare_state = restored
             self._compare_decoder.invalidate()
+            # Contact-sheet decoder lives parallel to compare's and
+            # benefits from the same "drop the per-layer slot when
+            # anything changed" invariant.
+            self._contact_sheet_decoder.invalidate()
             refresh_band_layers(self)
             band = self._window.compare_band
             band.set_mode(restored.mode)
@@ -3527,6 +3689,21 @@ def _apply_preferences_to_window(app: ImgPlayerApp) -> None:
     panel = getattr(app._window, "_layer_panel", None)
     if panel is not None:
         panel.set_collapsed(prefs.layer_panel_collapsed)
+
+    # Contact-sheet state (v1.5.14) — restore the persisted grid /
+    # labels / enabled flag. The View menu's QAction is synced via
+    # ``MainWindow.set_contact_sheet_enabled`` after we mutate the
+    # underlying state, so the checkmark matches reality.
+    from img_player.contact_sheet import ContactSheetState  # noqa: PLC0415
+    try:
+        cs_dict = prefs.contact_sheet_state
+        app._contact_sheet_state = ContactSheetState.from_dict(cs_dict)
+        app._window.set_contact_sheet_enabled(
+            app._contact_sheet_state.enabled,
+        )
+        app._sync_contact_sheet_menu_state()
+    except Exception:  # pragma: no cover — defensive
+        log.exception("[contact_sheet] failed to restore prefs (using defaults)")
 
     # Color defaults — only apply if they still exist in the current OCIO config.
     cs_list = set(app._ocio.list_colorspaces())

@@ -125,6 +125,18 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
     # handler shows the QMessageBox + does the actual ``clear()``
     # calls so the UI layer stays free of policy.
     clear_cache_requested = Signal()
+    # View → Contact sheet — toggle the multi-layer grid view.
+    # Routes through the app singleton which owns the state +
+    # decoder; the menu QAction's checked state is the source of
+    # truth for the UI side and is kept in sync on every state
+    # change via :meth:`set_contact_sheet_enabled`.
+    contact_sheet_toggle_requested = Signal()
+    # Re-emitted by the settings band when the user picks a new grid
+    # or toggles the labels. ``cols`` / ``rows`` are -1 when set to
+    # auto (the band has dedicated "Auto" entries in its combos);
+    # the app translates ``-1`` to ``None`` for the state.
+    contact_sheet_grid_changed = Signal(int, int)  # cols, rows
+    contact_sheet_labels_toggled = Signal(bool)
     # Edit menu — same chained handlers as the Ctrl+Z / Ctrl+Shift+Z
     # QShortcuts (annotation first, layer-stack fallback). Routing
     # via signals keeps the App in charge of priority logic; the
@@ -540,6 +552,41 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         # the timeline + transport pick up the mode.
         self._on_toggle_timecode(bool(enabled))
 
+    def set_contact_sheet_enabled(self, enabled: bool) -> None:
+        """Sync the View → Contact sheet checkmark to ``enabled``.
+
+        Used at boot (preferences restore) and after the app's
+        :meth:`toggle_contact_sheet` flips the state — keeps the
+        menu in lockstep with the truth without retriggering the
+        toggle signal.
+        """
+        if self._contact_sheet_act.isChecked() == bool(enabled):
+            return
+        self._contact_sheet_act.blockSignals(True)
+        try:
+            self._contact_sheet_act.setChecked(bool(enabled))
+        finally:
+            self._contact_sheet_act.blockSignals(False)
+
+    # Mirror of the state on the app singleton — set by the app so the
+    # settings sub-menu can build itself with the right ticks. The
+    # window doesn't need to know about ``ContactSheetState`` — just
+    # the two fields it renders.
+    _contact_sheet_grid: tuple[int | None, int | None] = (None, None)
+    _contact_sheet_labels: bool = False
+
+    def set_contact_sheet_grid_state(
+        self, cols: int | None, rows: int | None, show_labels: bool,
+    ) -> None:
+        """Sync the settings sub-menu state from the app side. Pass
+        ``None`` for cols / rows to mark "auto"."""
+        self._contact_sheet_grid = (cols, rows)
+        self._contact_sheet_labels = bool(show_labels)
+        # If the submenu is open right now, force a rebuild so the
+        # checkmarks reflect the new state immediately.
+        if self._contact_sheet_settings_menu.isVisible():
+            self._build_contact_sheet_settings_menu()
+
     @property
     def transport(self) -> TransportBar:
         return self._transport
@@ -869,6 +916,39 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                         tc_btn.blockSignals(False)
 
             self._show_tc_act.toggled.connect(_sync_tc_btn)
+
+        # View → Contact &sheet (Ctrl+G) — multi-layer grid view.
+        # All visible layers tile into a contact-sheet composite,
+        # each re-aligned to the same "frame 0" regardless of its
+        # timeline offset. Useful for reviewing N versions side by
+        # side without dragging layer offsets around.
+        view_menu.addSeparator()
+        self._contact_sheet_act = QAction(
+            "Contact &sheet", self, checkable=True,
+        )
+        self._contact_sheet_act.setShortcut(QKeySequence("Ctrl+G"))
+        self._contact_sheet_act.setToolTip(
+            "Toggle multi-layer grid view. Every visible layer becomes "
+            "a tile, re-aligned so they all 'start at frame 0' "
+            "regardless of timeline offset."
+        )
+        self._contact_sheet_act.triggered.connect(
+            self.contact_sheet_toggle_requested.emit,
+        )
+        view_menu.addAction(self._contact_sheet_act)
+        # Grid + labels live in their own sub-menu so they don't
+        # clutter the top-level View menu. The submenu is rebuilt
+        # on aboutToShow so the active grid + labels state is the
+        # source of truth.
+        self._contact_sheet_settings_menu = view_menu.addMenu(
+            "Contact sheet &settings",
+        )
+        self._contact_sheet_settings_menu.aboutToShow.connect(
+            self._build_contact_sheet_settings_menu,
+        )
+        # Pre-populate so the submenu has the right entries before
+        # first ``aboutToShow``.
+        self._build_contact_sheet_settings_menu()
 
         # NB: T / αS used to live here as global View menu toggles.
         # They moved to per-row buttons in the layer panel once the
@@ -1225,6 +1305,91 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self._recent_paths_provider = provider
         self._clear_recent_callback = clear_callback
         self._refresh_recent_menu()
+
+    def _build_contact_sheet_settings_menu(self) -> None:
+        """(Re)build the ``View → Contact sheet settings`` sub-menu so
+        its check-marks reflect the current grid / labels state.
+
+        Three sections:
+
+        1. **Grid** — Auto + a fixed set of common dims
+           (1×N up to 4×4). Picking one emits
+           :attr:`contact_sheet_grid_changed(cols, rows)` with
+           ``cols == rows == -1`` for the auto entry.
+        2. **Custom grid…** — opens a QInputDialog pair so the user
+           can pick any positive integer.
+        3. **Show labels** — checkable toggle that fires
+           :attr:`contact_sheet_labels_toggled`.
+        """
+        from PySide6.QtWidgets import QInputDialog  # noqa: PLC0415 — cold path
+        menu = self._contact_sheet_settings_menu
+        menu.clear()
+        cur_cols, cur_rows = self._contact_sheet_grid
+
+        auto_act = QAction("&Auto (square-ish)", self, checkable=True)
+        auto_act.setChecked(cur_cols is None and cur_rows is None)
+        auto_act.triggered.connect(
+            lambda: self.contact_sheet_grid_changed.emit(-1, -1),
+        )
+        menu.addAction(auto_act)
+        menu.addSeparator()
+
+        # Common presets — chosen to cover the typical review setups
+        # (2-row × 2-col contact sheet, single-column "stack" view,
+        # wide 1×N for side-by-side compare-like layouts).
+        presets: tuple[tuple[str, int, int], ...] = (
+            ("1 × 2", 1, 2),
+            ("1 × 3", 1, 3),
+            ("1 × 4", 1, 4),
+            ("2 × 1", 2, 1),
+            ("2 × 2", 2, 2),
+            ("2 × 3", 2, 3),
+            ("3 × 2", 3, 2),
+            ("3 × 3", 3, 3),
+            ("4 × 4", 4, 4),
+        )
+        for label, cols, rows in presets:
+            act = QAction(label, self, checkable=True)
+            act.setChecked(cur_cols == cols and cur_rows == rows)
+            act.triggered.connect(
+                lambda _checked, c=cols, r=rows: (
+                    self.contact_sheet_grid_changed.emit(c, r)
+                ),
+            )
+            menu.addAction(act)
+        menu.addSeparator()
+
+        # Custom grid — two prompts because QInputDialog doesn't ship
+        # a "pair of ints" affordance. Cheap and matches the
+        # "Open recent: clear list…" pattern used elsewhere.
+        def _ask_custom() -> None:
+            cols, ok = QInputDialog.getInt(
+                self, "Contact sheet — columns",
+                "Number of columns:",
+                value=cur_cols or 2, min=1, max=16,
+            )
+            if not ok:
+                return
+            rows, ok = QInputDialog.getInt(
+                self, "Contact sheet — rows",
+                "Number of rows:",
+                value=cur_rows or 2, min=1, max=16,
+            )
+            if not ok:
+                return
+            self.contact_sheet_grid_changed.emit(cols, rows)
+
+        custom_act = QAction("&Custom grid…", self)
+        custom_act.triggered.connect(_ask_custom)
+        menu.addAction(custom_act)
+        menu.addSeparator()
+
+        labels_act = QAction("Show &labels on tiles", self, checkable=True)
+        labels_act.setChecked(self._contact_sheet_labels)
+        labels_act.triggered.connect(
+            lambda checked: self.contact_sheet_labels_toggled.emit(bool(checked)),
+        )
+        menu.addAction(labels_act)
 
     def _refresh_recent_menu(self) -> None:
         self._recent_menu.clear()
