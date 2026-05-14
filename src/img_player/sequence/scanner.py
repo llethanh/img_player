@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from collections import defaultdict
-from collections.abc import Iterator
-from dataclasses import dataclass, field
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from img_player.io.formats import is_supported
 from img_player.io.reader import FrameReadError, read_header
 from img_player.sequence.models import FrameInfo, SequenceInfo
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -98,6 +101,37 @@ def _parse(filename: str) -> _ParsedName | None:
     return _ParsedName(base=base, frame=int(digits), padding=len(digits), extension=ext.lower())
 
 
+def _iter_parsed_frames(
+    directory: Path,
+    accept: Callable[["_ParsedName", Path], bool],
+) -> Iterator[tuple[FrameInfo, "_ParsedName"]]:
+    """Walk ``directory`` and yield ``(FrameInfo, parsed)`` for every
+    file whose parsed name passes ``accept(parsed, path)``.
+
+    Centralises what three loops were doing (``scan_all``,
+    ``_scan_from_file``, ``rescan``): scandir → parse → predicate →
+    materialise. Each caller plugs in its own ``accept`` lambda; the
+    boilerplate around it (entry iteration, parse, ``FrameInfo``
+    construction) lives in one place so future scanner changes
+    (additional metadata, new naming convention) only touch this
+    helper.
+
+    The parsed name is yielded alongside the :class:`FrameInfo` so
+    callers that need the ``(base, padding, extension)`` triplet for
+    grouping (``scan_all``) don't have to re-parse the filename.
+    """
+    for entry_path, mtime in _iter_image_entries(directory):
+        parsed = _parse(entry_path.name)
+        if parsed is None:
+            continue
+        if not accept(parsed, entry_path):
+            continue
+        yield (
+            FrameInfo(path=entry_path, frame_number=parsed.frame, mtime=mtime),
+            parsed,
+        )
+
+
 def _probe_first_frame(
     frames: tuple[FrameInfo, ...],
 ) -> tuple[int | None, int | None, tuple[str, ...]]:
@@ -147,17 +181,14 @@ def scan_all(directory: Path | str, *, probe: bool = True) -> list[SequenceInfo]
     if not directory.is_dir():
         raise SequenceNotFoundError(f"Not a directory: {directory}")
 
+    # Accept any parsed frame whose extension is OIIO-readable; group
+    # by ``(base, padding, extension)`` to separate distinct sequences
+    # living in the same directory.
     groups: dict[tuple[str, int, str], list[FrameInfo]] = defaultdict(list)
-    for entry_path, mtime in _iter_image_entries(directory):
-        if not is_supported(entry_path):
-            continue
-        parsed = _parse(entry_path.name)
-        if parsed is None:
-            continue
-        key = (parsed.base, parsed.padding, parsed.extension)
-        groups[key].append(
-            FrameInfo(path=entry_path, frame_number=parsed.frame, mtime=mtime),
-        )
+    for frame, parsed in _iter_parsed_frames(
+        directory, accept=lambda _p, path: is_supported(path),
+    ):
+        groups[(parsed.base, parsed.padding, parsed.extension)].append(frame)
 
     sequences: list[SequenceInfo] = []
     for (base, padding, ext), frames in groups.items():
@@ -211,19 +242,17 @@ def _scan_from_file(file: Path, *, probe: bool = True) -> SequenceInfo:
         )
 
     directory = file.parent
-    matching_frames: list[FrameInfo] = []
-    for entry_path, mtime in _iter_image_entries(directory):
-        candidate = _parse(entry_path.name)
-        if candidate is None:
-            continue
-        if (
-            candidate.base == parsed.base
-            and candidate.padding == parsed.padding
-            and candidate.extension == parsed.extension
-        ):
-            matching_frames.append(
-                FrameInfo(path=entry_path, frame_number=candidate.frame, mtime=mtime),
-            )
+    seed = parsed  # bind for closure
+    matching_frames: list[FrameInfo] = [
+        frame for frame, _ in _iter_parsed_frames(
+            directory,
+            accept=lambda p, _path: (
+                p.base == seed.base
+                and p.padding == seed.padding
+                and p.extension == seed.extension
+            ),
+        )
+    ]
 
     if not matching_frames:
         raise SequenceNotFoundError(f"No frames matching {file.name} in {directory}")
@@ -369,19 +398,16 @@ def rescan(sequence: SequenceInfo) -> SequenceInfo:
             channel_names=sequence.channel_names,
         )
     target_ext = sequence.extension.lstrip(".").lower()
-    for entry_path, mtime in _iter_image_entries(directory):
-        parsed = _parse(entry_path.name)
-        if parsed is None:
-            continue
-        if (
-            parsed.base != sequence.base_name
-            or parsed.padding != sequence.padding
-            or parsed.extension != target_ext
-        ):
-            continue
-        matching.append(
-            FrameInfo(path=entry_path, frame_number=parsed.frame, mtime=mtime),
+    matching = [
+        frame for frame, _ in _iter_parsed_frames(
+            directory,
+            accept=lambda p, _path: (
+                p.base == sequence.base_name
+                and p.padding == sequence.padding
+                and p.extension == target_ext
+            ),
         )
+    ]
     matching.sort(key=lambda f: f.frame_number)
     if not matching:
         # Files all gone — keep the old frame list so the caller
@@ -407,4 +433,41 @@ def rescan(sequence: SequenceInfo) -> SequenceInfo:
         width=sequence.width,
         height=sequence.height,
         channel_names=sequence.channel_names,
+    )
+
+
+def enrich_with_header(seq: SequenceInfo) -> SequenceInfo:
+    """Populate ``seq.width`` / ``seq.height`` / ``channel_names`` by
+    reading the first frame's OIIO header.
+
+    Canonical impl shared by the live-load flow
+    (:meth:`ImgPlayerApp._enrich_with_header`) and the session
+    loader (:func:`img_player.layers.session.load_session`). Both
+    used to ship their own near-identical copies; this is the single
+    source of truth.
+
+    Best-effort: returns the original ``seq`` unchanged when the
+    probe fails (file gone, codec hiccup, lazy filesystem timeout)
+    so a temporarily unreadable file doesn't abort the whole load.
+    ``log_label`` lets callers distinguish their entries in the log
+    (the live flow logs at INFO, the session restore at EXCEPTION
+    — both via this function).
+    """
+    if seq.channel_names and seq.width and seq.height:
+        return seq
+    if not seq.frames:
+        return seq
+    try:
+        spec = read_header(seq.frames[0].path)
+    except FrameReadError:
+        log.exception(
+            "[scanner] could not read header from %s", seq.frames[0].path,
+        )
+        return seq
+    channels = tuple(spec.channelnames or ())
+    return replace(
+        seq,
+        channel_names=channels or seq.channel_names,
+        width=spec.width or seq.width,
+        height=spec.height or seq.height,
     )

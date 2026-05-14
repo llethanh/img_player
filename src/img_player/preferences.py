@@ -68,6 +68,50 @@ def _set_user_pref(dotted_key: str, value: Any) -> None:
 _qbool = qsettings_bool
 
 
+def _layered_bool(dotted_key: str, default: bool) -> bool:
+    """``_layered_default`` + :func:`qsettings_bool` in one call.
+
+    The site / user TOML stores Python booleans natively, but legacy
+    QSettings keys (and TOML files hand-edited by users) sometimes
+    round-trip as ``"true"``/``"false"`` strings. ``qsettings_bool``
+    folds both into a real bool with the right fallback semantics.
+    """
+    return qsettings_bool(_layered_default(dotted_key, default), default)
+
+
+def _layered_int(dotted_key: str, default: int) -> int:
+    """``_layered_default`` + ``int`` coerce with fallback. Returns
+    ``default`` when the stored value can't be parsed (corrupt TOML,
+    user hand-edit gone wrong, …)."""
+    raw = _layered_default(dotted_key, default)
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def _qsettings_dict(qsettings: QSettings, prefix: str, keys: tuple[str, ...]) -> dict[str, object]:
+    """Read a fixed set of QSettings keys under ``prefix/`` into a dict.
+
+    Used by :attr:`Preferences.export_settings` and
+    :attr:`Preferences.save_frame_settings` — same dance both sides:
+    iterate the known keys, copy non-``None`` values into a plain
+    dict for the dialog. Defaults stay with the consumer.
+    """
+    out: dict[str, object] = {}
+    for key in keys:
+        raw = qsettings.value(f"{prefix}/{key}")
+        if raw is not None:
+            out[key] = raw
+    return out
+
+
+def _qsettings_set_dict(qsettings: QSettings, prefix: str, data: dict[str, object]) -> None:
+    """Write every ``(key, value)`` from ``data`` under ``prefix/``."""
+    for key, value in data.items():
+        qsettings.setValue(f"{prefix}/{key}", value)
+
+
 # Keys migrated from QSettings to the user TOML in v1.5.8. The mapping
 # is ``(qsettings_key, toml_dotted_key, coerce_fn)``. ``coerce_fn``
 # converts the raw QSettings return into the Python type the TOML
@@ -723,17 +767,11 @@ class Preferences:
             "h26x_preset",
             "missing_frame_policy",
         )
-        out: dict[str, object] = {}
-        for key in keys:
-            raw = self._s.value(f"export/{key}")
-            if raw is not None:
-                out[key] = raw
-        return out
+        return _qsettings_dict(self._s, "export", keys)
 
     @export_settings.setter
     def export_settings(self, data: dict[str, object]) -> None:
-        for key, value in data.items():
-            self._s.setValue(f"export/{key}", value)
+        _qsettings_set_dict(self._s, "export", data)
 
     # ------------------------------------------------------------------ Save Frame As (v1.2)
 
@@ -754,17 +792,11 @@ class Preferences:
         ``with_overlay`` toggle to persist.
         """
         keys = ("output_dir", "format", "with_annotations", "bake_compare")
-        out: dict[str, object] = {}
-        for key in keys:
-            raw = self._s.value(f"save_frame/{key}")
-            if raw is not None:
-                out[key] = raw
-        return out
+        return _qsettings_dict(self._s, "save_frame", keys)
 
     @save_frame_settings.setter
     def save_frame_settings(self, data: dict[str, object]) -> None:
-        for key, value in data.items():
-            self._s.setValue(f"save_frame/{key}", value)
+        _qsettings_set_dict(self._s, "save_frame", data)
 
     # ------------------------------------------------------------------ Disk cache (v1.5)
 
@@ -778,7 +810,7 @@ class Preferences:
         day). Users on machines with tight SSD budgets can opt out
         from Preferences → Disk cache.
         """
-        return bool(_layered_default("disk_cache.enabled", True))
+        return _layered_bool("disk_cache.enabled", True)
 
     @disk_cache_enabled.setter
     def disk_cache_enabled(self, value: bool) -> None:
@@ -816,17 +848,12 @@ class Preferences:
         Preferences spinner UI simple; the cache converts to bytes
         internally.
         """
-        raw = _layered_default("disk_cache.budget_gb", 50)
-        try:
-            return max(0, int(raw))
-        except (TypeError, ValueError):
-            return 50
+        return max(0, _layered_int("disk_cache.budget_gb", 50))
 
     @disk_cache_budget_gb.setter
     def disk_cache_budget_gb(self, value: int) -> None:
         _set_user_pref("disk_cache.budget_gb", max(0, int(value)))
 
-    # ---- disk_cache_compression ---------------------------------------
     @property
     def disk_cache_compression(self) -> bool:
         """Whether to lz4-compress disk-cache blobs.
@@ -838,10 +865,7 @@ class Preferences:
         costs ~2× disk space. The setting only affects **new writes**;
         existing compressed blobs are still readable after the switch.
         """
-        raw = _layered_default("disk_cache.compression", True)
-        if isinstance(raw, str):
-            return raw.lower() in ("true", "1", "yes")
-        return bool(raw)
+        return _layered_bool("disk_cache.compression", True)
 
     @disk_cache_compression.setter
     def disk_cache_compression(self, value: bool) -> None:

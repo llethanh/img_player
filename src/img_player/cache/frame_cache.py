@@ -5,48 +5,24 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
 from img_player.bench import recorder
+from img_player.cache._common import (
+    BEHIND_PLAYHEAD_PENALTY as _BEHIND_PLAYHEAD_PENALTY,
+    CacheStats,
+    DEFAULT_BUDGET_BYTES as _DEFAULT_BUDGET_BYTES,
+    DEFAULT_NUM_WORKERS as _DEFAULT_NUM_WORKERS,
+    expected_filename as _expected_filename,
+)
 from img_player.cache.missing_placeholder import get_missing_placeholder
 from img_player.cache.worker_pool import WorkerPool
 from img_player.io.reader import FrameReadError, read_frame
 from img_player.sequence.models import SequenceInfo
 
 log = logging.getLogger(__name__)
-
-
-def _expected_filename(seq: SequenceInfo, frame_number: int) -> str:
-    """Reconstruct the filename a missing slot *would* have on disk.
-
-    Mirrors the scanner's naming convention so the placeholder
-    overlay matches what the user expects to find on disk.
-    """
-    pad = max(0, int(seq.padding))
-    digits = f"{frame_number:0{pad}d}" if pad > 0 else str(frame_number)
-    return f"{seq.base_name}{digits}{seq.extension}"
-
-_DEFAULT_BUDGET_BYTES = 8 * 1024**3  # 8 GB
-_DEFAULT_NUM_WORKERS = 4
-# Eviction multiplier for frames that lie *behind* the playhead in the
-# current playback direction. They cost more because we'll only revisit
-# them after a full loop wrap — so we throw them out first to free space
-# for what's coming up next.
-_BEHIND_PLAYHEAD_PENALTY = 3.0
-
-
-@dataclass(frozen=True)
-class CacheStats:
-    hits: int = 0
-    misses: int = 0
-    evictions: int = 0
-    decode_errors: int = 0
-    bytes_used: int = 0
-    bytes_budget: int = 0
-    frames_cached: int = 0
 
 
 class FrameCache:

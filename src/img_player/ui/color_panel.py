@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QComboBox,
@@ -139,6 +141,76 @@ class ColorPanel(QWidget):  # type: ignore[misc]
             float(self._exposure_spin.value()),
             float(self._gamma_spin.value()),
         )
+
+    def available_source_colorspaces(self) -> list[str]:
+        """List the entries currently in the source-colorspace combo.
+
+        Public accessor so callers can check "is this name pickable?"
+        without reaching into the private widget. Mirrors
+        :meth:`available_displays` / :meth:`available_views`.
+        """
+        return [self._src_combo.itemText(i) for i in range(self._src_combo.count())]
+
+    def available_displays(self) -> list[str]:
+        """List the entries currently in the display combo."""
+        return [self._display_combo.itemText(i) for i in range(self._display_combo.count())]
+
+    def available_views(self) -> list[str]:
+        """List the entries currently in the view combo.
+
+        Note: the view combo's content depends on the selected display,
+        so the list shown reflects the *current* display only.
+        """
+        return [self._view_combo.itemText(i) for i in range(self._view_combo.count())]
+
+    def apply_state(
+        self,
+        *,
+        source_colorspace: str | None = None,
+        display: str | None = None,
+        view: str | None = None,
+        exposure: float | None = None,
+        gamma: float | None = None,
+        on_missing: "Callable[[str, str, str], None] | None" = None,
+    ) -> None:
+        """Apply a saved color-panel snapshot (from a session restore).
+
+        Each field is optional — ``None`` means "leave that combo /
+        spinbox alone". For combo fields, if the requested name is
+        not in the current list we leave the existing pick in place
+        and call ``on_missing(kind, requested, current)`` so the
+        caller can log a warning. ``kind`` is one of
+        ``"source"`` / ``"display"`` / ``"view"``.
+
+        Setting via ``setCurrentText`` triggers the panel's standard
+        change signals → re-emits ``color_params_changed`` →
+        rebuilds the OCIO shader, exactly as if the user had clicked
+        the combos manually.
+        """
+        if source_colorspace is not None:
+            if source_colorspace in self.available_source_colorspaces():
+                self._src_combo.setCurrentText(source_colorspace)
+            elif on_missing is not None:
+                on_missing(
+                    "source", source_colorspace, self._src_combo.currentText(),
+                )
+        if display is not None:
+            if display in self.available_displays():
+                # ``setCurrentText`` fires ``_on_display_changed`` which
+                # rebuilds the view list, so the next ``view`` set lands
+                # in the freshly populated combo.
+                self._display_combo.setCurrentText(display)
+            elif on_missing is not None:
+                on_missing("display", display, self._display_combo.currentText())
+        if view is not None:
+            if view in self.available_views():
+                self._view_combo.setCurrentText(view)
+            elif on_missing is not None:
+                on_missing("view", view, self._view_combo.currentText())
+        if exposure is not None:
+            self._exposure_spin.setValue(exposure)
+        if gamma is not None:
+            self._gamma_spin.setValue(gamma)
 
     def set_source_colorspace(self, name: str) -> None:
         """Set the source colorspace without emitting — used when opening a new

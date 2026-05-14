@@ -33,10 +33,16 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from dataclasses import dataclass
 
 import numpy as np
 
+from img_player.cache._common import (
+    BEHIND_PLAYHEAD_PENALTY as _BEHIND_PLAYHEAD_PENALTY,
+    CacheStats,
+    DEFAULT_BUDGET_BYTES as _DEFAULT_BUDGET_BYTES,
+    DEFAULT_NUM_WORKERS as _DEFAULT_NUM_WORKERS,
+    expected_filename as _expected_filename,
+)
 from img_player.cache.disk_cache import DiskCache
 from img_player.cache.missing_placeholder import get_missing_placeholder
 from img_player.cache.source_key import (
@@ -49,24 +55,6 @@ from img_player.layers import Layer, LayerStack
 from img_player.sequence.models import SequenceInfo
 
 log = logging.getLogger(__name__)
-
-
-def _expected_filename(seq: SequenceInfo, frame_number: int) -> str:
-    """Reconstruct the filename a missing slot *would* have on disk.
-
-    Uses the sequence's ``base_name`` + observed zero-pad width +
-    ``extension``. Mirrors the convention the scanner uses to detect
-    holes, so the displayed name matches what the user expects to
-    find on disk.
-    """
-    pad = max(0, int(seq.padding))
-    digits = f"{frame_number:0{pad}d}" if pad > 0 else str(frame_number)
-    return f"{seq.base_name}{digits}{seq.extension}"
-
-
-_DEFAULT_BUDGET_BYTES = 8 * 1024**3
-_DEFAULT_NUM_WORKERS = 4
-_BEHIND_PLAYHEAD_PENALTY = 3.0
 # Frames within this many slots BEHIND the playhead are treated as
 # "near-rear" by the eviction scoring: small absolute-distance score
 # regardless of loop / play direction. Mirrors the controller's
@@ -123,6 +111,44 @@ def _force_alpha_one(arr: np.ndarray) -> np.ndarray:
     return out
 
 
+def _signature_token(
+    layer: Layer,
+    *,
+    sel_label_override: str | None = None,
+    offset_override: int | None = None,
+) -> str:
+    """Build the per-layer signature token used by the multi-version
+    cache key.
+
+    The token encodes everything about a layer that, if changed, would
+    invalidate the cached composite at this frame:
+
+    * ``id`` — distinguish two layers backed by the same file
+    * ``sel_label`` — channel selection (or alt-channel override)
+    * ``alpha_composite`` / ``alpha_is_straight`` flags
+    * ``offset`` and ``layer_in`` — together determine which source
+      frame the layer contributes at a given master frame
+
+    Used by :meth:`_signature_at`, :meth:`_signature_at_with_override`
+    and :meth:`_shift_solo_dominant_frames` — all three previously
+    open-coded the same f-string and would drift if anyone touched
+    the format.
+
+    ``sel_label_override`` swaps the channel label (alt-channel
+    prefetch). ``offset_override`` swaps the offset (drag-shift
+    re-keying). Pass ``None`` for live state.
+    """
+    sel = layer.channel_selection
+    sel_label = sel_label_override
+    if sel_label is None:
+        sel_label = sel.active.label if sel is not None else "_"
+    ac = "1" if layer.alpha_composite else "0"
+    pm = "1" if layer.alpha_is_straight else "0"
+    off = int(layer.offset) if offset_override is None else int(offset_override)
+    lin = int(layer.layer_in)
+    return f"{layer.id}@{sel_label}#{ac}{pm}+{off}+{lin}"
+
+
 def _premultiply(arr: np.ndarray, *, inplace: bool = False) -> np.ndarray:
     """Multiply RGB by alpha so straight-alpha buffers can feed the
     same over operator that premult buffers do.
@@ -139,17 +165,6 @@ def _premultiply(arr: np.ndarray, *, inplace: bool = False) -> np.ndarray:
     # cheaper than the explicit slice-multiply on big buffers.
     np.multiply(out[..., :3], out[..., 3:4], out=out[..., :3])
     return out
-
-
-@dataclass(frozen=True)
-class CacheStats:
-    hits: int = 0
-    misses: int = 0
-    evictions: int = 0
-    decode_errors: int = 0
-    bytes_used: int = 0
-    bytes_budget: int = 0
-    frames_cached: int = 0
 
 
 class MasterFrameCache:
@@ -1420,31 +1435,15 @@ class MasterFrameCache:
         cached = self._signature_cache.get(master_frame)
         if cached is not None:
             return cached
+        # Per-contributor tokens encode everything that would invalidate
+        # the composite at this frame: layer id, channel label,
+        # alpha-composite / straight flags, offset, layer_in. See
+        # :func:`_signature_token` for the full rationale.
         parts: list[str] = []
         for layer in self._stack.layers():
             if not layer.visible or not layer.covers(master_frame):
                 continue
-            sel = layer.channel_selection
-            sel_label = sel.active.label if sel is not None else "_"
-            # Include alpha-composite + straight flags in the per-
-            # contributor token: toggling the T (transparency) button
-            # changes the decoded pixels (strip-A path) and the
-            # composite math (premult vs. straight), so each combo
-            # warrants its own cached snapshot.
-            ac = "1" if layer.alpha_composite else "0"
-            pm = "1" if layer.alpha_is_straight else "0"
-            # Include offset + layer_in too — they determine which
-            # source frame this layer contributes at ``master_frame``
-            # (``source_frame = layer_in + (mf - master_start)``).
-            # Without these, dragging a layer along the timeline
-            # leaves stale composites under the old signature: the
-            # cache thinks "same chain" but the underlying source
-            # frame the layer would now read has shifted.
-            off = int(layer.offset)
-            lin = int(layer.layer_in)
-            parts.append(
-                f"{layer.id}@{sel_label}#{ac}{pm}+{off}+{lin}"
-            )
+            parts.append(_signature_token(layer))
             if not layer.alpha_composite:
                 break
         sig = "|".join(parts)
@@ -1515,17 +1514,8 @@ class MasterFrameCache:
         for layer in self._stack.layers():
             if not layer.visible or not layer.covers(master_frame):
                 continue
-            sel = layer.channel_selection
-            sel_label = sel.active.label if sel is not None else "_"
-            if layer.id == override_layer_id:
-                sel_label = override_label
-            ac = "1" if layer.alpha_composite else "0"
-            pm = "1" if layer.alpha_is_straight else "0"
-            off = int(layer.offset)
-            lin = int(layer.layer_in)
-            parts.append(
-                f"{layer.id}@{sel_label}#{ac}{pm}+{off}+{lin}"
-            )
+            override = override_label if layer.id == override_layer_id else None
+            parts.append(_signature_token(layer, sel_label_override=override))
             if not layer.alpha_composite:
                 break
         return "|".join(parts)
@@ -1866,19 +1856,9 @@ class MasterFrameCache:
         # asserted at the call site, so the channel / alpha / layer_in
         # parts of the token are unchanged — we can read them from
         # the current ``layer`` and only swap the offset.
-        sel = layer.channel_selection
-        sel_label = sel.active.label if sel is not None else "_"
-        ac = "1" if layer.alpha_composite else "0"
-        pm = "1" if layer.alpha_is_straight else "0"
         prev_off = int(prev_state[0])
-        lin = int(layer.layer_in)
-        old_solo_token = (
-            f"{layer.id}@{sel_label}#{ac}{pm}+{prev_off}+{lin}"
-        )
-        new_off = int(layer.offset)
-        new_solo_token = (
-            f"{layer.id}@{sel_label}#{ac}{pm}+{new_off}+{lin}"
-        )
+        old_solo_token = _signature_token(layer, offset_override=prev_off)
+        new_solo_token = _signature_token(layer)
         with self._lock:
             # Snapshot the entries to consider; iterate later to avoid
             # mutating the dict while iterating it.

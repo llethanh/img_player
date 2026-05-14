@@ -643,29 +643,56 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
             tentative = cur + d
 
         if d > 0 and tentative > hi:
-            if self._state.loop_mode == LoopMode.ONCE:
-                return (hi, 1, True)
-            if self._state.loop_mode == LoopMode.LOOP:
-                # Wrap around — re-anchor the wall clock so the next
-                # tick measures elapsed from ``lo``, not from the
-                # pre-wrap position. Without this, a long run
-                # accumulates seconds of "phantom" elapsed time and
-                # the post-wrap target rockets past ``lo``.
-                if self._play_start_clock is not None:
-                    self._play_start_clock = self._clock()
-                    self._play_start_frame = lo
-                return (lo, 1, False)
-            return (max(hi - 1, lo), -1, False)  # PING_PONG
+            return self._handle_boundary(
+                direction=1, edge_clamp=hi, wrap_target=lo,
+                bounce=(max(hi - 1, lo), -1),
+            )
         if d < 0 and tentative < lo:
-            if self._state.loop_mode == LoopMode.ONCE:
-                return (lo, -1, True)
-            if self._state.loop_mode == LoopMode.LOOP:
-                if self._play_start_clock is not None:
-                    self._play_start_clock = self._clock()
-                    self._play_start_frame = hi
-                return (hi, -1, False)
-            return (min(lo + 1, hi), 1, False)  # PING_PONG
+            return self._handle_boundary(
+                direction=-1, edge_clamp=lo, wrap_target=hi,
+                bounce=(min(lo + 1, hi), 1),
+            )
         return (tentative, d, False)
+
+    def _handle_boundary(
+        self,
+        *,
+        direction: int,
+        edge_clamp: int,
+        wrap_target: int,
+        bounce: tuple[int, int],
+    ) -> tuple[int, int, bool]:
+        """Common boundary policy for both forward and reverse hits.
+
+        ``direction`` is the play direction that just crossed the
+        boundary (``+1`` or ``-1``) — preserved in :class:`LoopMode.ONCE`
+        and :class:`LoopMode.LOOP`. ``edge_clamp`` is the frame we
+        stop at in ONCE (``hi`` forward, ``lo`` backward).
+        ``wrap_target`` is the frame we jump to in LOOP.
+        ``bounce`` is the ``(target_frame, new_direction)`` pair used
+        by :class:`LoopMode.PING_PONG`.
+
+        Used to live as a fully duplicated if-chain inside
+        :meth:`_advance` for ``d > 0`` and ``d < 0`` — same logic,
+        different constants. Extracted to keep the two branches in
+        sync and avoid the "fix one direction, forget the other"
+        class of bugs.
+        """
+        mode = self._state.loop_mode
+        if mode == LoopMode.ONCE:
+            return (edge_clamp, direction, True)
+        if mode == LoopMode.LOOP:
+            # Wrap around — re-anchor the wall clock so the next tick
+            # measures elapsed from ``wrap_target``, not from the
+            # pre-wrap position. Without this, a long run accumulates
+            # seconds of "phantom" elapsed time and the post-wrap
+            # target rockets past the wrap target.
+            if self._play_start_clock is not None:
+                self._play_start_clock = self._clock()
+                self._play_start_frame = wrap_target
+            return (wrap_target, direction, False)
+        # PING_PONG: bounce off the boundary.
+        return (bounce[0], bounce[1], False)
 
     # ------------------------------------------------------------------ Helpers
 

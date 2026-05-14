@@ -6,7 +6,6 @@ import argparse
 import gc
 import logging
 import sys
-from dataclasses import replace
 from pathlib import Path
 
 from PySide6.QtCore import QTimer
@@ -66,6 +65,7 @@ from img_player.player.state import PlaybackState
 from img_player.preferences import Preferences
 from img_player.sequence.channels import ChannelSelection
 from img_player.sequence.models import SequenceInfo
+from img_player.sequence.scanner import enrich_with_header
 from img_player.ui.main_window import MainWindow
 
 log = logging.getLogger(__name__)
@@ -3077,51 +3077,29 @@ class ImgPlayerApp:
         rebuilds the OCIO shader, exactly as if the user had clicked
         the combos manually.
         """
-        from img_player.ui.color_panel import ColorPanel  # noqa: F401 — type hint
         panel = self._window.color_panel
         cs = color_state
-        if cs.source_colorspace:
-            if cs.source_colorspace in [
-                panel._src_combo.itemText(i)  # noqa: SLF001
-                for i in range(panel._src_combo.count())  # noqa: SLF001
-            ]:
-                panel._src_combo.setCurrentText(cs.source_colorspace)  # noqa: SLF001
-            else:
-                log.warning(
-                    "[session] saved source colorspace %r not in current OCIO "
-                    "config — keeping %r",
-                    cs.source_colorspace,
-                    panel._src_combo.currentText(),  # noqa: SLF001
-                )
-        if cs.display:
-            if cs.display in [
-                panel._display_combo.itemText(i)  # noqa: SLF001
-                for i in range(panel._display_combo.count())  # noqa: SLF001
-            ]:
-                panel._display_combo.setCurrentText(cs.display)  # noqa: SLF001
-                # ``setCurrentText`` fires ``_on_display_changed`` which
-                # rebuilds the view list, so the next ``view`` set lands
-                # in the freshly populated combo.
-            else:
-                log.warning(
-                    "[session] saved display %r not available — keeping %r",
-                    cs.display,
-                    panel._display_combo.currentText(),  # noqa: SLF001
-                )
-        if cs.view:
-            if cs.view in [
-                panel._view_combo.itemText(i)  # noqa: SLF001
-                for i in range(panel._view_combo.count())  # noqa: SLF001
-            ]:
-                panel._view_combo.setCurrentText(cs.view)  # noqa: SLF001
-            else:
-                log.warning(
-                    "[session] saved view %r not available for display — keeping %r",
-                    cs.view,
-                    panel._view_combo.currentText(),  # noqa: SLF001
-                )
-        panel._exposure_spin.setValue(cs.exposure)  # noqa: SLF001
-        panel._gamma_spin.setValue(cs.gamma)  # noqa: SLF001
+
+        # Per-kind warning when the saved value isn't in the current
+        # combo's list — kept as a closure so we can format the
+        # message uniformly across the three (source / display / view)
+        # cases.
+        def _warn_missing(kind: str, requested: str, current: str) -> None:
+            messages = {
+                "source": "saved source colorspace %r not in current OCIO config — keeping %r",
+                "display": "saved display %r not available — keeping %r",
+                "view": "saved view %r not available for display — keeping %r",
+            }
+            log.warning("[session] " + messages[kind], requested, current)
+
+        panel.apply_state(
+            source_colorspace=cs.source_colorspace or None,
+            display=cs.display or None,
+            view=cs.view or None,
+            exposure=cs.exposure,
+            gamma=cs.gamma,
+            on_missing=_warn_missing,
+        )
 
     def _on_open_session_requested(self, path: Path) -> None:
         """File → Open session… — replace the LayerStack from a
@@ -3206,30 +3184,22 @@ class ImgPlayerApp:
     def _enrich_with_header(self, seq: SequenceInfo) -> SequenceInfo:
         """Fill in channel_names / width / height from the first frame's
         header if the scanner skipped them. Returns the same seq when
-        already populated."""
-        if seq.channel_names and seq.width and seq.height:
-            return seq
-        if not seq.frames:
-            return seq
-        try:
-            from img_player.io.reader import read_header  # noqa: PLC0415 — lazy: OIIO is heavy
+        already populated.
 
-            spec = read_header(seq.frames[0].path)
-            channels = tuple(spec.channelnames or ())
+        Thin wrapper over :func:`enrich_with_header` — keeps the live-
+        flow's success-log (which the session restore path doesn't
+        emit) while sharing the actual probe logic.
+        """
+        enriched = enrich_with_header(seq)
+        if enriched is not seq and enriched.channel_names:
+            channels = enriched.channel_names
             log.info(
-                "header probe: %d channels (%s), %dx%d",
-                len(channels), ", ".join(channels[:8]) + ("…" if len(channels) > 8 else ""),
-                spec.width, spec.height,
+                "header probe: %d channels (%s), %sx%s",
+                len(channels),
+                ", ".join(channels[:8]) + ("…" if len(channels) > 8 else ""),
+                enriched.width, enriched.height,
             )
-            return replace(
-                seq,
-                channel_names=channels or seq.channel_names,
-                width=spec.width or seq.width,
-                height=spec.height or seq.height,
-            )
-        except Exception:
-            log.exception("could not read header from %s", seq.frames[0].path)
-            return seq
+        return enriched
 
     def _guess_source_colorspace(self, seq: SequenceInfo) -> None:
         """Auto-detect the source colorspace + the right view for it.

@@ -42,6 +42,10 @@ from typing import Any
 from img_player.layers.models import Layer
 from img_player.layers.stack import LayerStack
 from img_player.sequence.channels import ChannelGroup, ChannelSelection
+# ``enrich_with_header`` is the canonical impl shared with the live-
+# load flow (``ImgPlayerApp._enrich_with_header``) — single source of
+# truth so behaviour stays in sync across both paths.
+from img_player.sequence.scanner import enrich_with_header as _enrich_with_header
 from img_player.sequence.scanner import scan
 
 log = logging.getLogger(__name__)
@@ -399,28 +403,3 @@ def _rebuild_layer(entry: dict[str, Any]) -> Layer:
     return layer
 
 
-def _enrich_with_header(seq):  # type: ignore[no-untyped-def]
-    """Populate ``seq.width`` / ``seq.height`` / ``channel_names`` by
-    reading the first frame's OIIO header.
-
-    Mirrors ``ImgPlayerApp._enrich_with_header`` (which the live-load
-    flow uses) — duplicated here so the session loader can stay
-    UI-agnostic without growing a callback parameter. Best-effort:
-    swallows read errors (returns the original seq) so a temporarily
-    unreadable file doesn't abort the whole session restore.
-    """
-    try:
-        from dataclasses import replace
-
-        from img_player.io.reader import read_header
-
-        spec = read_header(seq.frames[0].path)
-        return replace(
-            seq,
-            channel_names=tuple(spec.channelnames or ()) or seq.channel_names,
-            width=spec.width or seq.width,
-            height=spec.height or seq.height,
-        )
-    except Exception:
-        log.exception("[session] header probe failed for %s", seq.frames[0].path)
-        return seq

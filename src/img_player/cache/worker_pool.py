@@ -70,30 +70,11 @@ class WorkerPool:
         In-flight workers harmlessly call ``_pending.discard(key)``
         at the end of their task — a no-op once the key is gone.
         """
-        dropped = 0
-        drained: list[tuple[int, int, Any, Callable[[], None] | None]] = []
-        while True:
-            try:
-                item = self._queue.get_nowait()
-            except queue.Empty:
-                break
-            prio, _, key, _fn = item
-            if prio == _SHUTDOWN_PRIORITY:
-                # Preserve shutdown sentinels — do not eat them.
-                drained.append(item)
-                continue
-            if key is not None:
-                dropped += 1
-        # Wipe ``_pending`` after the queue drain so we don't reopen
-        # dedup slots while we're still iterating new items into the
-        # queue. In-flight workers (their keys still in the set right
-        # before this clear) will call discard on a missing key —
-        # safe.
-        with self._lock:
-            self._pending.clear()
-        for item in drained:
-            self._queue.put(item)
-        return dropped
+        # Keep only shutdown sentinels; drop everything else.
+        return self._drain_filter(
+            keep=lambda prio, _key: prio == _SHUTDOWN_PRIORITY,
+            wipe_all_pending=True,
+        )
 
     def drop_above_priority(self, threshold: int) -> int:
         """Drop every queued task whose priority is **>= threshold**.
@@ -110,26 +91,48 @@ class WorkerPool:
         (priority = ``_SHUTDOWN_PRIORITY`` = highly negative) are
         always preserved.
         """
+        return self._drain_filter(
+            keep=lambda prio, _key: prio == _SHUTDOWN_PRIORITY or prio < threshold,
+        )
+
+    def _drain_filter(
+        self,
+        keep: Callable[[int, Any], bool],
+        *,
+        wipe_all_pending: bool = False,
+    ) -> int:
+        """Common drain-then-rebuild loop used by :meth:`clear` and
+        :meth:`drop_above_priority`. ``keep(priority, key)`` returns
+        ``True`` to re-queue the item, ``False`` to drop it.
+
+        When ``wipe_all_pending`` is True the entire ``_pending`` set
+        is cleared regardless of which items were dropped — used by
+        :meth:`clear` so in-flight tasks' keys are freed too. When
+        False (the default), only the dropped items' keys are
+        released, so in-flight + still-queued keys keep their dedup
+        slot.
+        """
         dropped = 0
-        drained: list[tuple[int, int, Any, Callable[[], None] | None]] = []
         dropped_keys: list[Any] = []
+        drained: list[tuple[int, int, Any, Callable[[], None] | None]] = []
         while True:
             try:
                 item = self._queue.get_nowait()
             except queue.Empty:
                 break
             prio, _, key, _fn = item
-            if prio == _SHUTDOWN_PRIORITY or prio < threshold:
+            if keep(prio, key):
                 drained.append(item)
                 continue
             if key is not None:
                 dropped += 1
                 dropped_keys.append(key)
-        # Release dedup slots for the dropped keys so a future re-
-        # submission (e.g. user switches back to that channel) goes
-        # through. Keys still in the queue + in-flight stay in
-        # ``_pending``.
-        if dropped_keys:
+        # Wipe ``_pending`` after the queue drain so we don't reopen
+        # dedup slots while we're still re-queuing surviving items.
+        if wipe_all_pending:
+            with self._lock:
+                self._pending.clear()
+        elif dropped_keys:
             with self._lock:
                 for k in dropped_keys:
                     self._pending.discard(k)
