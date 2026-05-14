@@ -117,6 +117,14 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
     # propagating) or when the user just wants nuclear-option
     # confidence in the cache state.
     force_reload_sequence_requested = Signal()
+    # Image → Clear cache… — wipe BOTH the RAM master cache and the
+    # persistent disk cache (after user confirmation). Distinct from
+    # force-reload: force-reload re-decodes the current sequence
+    # right away; clear-cache also drops every persistent blob so
+    # the next session restarts from the source files. The app-side
+    # handler shows the QMessageBox + does the actual ``clear()``
+    # calls so the UI layer stays free of policy.
+    clear_cache_requested = Signal()
     # Edit menu — same chained handlers as the Ctrl+Z / Ctrl+Shift+Z
     # QShortcuts (annotation first, layer-stack fallback). Routing
     # via signals keeps the App in charge of priority logic; the
@@ -778,6 +786,26 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         image_menu = menu_bar.addMenu("&Image")
         image_menu.addAction(self._reload_act)
         image_menu.addAction(self._force_reload_act)
+
+        # Image → Clear cache… (Ctrl+Alt+Shift+R). Wipes the RAM
+        # master cache AND the persistent disk cache after a
+        # confirmation dialog (the app-side handler owns the dialog
+        # so the UI layer doesn't import QMessageBox here). Enabled
+        # unconditionally — even without a loaded sequence the disk
+        # cache may still hold blobs from previous sessions, and
+        # clearing them is a legitimate maintenance gesture.
+        image_menu.addSeparator()
+        self._clear_cache_act = QAction("&Clear cache…", self)
+        self._clear_cache_act.setToolTip(
+            "Wipe both the in-RAM frame cache and the persistent disk "
+            "cache. The next playback will re-decode from the source "
+            "files."
+        )
+        self._clear_cache_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+R"))
+        self._clear_cache_act.triggered.connect(
+            self.clear_cache_requested.emit,
+        )
+        image_menu.addAction(self._clear_cache_act)
 
         # --- View menu : timeline display mode ----------------------------
         view_menu = menu_bar.addMenu("&View")

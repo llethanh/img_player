@@ -869,6 +869,7 @@ class ImgPlayerApp:
         w.reload_sequence_requested.connect(self._on_reload_sequence)
         w.transport.reload_clicked.connect(self._on_reload_sequence)
         w.force_reload_sequence_requested.connect(self._on_force_reload_sequence)
+        w.clear_cache_requested.connect(self._on_clear_cache_action)
         # Edit menu — wire to the same chained handlers the keyboard
         # shortcut (Ctrl+Z / Ctrl+Shift+Z) uses, so menu and shortcut
         # produce identical behaviour (annotations first, layer
@@ -2673,6 +2674,92 @@ class ImgPlayerApp:
             f"Reload: {kept} kept, {dropped} re-decoded, {missing} missing"
             + (f", {added} new" if added else "")
         )
+
+    def _on_clear_cache_action(self) -> None:
+        """Image → Clear cache… (Ctrl+Alt+Shift+R).
+
+        Wipes both tiers of the cache after a confirmation dialog:
+
+        1. **RAM** (``MasterFrameCache.clear``) — every decoded frame
+           in memory is dropped. The next paint will re-fetch from
+           the disk cache (if still present) or re-decode from the
+           source files.
+        2. **Disk** (``DiskCache.clear``) — every persisted blob is
+           removed, the SQLite index is wiped. The next session
+           restarts from the source files.
+
+        Distinct from Reload (force) which only nukes the RAM tier
+        and re-decodes immediately: this one ALSO clears the
+        persistent state, so future sessions don't benefit from the
+        previous warm-up. After the clear, ``replan_prefetch`` is
+        called so playback resumes via fresh decodes if a sequence
+        is loaded.
+        """
+        from PySide6.QtWidgets import QMessageBox  # noqa: PLC0415 — UI-only
+
+        # The dialog mentions both tiers so the user knows what
+        # they're signing up for — clearing the disk cache is the
+        # destructive part (RAM clears itself naturally at app
+        # shutdown anyway).
+        body = (
+            "This wipes BOTH cache tiers:\n\n"
+            "  • RAM master cache — every decoded frame in memory.\n"
+            "  • Persistent disk cache — every blob on disk.\n\n"
+            "The next playback will re-decode from the source files. "
+            "Future sessions won't benefit from the previously warmed "
+            "disk cache until they replay the shots.\n\n"
+            "Clear now?"
+        )
+        reply = QMessageBox.warning(
+            self._window,
+            "Clear cache?",
+            body,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        # RAM tier — always present.
+        try:
+            self._cache.clear()
+        except Exception:  # pragma: no cover — defensive
+            log.exception("[clear-cache] RAM cache clear failed")
+
+        # Disk tier — present only when the user hasn't disabled it
+        # via Preferences > Disk cache > Enabled. ``getattr`` keeps
+        # this safe even on a future build where ``_disk_cache``
+        # might not be wired.
+        disk_cache = getattr(self._cache, "_disk_cache", None)
+        freed_bytes = 0
+        if disk_cache is not None:
+            try:
+                freed_bytes = disk_cache.clear()
+            except Exception:  # pragma: no cover — defensive
+                log.exception("[clear-cache] disk cache clear failed")
+                QMessageBox.critical(
+                    self._window,
+                    "Clear failed",
+                    "RAM cache cleared, but the disk cache clear "
+                    "raised. Check the log for details.",
+                )
+                return
+
+        # Re-trigger prefetch so playback resumes cleanly if a
+        # sequence is loaded. No-op when the controller has no
+        # sequence (= startup state, never opened anything).
+        if self._controller.sequence is not None:
+            self._controller.replan_prefetch()
+
+        freed_gb = freed_bytes / (1024 ** 3)
+        if disk_cache is None:
+            self._window.set_status("Cache cleared — RAM only (disk cache disabled).")
+        elif freed_gb >= 0.01:
+            self._window.set_status(
+                f"Cache cleared — RAM + {freed_gb:.2f} GB freed on disk."
+            )
+        else:
+            self._window.set_status("Cache cleared — RAM + disk (both were empty).")
 
     def _on_force_reload_sequence(self) -> None:
         """Reload (force) — Ctrl+Shift+R / File → Reload (force).
