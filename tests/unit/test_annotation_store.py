@@ -18,6 +18,114 @@ def _stroke(color: str = "#FF0000", size: float = 5.0) -> Stroke:
 
 
 # ============================================================================
+# Layer scoping (v1.5.15+) — current_layer_id partitions strokes
+# ============================================================================
+
+
+class TestLayerScoping:
+    def test_default_layer_id_is_empty_string(self) -> None:
+        """No layer focused yet → reads / writes route through the
+        ``""`` key. Pre-refactor tests (and any caller that never
+        pushes a layer id) keep working unchanged."""
+        store = AnnotationStore()
+        assert store.current_layer_id == ""
+
+    def test_strokes_partition_by_layer(self) -> None:
+        """Adding a stroke under layer A doesn't leak to layer B's
+        view — switching ``current_layer_id`` swaps the visible set."""
+        store = AnnotationStore()
+        store.set_current_layer_id("layer-A")
+        store.add_stroke(42, _stroke())
+        assert store.strokes_at(42) == (store.strokes_at(42)[0],)
+        # Switch to a different layer — frame 42 has no strokes there.
+        store.set_current_layer_id("layer-B")
+        assert store.strokes_at(42) == ()
+        # Add a different stroke on B; A is untouched.
+        store.add_stroke(42, _stroke("#00FF00"))
+        assert store.strokes_at(42)[0].color == "#00FF00"
+        store.set_current_layer_id("layer-A")
+        assert store.strokes_at(42)[0].color == "#FF0000"
+
+    def test_set_current_layer_id_emits_changed_signal(
+        self, qtbot,
+    ) -> None:
+        """Focus switch fires :attr:`annotated_frames_changed` so the
+        timeline + transport refresh as if the set was recomputed."""
+        store = AnnotationStore()
+        store.set_current_layer_id("layer-A")
+        store.add_stroke(42, _stroke())
+
+        with qtbot.waitSignal(store.annotated_frames_changed, timeout=500):
+            store.set_current_layer_id("layer-B")
+
+    def test_set_current_layer_id_is_idempotent(self, qtbot) -> None:
+        """Re-setting the same id is a no-op — no signal."""
+        store = AnnotationStore()
+        store.set_current_layer_id("layer-A")
+
+        # Drain the signal that the initial set already emitted.
+        with qtbot.assertNotEmitted(store.annotated_frames_changed, wait=50):
+            store.set_current_layer_id("layer-A")
+
+    def test_layer_frame_annotated_carries_layer_id(self, qtbot) -> None:
+        """Cross-layer consumers (export bake, persistence) read
+        :attr:`layer_frame_annotated` to get both the layer id and
+        the frame — verifies the signal's payload."""
+        store = AnnotationStore()
+        store.set_current_layer_id("layer-A")
+        with qtbot.waitSignal(
+            store.layer_frame_annotated, timeout=500,
+        ) as blocker:
+            store.add_stroke(42, _stroke())
+        assert blocker.args == ["layer-A", 42]
+
+    def test_strokes_at_for_reads_any_layer(self) -> None:
+        """The cross-layer read API doesn't depend on focus — used by
+        the export pipeline to bake every layer's strokes regardless
+        of which one is in the viewport."""
+        store = AnnotationStore()
+        store.set_current_layer_id("layer-A")
+        store.add_stroke(42, _stroke())
+        store.set_current_layer_id("layer-B")
+        # Reading A's strokes works even though B is current.
+        assert store.strokes_at_for("layer-A", 42) != ()
+        assert store.strokes_at_for("layer-B", 42) == ()
+        # Reading an unknown layer returns empty (no KeyError).
+        assert store.strokes_at_for("layer-nonexistent", 42) == ()
+
+    def test_layers_with_strokes_enumerates_non_empty_keys(self) -> None:
+        """The persistence layer reads this to know which layer
+        slots to write into the v2 sidecar."""
+        store = AnnotationStore()
+        store.set_current_layer_id("layer-A")
+        store.add_stroke(1, _stroke())
+        store.set_current_layer_id("layer-B")
+        store.add_stroke(2, _stroke())
+        store.set_current_layer_id("layer-C")  # no strokes
+        assert store.layers_with_strokes() == frozenset({"layer-A", "layer-B"})
+
+    def test_to_dict_multi_round_trip_preserves_layers(self) -> None:
+        """v2 sidecar shape: ``{<layer_id>: {<frame_str>: [strokes]}}``."""
+        store = AnnotationStore()
+        store.set_current_layer_id("layer-A")
+        store.add_stroke(1, _stroke("#FF0000"))
+        store.set_current_layer_id("layer-B")
+        store.add_stroke(2, _stroke("#00FF00"))
+        dump = store.to_dict_multi()
+        assert set(dump.keys()) == {"layer-A", "layer-B"}
+        assert "1" in dump["layer-A"]
+        assert "2" in dump["layer-B"]
+
+        # Reload into a fresh store; verify both layers come back.
+        fresh = AnnotationStore()
+        fresh.load_from_dict_multi(dump)
+        fresh.set_current_layer_id("layer-A")
+        assert fresh.strokes_at(1)[0].color == "#FF0000"
+        fresh.set_current_layer_id("layer-B")
+        assert fresh.strokes_at(2)[0].color == "#00FF00"
+
+
+# ============================================================================
 # Read API
 # ============================================================================
 

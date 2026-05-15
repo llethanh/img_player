@@ -2214,6 +2214,21 @@ class ImgPlayerApp:
         # working.
         if layer.channel_selection is not None:
             self._channel_selection = layer.channel_selection
+        # Tell the annotation + comment stores which layer to scope
+        # their reads / writes to. The stores partition strokes by
+        # ``layer_id`` internally so swapping the source on a layer
+        # (= same ``layer.id``, different sequence) preserves the
+        # annotations / comments attached to the layer rather than
+        # to the source folder. The overlay + timeline observe the
+        # frame-keyed signals on the store and refresh on focus
+        # change via the store's ``annotated_frames_changed`` emit.
+        self._annotation_store.set_current_layer_id(layer.id)
+        if hasattr(self, "_comment_store"):
+            # Comments use the same per-layer scoping model; the
+            # store gets the same hook in Step 1b of the redesign.
+            set_layer = getattr(self._comment_store, "set_current_layer_id", None)
+            if callable(set_layer):
+                set_layer(layer.id)
 
     def _redisplay_current(self) -> None:
         """Re-run the display path on the current frame.
