@@ -878,6 +878,13 @@ class ImgPlayerApp:
             panel.selection_changed.connect(
                 self._on_layer_selection_changed,
             )
+            # Right-click "Replace source…" — swap the underlying
+            # sequence on a layer while preserving its id so any
+            # annotations / comments attached to the layer survive
+            # the swap (review v1, then v2 lands, user keeps notes).
+            panel.replace_source_requested.connect(
+                self._on_replace_source_requested,
+            )
 
         # Contact-sheet per-tile scrub: the GL viewport emits
         # ``(tile_idx, delta_frames)`` on each mouse-move during a
@@ -2229,6 +2236,127 @@ class ImgPlayerApp:
             set_layer = getattr(self._comment_store, "set_current_layer_id", None)
             if callable(set_layer):
                 set_layer(layer.id)
+
+    def _on_replace_source_requested(
+        self, layer_id: str, path_str: str,
+    ) -> None:
+        """Right-click → Replace source… handler.
+
+        Builds a fresh sequence / video-metadata pair from
+        ``path_str`` and swaps the layer's underlying source while
+        preserving its id. Annotations + comments live on the
+        store under that id, so they stay attached through the
+        swap — the user reviews v1, gets v2, points the layer at
+        the new source, and their notes come back automatically.
+
+        User customizations stay (name, visibility, alpha mode,
+        exposure / gamma, audio mute / solo / gain). The channel
+        selection is reset to ``None`` so the transport's channel
+        menu re-picks the first group from the new source —
+        carrying over a "diffuse" pick from v1 to a v2 with a
+        different AOV layout would silently break the display.
+        """
+        from pathlib import Path  # noqa: PLC0415 — cold path
+
+        from img_player.layers.models import Layer  # noqa: PLC0415
+        from img_player.media.video_probe import (  # noqa: PLC0415
+            probe_video,
+        )
+        from img_player.sequence.scanner import (  # noqa: PLC0415
+            SequenceNotFoundError,
+            scan,
+        )
+
+        layer = self._layer_stack.find(layer_id)
+        if layer is None:
+            log.warning(
+                "[replace-source] layer %s no longer in stack — ignoring",
+                layer_id,
+            )
+            return
+
+        path = Path(path_str)
+        if not path.exists():
+            self._window.set_status(
+                f"Replace source: {path} doesn't exist.",
+            )
+            return
+
+        # Detect video vs image-sequence by extension. Mirrors the
+        # convention used in scan_handler.open_paths — same source
+        # files map to the same kind of Layer regardless of the
+        # entry point. A future refactor could share a "kind from
+        # extension" helper between the two.
+        video_exts = {".mov", ".mp4", ".mkv", ".m4v", ".avi"}
+        is_video_path = path.suffix.lower() in video_exts
+
+        new_layer: Layer | None = None
+        try:
+            if is_video_path:
+                metadata = probe_video(path)
+                new_layer = Layer.from_video(
+                    metadata,
+                    offset=layer.offset,
+                    name=layer.name,
+                )
+            else:
+                seq = scan(path)
+                seq = self._enrich_with_header(seq)
+                new_layer = Layer.from_image(
+                    seq,
+                    offset=layer.offset,
+                    name=layer.name,
+                )
+        except SequenceNotFoundError:
+            self._window.set_status(
+                f"Replace source: no sequence detected at {path}.",
+            )
+            return
+        except Exception:
+            log.exception(
+                "[replace-source] failed to build a layer from %s",
+                path,
+            )
+            self._window.set_status(
+                f"Replace source: failed to load {path.name} "
+                "(see log).",
+            )
+            return
+
+        if new_layer is None:
+            return
+
+        # Apply the new sequence + frame range to the existing
+        # layer via the stack's ``update``, which fires
+        # ``layer_modified`` once. The cache + viewport observe
+        # that signal and invalidate / re-decode for the swapped
+        # range. Channel selection resets to ``None`` so the
+        # transport's focus-sync re-picks the first group of the
+        # new source.
+        self._layer_stack.update(
+            layer_id,
+            sequence=new_layer.sequence,
+            video_metadata=new_layer.video_metadata,
+            layer_in=new_layer.layer_in,
+            layer_out=new_layer.layer_out,
+            is_still=new_layer.is_still,
+            still_hold_frames=new_layer.still_hold_frames,
+            channel_selection=None,
+        )
+
+        # Re-render the current frame so the user sees the swap
+        # immediately rather than waiting for the next playback /
+        # scrub event. ``_last_displayed`` clear bypasses the
+        # "skip if same frame" optimisation that would otherwise
+        # leave the previous source on screen.
+        cur = self._controller.state.current_frame
+        self._last_displayed = None
+        self._on_frame_changed(cur)
+
+        self._window.set_status(
+            f"Replaced source on layer with {path.name} — "
+            "annotations and comments preserved.",
+        )
 
     def _redisplay_current(self) -> None:
         """Re-run the display path on the current frame.

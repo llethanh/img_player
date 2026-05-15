@@ -1451,6 +1451,18 @@ class LayerPanel(QFrame):  # type: ignore[misc]
             lambda: self._reveal_selected_in_explorer(),
         )
 
+        # Replace source — swap the layer's underlying sequence /
+        # video while preserving its id, so annotations + comments
+        # attached to this layer survive the swap (review v1, then
+        # v2 lands → user pulls v2 onto the same layer, notes stay).
+        # Only available on a single-selection: replacing the source
+        # on multiple layers at once is ambiguous.
+        act_replace = menu.addAction("Replace source…")
+        act_replace.setEnabled(len(self._selected_ids) == 1)
+        act_replace.triggered.connect(
+            lambda: self._on_row_replace_source_requested(layer_id),
+        )
+
         menu.addSeparator()
 
         act_del = menu.addAction("Delete")
@@ -1459,6 +1471,44 @@ class LayerPanel(QFrame):  # type: ignore[misc]
         )
 
         menu.exec(global_pos)
+
+    def _on_row_replace_source_requested(self, layer_id: str) -> None:
+        """Pop a file picker, then ask the app to swap the source.
+
+        Starting directory = the parent of the current source so the
+        user lands one click away from sibling versions / re-renders
+        of the same shot (``v002/`` next to ``v001/``). For image
+        sequences, the picker accepts any of the frame files — the
+        app's scanner resolves the full pattern from a single member.
+
+        Cancelled picks (user closes the dialog without choosing) are
+        silently dropped — no signal fired, no state change.
+        """
+        from pathlib import Path  # noqa: PLC0415 — cold path
+        from PySide6.QtWidgets import QFileDialog  # noqa: PLC0415 — cold path
+
+        layer = self._stack.find(layer_id)
+        if layer is None:
+            return
+        start_dir = (
+            str(layer.sequence.directory)
+            if layer.sequence is not None
+            else str(Path.home())
+        )
+        filters = (
+            "Image / video files (*.exr *.dpx *.tif *.tiff *.png *.jpg "
+            "*.jpeg *.tga *.bmp *.mov *.mp4 *.mkv *.m4v *.avi);;"
+            "All files (*.*)"
+        )
+        picked, _ = QFileDialog.getOpenFileName(
+            self,
+            "Replace source…",
+            start_dir,
+            filters,
+        )
+        if not picked:
+            return
+        self.replace_source_requested.emit(layer_id, picked)
 
     def _reveal_selected_in_explorer(self) -> None:
         """Open each unique source file's containing folder, with the
@@ -1817,6 +1867,12 @@ class MasterTimelinePanel(QFrame):  # type: ignore[misc]
     # ``ViewerWidget.replace_requested``; route accordingly in the
     # main window.
     add_layer_requested = Signal(list)
+    # User picked a new source path for an existing layer via the
+    # right-click "Replace source…" action. The app handler swaps
+    # the layer's underlying sequence / video_metadata in-place
+    # while preserving the layer's id — annotations + comments
+    # stored under that id stay attached.
+    replace_source_requested = Signal(str, str)  # layer_id, path
     """Composite that owns the master timeline + the layer panel.
 
     Why this exists: the timeline and the layer rows used to be two
