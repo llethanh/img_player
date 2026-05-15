@@ -130,6 +130,7 @@ def render_contact_sheet(
     target_w: int,
     target_h: int,
     show_labels: bool = False,
+    scrub_indicator: tuple[int, float] | None = None,
 ) -> np.ndarray:
     """Compose ``tiles`` into a ``cols × rows`` grid.
 
@@ -223,6 +224,19 @@ def render_contact_sheet(
             _paint_label_overlay(
                 out[y0:y0 + cell_h, x0:x1],
                 name=name,
+                n_channels=n_channels,
+                dtype=out_dtype,
+            )
+
+        # Scrub-progress indicator: a translucent orange bar at the
+        # bottom of the actively-scrubbed tile, width proportional
+        # to the layer's current frame within its trim range. Only
+        # the dragged tile shows it; clears the next render when the
+        # gesture ends (caller passes ``None``).
+        if scrub_indicator is not None and scrub_indicator[0] == idx:
+            _paint_scrub_progress_bar(
+                out[y0:y0 + cell_h, x0:x1],
+                pct=scrub_indicator[1],
                 n_channels=n_channels,
                 dtype=out_dtype,
             )
@@ -443,3 +457,72 @@ def _paint_label_overlay(
     # appear ghostly when the tile itself has reduced alpha.
     if n_channels == 4:
         tile_region[y0:y1, x0:x1, 3] = _opaque_for(dtype)
+
+
+def _paint_scrub_progress_bar(
+    tile_region: np.ndarray,
+    *,
+    pct: float,
+    n_channels: int,
+    dtype: np.dtype,
+) -> None:
+    """Stamp a translucent orange progress bar at the bottom of a tile.
+
+    The bar's width is ``pct × tile_w`` (clamped to ``[0, 1]``) so the
+    user reads the scrubbed layer's position within its trim range at
+    a glance — left edge = first frame, right edge = last frame.
+
+    Only the actively scrubbed tile gets the overlay; the caller
+    omits ``scrub_indicator`` (or passes a different tile index) on
+    every other render so the bar disappears the moment the gesture
+    ends. Painted directly into the numpy buffer via an alpha-blend
+    (no QPainter — a flat rect doesn't need it), so the cost per
+    paint stays under a microsecond for typical tile sizes.
+
+    No-op for tiny tiles (< 16 px on either side) so the bar doesn't
+    overwrite the entire cell on stamp-sized previews.
+    """
+    h, w = tile_region.shape[:2]
+    if h < 16 or w < 16:
+        return
+    p = max(0.0, min(1.0, float(pct)))
+    fill_w = int(round(p * w))
+    if fill_w <= 0:
+        return
+    # Bar geometry: ~3% of tile height, clamped to [3, 12] px so it
+    # stays visible on a 200 px review tile and doesn't dominate on
+    # a 2160 px hero tile.
+    bar_h = max(3, min(int(h * 0.03), 12))
+    y_start = h - bar_h
+
+    # Orange in dtype-appropriate scale. Matches the app's accent
+    # colour family (FF8C00 → ~1.0 / 0.55 / 0.0). Premultiplied alpha
+    # blend so the underlying pixels show through at the bar edges.
+    if np.issubdtype(dtype, np.integer):
+        max_v = float(np.iinfo(dtype).max)
+        rgb = np.array(
+            [max_v, max_v * 0.55, 0.0], dtype=np.float32,
+        )
+        scale = max_v
+    else:
+        rgb = np.array([1.0, 0.55, 0.0], dtype=np.float32)
+        scale = 1.0
+    alpha = 0.7  # translucent — image still bleeds through
+
+    region = tile_region[y_start:h, :fill_w, :3]
+    dst_f = region.astype(np.float32, copy=False)
+    if scale != 1.0:
+        dst_f = dst_f / scale
+        src = rgb / scale
+    else:
+        src = rgb
+    out_rgb = dst_f * (1.0 - alpha) + src * alpha
+    if np.issubdtype(dtype, np.integer):
+        tile_region[y_start:h, :fill_w, :3] = (
+            out_rgb * scale
+        ).astype(dtype)
+    else:
+        tile_region[y_start:h, :fill_w, :3] = out_rgb.astype(dtype)
+    # Bar pixels = fully opaque so the GL upload doesn't ghost it.
+    if n_channels == 4:
+        tile_region[y_start:h, :fill_w, 3] = _opaque_for(dtype)

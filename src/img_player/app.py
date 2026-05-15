@@ -1511,8 +1511,16 @@ class ImgPlayerApp:
 
     def _on_contact_sheet_tile_scrub_finished(self) -> None:
         """Clear the per-gesture anchor so the next drag starts
-        from the post-gesture offset."""
+        from the post-gesture offset. Also clears the progress-bar
+        indicator and forces one re-render so the orange bar
+        vanishes the moment the user releases the mouse."""
         self._cs_tile_scrub_anchor = None
+        had_progress = getattr(self, "_cs_scrub_progress", None) is not None
+        self._cs_scrub_progress = None
+        if had_progress and self._contact_sheet_state.is_active():
+            cur = self._controller.state.current_frame
+            self._last_displayed = None
+            self._on_frame_changed(cur)
 
     def _on_contact_sheet_tile_scrub(
         self, tile_idx: int, delta_frames: int,
@@ -1572,6 +1580,20 @@ class ImgPlayerApp:
         new_offset = max(min_offset, min(new_offset, max_offset))
 
         self._contact_sheet_state.per_layer_offsets[layer.id] = new_offset
+
+        # Snapshot the active tile's progress within its trim range —
+        # ``_render_contact_sheet`` reads this and asks the compositor
+        # to bake an orange progress bar at the bottom of THIS tile
+        # only. Cleared on scrub-finished so the bar vanishes when
+        # the user releases. Uses ``trim_length - 1`` as the
+        # denominator so a layer at its last frame reads 1.0 (right
+        # edge of the bar), not the implementation detail of
+        # ``last_frame / trim_length``.
+        effective_offset = max(0, min(new_offset + global_offset, trim_length - 1))
+        denom = max(1, trim_length - 1)
+        pct = effective_offset / denom
+        self._cs_scrub_progress = (tile_idx, float(pct))
+
         self._last_displayed = None
         self._on_frame_changed(cur)
 
@@ -1857,6 +1879,13 @@ class ImgPlayerApp:
             target_w=target_w,
             target_h=target_h,
             show_labels=self._contact_sheet_state.show_labels,
+            # Scrub-progress overlay: set by
+            # :meth:`_on_contact_sheet_tile_scrub` for the duration
+            # of a per-tile drag gesture, cleared by
+            # :meth:`_on_contact_sheet_tile_scrub_finished`. ``None``
+            # = no bar baked into the composite, which is the case
+            # outside of an active scrub.
+            scrub_indicator=getattr(self, "_cs_scrub_progress", None),
         )
         self._display_array(composite)
         return True
