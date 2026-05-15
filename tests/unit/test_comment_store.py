@@ -267,3 +267,91 @@ class TestStoreSerialization:
             ],
         })
         assert len(ev) == 1
+
+
+# ============================================================================
+# Layer scoping (v1.5.15+) — current_layer_id partitions comments
+# ============================================================================
+
+
+class TestLayerScoping:
+    def test_default_layer_id_is_empty_string(self) -> None:
+        """No layer focused yet → reads / writes route through the
+        ``""`` key. Same convention as ``AnnotationStore``."""
+        store = CommentStore()
+        assert store.current_layer_id == ""
+
+    def test_comments_partition_by_layer(self) -> None:
+        """Adding a comment under layer A doesn't leak into layer B's
+        view; switching ``current_layer_id`` swaps the visible set."""
+        store = CommentStore()
+        store.set_current_layer_id("layer-A")
+        store.add_comment(42, "hero take")
+        assert len(store.comments_at(42)) == 1
+
+        store.set_current_layer_id("layer-B")
+        assert store.comments_at(42) == ()
+
+        store.add_comment(42, "alt take")
+        assert store.comments_at(42)[0].text == "alt take"
+
+        store.set_current_layer_id("layer-A")
+        assert store.comments_at(42)[0].text == "hero take"
+
+    def test_set_current_layer_id_emits_changed_signal(self, qtbot) -> None:
+        """Focus switch fires ``commented_frames_changed`` so the
+        timeline + comment panel refresh as if the set was
+        recomputed."""
+        store = CommentStore()
+        store.set_current_layer_id("layer-A")
+        store.add_comment(42, "x")
+
+        with qtbot.waitSignal(store.commented_frames_changed, timeout=500):
+            store.set_current_layer_id("layer-B")
+
+    def test_layer_frame_comments_changed_carries_layer_id(
+        self, qtbot,
+    ) -> None:
+        store = CommentStore()
+        store.set_current_layer_id("layer-A")
+        with qtbot.waitSignal(
+            store.layer_frame_comments_changed, timeout=500,
+        ) as blocker:
+            store.add_comment(42, "hero")
+        assert blocker.args == ["layer-A", 42]
+
+    def test_comments_at_for_reads_any_layer(self) -> None:
+        store = CommentStore()
+        store.set_current_layer_id("layer-A")
+        store.add_comment(42, "hero")
+        store.set_current_layer_id("layer-B")
+        assert store.comments_at_for("layer-A", 42)[0].text == "hero"
+        assert store.comments_at_for("layer-B", 42) == ()
+        # Unknown layer → empty, no KeyError.
+        assert store.comments_at_for("layer-nonexistent", 42) == ()
+
+    def test_layers_with_comments_enumerates_non_empty_keys(self) -> None:
+        store = CommentStore()
+        store.set_current_layer_id("layer-A")
+        store.add_comment(1, "x")
+        store.set_current_layer_id("layer-B")
+        store.add_comment(2, "y")
+        store.set_current_layer_id("layer-C")  # no comments
+        assert store.layers_with_comments() == frozenset({"layer-A", "layer-B"})
+
+    def test_to_dict_multi_round_trip_preserves_layers(self) -> None:
+        store = CommentStore()
+        store.set_current_layer_id("layer-A")
+        store.add_comment(1, "hero")
+        store.set_current_layer_id("layer-B")
+        store.add_comment(2, "alt")
+        dump = store.to_dict_multi()
+        assert set(dump.keys()) == {"layer-A", "layer-B"}
+
+        # Reload into a fresh store; both layers' comments come back.
+        fresh = CommentStore()
+        fresh.load_from_dict_multi(dump)
+        fresh.set_current_layer_id("layer-A")
+        assert fresh.comments_at(1)[0].text == "hero"
+        fresh.set_current_layer_id("layer-B")
+        assert fresh.comments_at(2)[0].text == "alt"
