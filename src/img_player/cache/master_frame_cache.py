@@ -1100,6 +1100,27 @@ class MasterFrameCache:
 
     # ------------------------------------------------------------------ Alt-channel background prefetch
 
+    def drop_alt_channel_queue(self) -> int:
+        """Drop every queued alt-channel decode from the worker pool.
+
+        Used by the user-facing "Pause channels" toggle in the
+        transport bar (and indirectly by
+        :meth:`_evict_if_over_budget`) so the workers stop chewing
+        through alt prefetch tasks the moment the user disables it.
+        Live frame decodes for the active channel sit at far lower
+        priority numbers (under ``_ALT_TASK_PRIORITY_THRESHOLD =
+        1_000_000``) and are preserved — only alt tasks get dropped.
+
+        In-flight decodes (a few tens of ms each) finish to
+        completion; the freshly-decoded blob is harmlessly stored
+        under its key and may stick around until the next eviction
+        round. Returns the number of queued tasks dropped, for
+        logging.
+        """
+        return self._pool.drop_above_priority(
+            self._ALT_TASK_PRIORITY_THRESHOLD,
+        )
+
     def request_alt_channel(
         self,
         layer_id: str,

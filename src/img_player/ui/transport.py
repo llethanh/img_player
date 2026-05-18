@@ -207,6 +207,12 @@ class TransportBar(QWidget):  # type: ignore[misc]
     # Reload button (v0.5.1) — smart re-scan of the source folder,
     # keeping cached frames whose mtime hasn't changed.
     reload_clicked = Signal()
+    # Alt-channel background prefetch kill-switch. Carries the new
+    # paused state (``True`` = paused, ``False`` = resumed). Sits
+    # right next to the channel selector since "pause channel cache"
+    # is a verb on the same object the user is reading. App.py wires
+    # this to ``PlayerController.set_alt_channel_paused``.
+    channel_cache_pause_toggled = Signal(bool)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -638,6 +644,31 @@ class TransportBar(QWidget):  # type: ignore[misc]
         # be derived without re-querying the menu.
         self._current_selection: ChannelSelection | None = None
 
+        # --- Pause / Resume channel-cache prefetch ----------------------
+        # Small status-toggle right next to the channel selector. The
+        # user may want to silence the alt-channel background prefetch
+        # (disk I/O + decode + RAM churn for channels they're not
+        # actively switching between). The button face is a status
+        # indicator, not an action label:
+        #   ▶ in green = prefetch is currently RUNNING (click to stop)
+        #   ■ in red   = prefetch is currently STOPPED (click to resume)
+        # Same "what's happening right now" idiom as the cache-fill
+        # bar — the user reads state at a glance, the click flips it.
+        self._channel_cache_paused: bool = False
+        self._channel_cache_pause_btn = QPushButton()
+        self._channel_cache_pause_btn.setFixedHeight(G.INPUT_H)
+        # Wider than the square transport buttons so the glyph has
+        # breathing room — the red square in particular reads cramped
+        # when squeezed against the borders.
+        self._channel_cache_pause_btn.setFixedWidth(36)
+        self._channel_cache_pause_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._channel_cache_pause_btn.clicked.connect(
+            self._on_channel_cache_pause_clicked,
+        )
+        # Paint the initial glyph + tooltip for the default
+        # (= running) state.
+        self._refresh_channel_cache_pause_button()
+
         # --- RGBA channel mode selector ------------------------------------
         # One button replaces the old four-toggle row. Left-click cycles
         # RGB → R → G → B → A → RGB. The dropdown arrow opens a menu
@@ -944,6 +975,70 @@ class TransportBar(QWidget):  # type: ignore[misc]
     @property
     def channel_button(self) -> QToolButton:
         return self._channel_button
+
+    @property
+    def channel_cache_pause_button(self) -> QPushButton:
+        """Toggle button that pauses / resumes the alt-channel
+        background prefetch. Exposed so :class:`MainWindow` can
+        insert it into the top-right buttons toolbar right next to
+        the channel selector."""
+        return self._channel_cache_pause_btn
+
+    def set_channel_cache_paused(self, paused: bool) -> None:
+        """Reflect the controller's alt-channel paused state on the
+        button (label / tooltip). Does NOT re-emit
+        ``channel_cache_pause_toggled`` — this is a one-way push
+        used by ``app.py`` to keep the UI in sync with programmatic
+        state changes."""
+        new_value = bool(paused)
+        if new_value == self._channel_cache_paused:
+            return
+        self._channel_cache_paused = new_value
+        self._refresh_channel_cache_pause_button()
+
+    def _refresh_channel_cache_pause_button(self) -> None:
+        """Repaint the button face + tooltip + colour for the current
+        paused state. The glyph is a status indicator (what's
+        happening right now), not an action label:
+
+        * **green triangle (▶)** = prefetch is RUNNING. Click to stop.
+        * **red square (■)** = prefetch is STOPPED. Click to resume.
+
+        Colours come through inline QSS ``color:`` so they win over
+        the global QPushButton stylesheet without us having to ship
+        a custom paintEvent.
+        """
+        if self._channel_cache_paused:
+            glyph = "■"
+            colour = "#E54B4B"  # warm red, matches stop-state semantics
+            tooltip = (
+                "Channel cache prefetch is STOPPED — click to resume "
+                "loading alt-channel snapshots into RAM."
+            )
+        else:
+            glyph = "▶"
+            colour = "#3FB950"  # GitHub-green, clear "running" semantic
+            tooltip = (
+                "Channel cache prefetch is RUNNING — click to stop "
+                "loading alt-channel snapshots into RAM."
+            )
+        self._channel_cache_pause_btn.setText(glyph)
+        self._channel_cache_pause_btn.setToolTip(tooltip)
+        self._channel_cache_pause_btn.setStyleSheet(
+            "QPushButton { "
+            "  font-size: 12pt; "
+            "  font-weight: bold; "
+            "  padding: 0; "
+            f"  color: {colour}; "
+            "}"
+        )
+
+    def _on_channel_cache_pause_clicked(self) -> None:
+        """Flip the paused state and emit the toggle signal so
+        the controller can act on it."""
+        self._channel_cache_paused = not self._channel_cache_paused
+        self._refresh_channel_cache_pause_button()
+        self.channel_cache_pause_toggled.emit(self._channel_cache_paused)
 
     @property
     def channel_menu(self) -> ChannelMenu:

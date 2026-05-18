@@ -154,6 +154,11 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
     # the rich selection without reaching into the transport widget.
     channel_selection_changed = Signal(object)
     channel_mask_changed = Signal(tuple)  # (R, G, B, A) bools
+    # User-controlled toggle on the alt-channel background prefetch
+    # (the "⏸ / ▶" button right next to the channel selector). Carries
+    # the new paused state. Bridged from
+    # ``TransportBar.channel_cache_pause_toggled``.
+    channel_cache_pause_toggled = Signal(bool)
     # User picked a transparency background. Carries an int 0..3
     # (0 = checker, 1 = black, 2 = mid-grey, 3 = white). Forwarded
     # from :class:`TransportBar`.
@@ -1081,6 +1086,11 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         # *mode* picker (RGB / R / G / B / A) — same group of pixels,
         # different question.
         buttons_layout.addWidget(self._transport.channel_button)
+        # Pause / resume the alt-channel background prefetch — sits
+        # immediately to the right of the channel selector since
+        # "pause channels" is a verb on the same noun. Click toggles
+        # ⏸ ↔ ▶; app.py forwards the signal to the player controller.
+        buttons_layout.addWidget(self._transport.channel_cache_pause_button)
         ch_sep = QFrame(self)
         ch_sep.setFrameShape(QFrame.Shape.VLine)
         ch_sep.setFrameShadow(QFrame.Shadow.Plain)
@@ -1602,6 +1612,9 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             self.channel_selection_changed.emit
         )
         self._transport.channel_mask_changed.connect(self.channel_mask_changed.emit)
+        self._transport.channel_cache_pause_toggled.connect(
+            self.channel_cache_pause_toggled.emit,
+        )
         self._transport.transparency_bg_mode_changed.connect(
             self.transparency_bg_mode_changed.emit,
         )

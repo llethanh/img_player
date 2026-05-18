@@ -1006,6 +1006,14 @@ class ImgPlayerApp:
         # display.
         w.channel_selection_changed.connect(self._on_channel_selection_changed)
         w.channel_mask_changed.connect(self._on_channel_mask_changed)
+        # Pause / resume the alt-channel background prefetch — the
+        # "⏸ / ▶" toggle sitting right after the channel selector.
+        # The controller drops queued alt tasks on pause and replays
+        # the prefetch wave on resume; live (active-channel) decodes
+        # are untouched.
+        w.channel_cache_pause_toggled.connect(
+            self._controller.set_alt_channel_paused,
+        )
         w.transparency_bg_mode_changed.connect(self._on_transparency_bg_mode_changed)
         # Master audio (transport bar popup volume slider). Pushes
         # the gain to ``AudioOutput`` AND persists it so the

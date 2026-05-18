@@ -127,6 +127,16 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
         # can't move the playhead past the first layer even if a later
         # layer extends further.
         self._navigable_range: tuple[int, int] | None = None
+        # User-controllable kill-switch on the alt-channel background
+        # prefetch. When ``True``, :meth:`_queue_alt_channels` early-
+        # returns and the already-queued alt tasks are dropped from
+        # the worker pool — handy when the user wants to stop the
+        # background I/O / decode churn (e.g. another app needs the
+        # disk bandwidth, or they don't plan to switch channel
+        # groups). Flipping it back to ``False`` re-runs the prefetch
+        # wave so the alt cache fills up again. Live frames decoding
+        # for the current channel are unaffected.
+        self._alt_channel_paused: bool = False
 
     # ------------------------------------------------------------------ Properties
 
@@ -209,6 +219,49 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
         cache miss away from a permanent stall.
         """
         self._prefetch_ahead = max(4, int(value))
+
+    # ------------------------------------------------------------------ Alt-channel prefetch toggle
+
+    def is_alt_channel_paused(self) -> bool:
+        """Whether the user has muted the alt-channel background
+        prefetch via the transport's "Pause channels" button."""
+        return self._alt_channel_paused
+
+    def set_alt_channel_paused(self, paused: bool) -> None:
+        """Toggle the alt-channel background prefetch on / off.
+
+        When paused, :meth:`_queue_alt_channels` is a no-op and any
+        already-queued alt decode is dropped from the worker pool
+        (in-flight decodes finish to completion — they're a few
+        tens of ms each, dropping them mid-flight isn't worth the
+        complexity). Live frames for the active channel keep
+        decoding as usual.
+
+        When resumed, the prefetch wave is replayed so the alt
+        cache starts refilling from the current playhead. No-op if
+        the flag doesn't change.
+        """
+        new_value = bool(paused)
+        if new_value == self._alt_channel_paused:
+            return
+        self._alt_channel_paused = new_value
+        if new_value:
+            # Drop the already-queued alts so workers stop chewing
+            # through them while the user expects the prefetch to be
+            # off. ``drop_alt_channel_queue`` only touches tasks at
+            # or above ``_ALT_CHANNEL_BASE_PRIORITY`` — live actives
+            # (priority well below 1M) are preserved.
+            drop = getattr(self._cache, "drop_alt_channel_queue", None)
+            if callable(drop):
+                drop()
+            log.info("[controller] alt-channel prefetch PAUSED by user")
+        else:
+            log.info("[controller] alt-channel prefetch RESUMED by user")
+            # Re-issue the prefetch wave so the alt cache starts
+            # filling again from the current playhead. ``replan_prefetch``
+            # is the same code path ``pause()`` uses on play-stop.
+            if self._sequence is not None and not self._state.is_playing:
+                self.replan_prefetch()
 
     def _sync_loop_range_to_cache(self) -> None:
         """Push the active playback range + loop flag down to the cache.
@@ -933,6 +986,14 @@ class PlayerController(QObject):  # type: ignore[misc]  # mypy: QObject is Any
         invocations on every seek don't compound.
         """
         if self._state.is_playing:
+            return
+        # User kill-switch: when the transport's "Pause channels"
+        # button is on, skip the entire prefetch wave. Anything
+        # already in the worker pool was dropped when the flag
+        # flipped (see :meth:`set_alt_channel_paused`); this gate
+        # prevents subsequent seeks / stack mutations from re-
+        # queuing.
+        if self._alt_channel_paused:
             return
         layer_ids = self._cache.visible_alt_layer_ids()
         if not layer_ids:
