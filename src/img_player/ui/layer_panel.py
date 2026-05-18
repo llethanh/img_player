@@ -1843,26 +1843,27 @@ class LayerPanel(QFrame):  # type: ignore[misc]
         this, the timeline is keyed on the loaded sequence's frame range
         while the layer bars are keyed on the union of source-potentials,
         and the two scrubbers move at different speeds. Returns
-        ``(0, _MIN_VISIBLE_LENGTH - 1)`` when the stack is empty.
+        ``(0, _MIN_VISIBLE_LENGTH - 1)`` when the stack is empty so
+        the empty-app timeline shows a visible skeleton.
 
-        Empty / very-short ranges are widened to a
-        ``_MIN_VISIBLE_LENGTH``-frame minimum so the timeline
-        skeleton stays visible (= the user always has a place to
-        scrub) AND so the layer bar rows share the same x-axis as
-        the timeline. Without the shared widening, the two
-        playhead cursors land at different pixel x for the same
-        master frame whenever the source is shorter than the
-        skeleton.
+        When the stack has at least one layer, returns the layers'
+        actual broad range verbatim — even if it's shorter than
+        ``_MIN_VISIBLE_LENGTH``. A 33-frame sequence shows a
+        33-frame timeline, not a 100-frame "padded" one. The only
+        defensive widening is for genuinely degenerate ranges
+        (``last <= first``, e.g. a single still that wasn't given
+        a proper hold) so the paint path's ``_last <= _first``
+        early-return doesn't collapse the timeline to a blank
+        rectangle.
         """
         if not self._stack.layers():
             return (0, _MIN_VISIBLE_LENGTH - 1)
         first, last = self._broad_master_range()
-        # Pre-widen at the source of truth so every consumer
-        # (timeline, layer bars, navigable-range clamps) sees the
-        # same range. The widening only kicks in when the real
-        # range is shorter than the minimum — long sequences pass
-        # through unchanged.
-        if last - first + 1 < _MIN_VISIBLE_LENGTH:
+        # Only pad when the range is truly degenerate (single
+        # frame). A short-but-valid range (e.g. 33 frames) flows
+        # through unchanged so the timeline matches the layers'
+        # actual extent.
+        if last <= first:
             last = first + _MIN_VISIBLE_LENGTH - 1
         return first, last
 
