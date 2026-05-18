@@ -75,14 +75,30 @@ class Timeline(QWidget):  # type: ignore[misc]
     CACHE_H       = 6
     TOTAL_H       = G.TIMELINE_H  # 52
 
+    # Minimum visible frame count when no real sequence is loaded
+    # (empty app) OR when the loaded sequence is degenerate
+    # (single still: last == first). Keeps a 100-frame skeleton
+    # painted so the user always has a visual timeline track —
+    # otherwise the widget collapses to a blank rectangle and the
+    # affordance disappears.
+    _DEFAULT_LENGTH = 100
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setMinimumHeight(self.TOTAL_H)
         self.setFixedHeight(self.TOTAL_H)
         self.setMouseTracking(True)
 
+        # Empty-state default range: 100 frames worth of empty
+        # ticks. Without this, an app freshly opened (or one that
+        # holds only a single still / no footage at all) would
+        # paint a blank rectangle where the timeline track should
+        # be — the user has no visual anchor that "a timeline
+        # exists here". ``set_range`` widens to the same 100-frame
+        # minimum when the underlying sequence is degenerate
+        # (single still: last == first; new session: 0, 0).
         self._first = 0
-        self._last = 0
+        self._last = self._DEFAULT_LENGTH - 1
         self._current = 0
         self._in_frame: int | None = None
         self._out_frame: int | None = None
@@ -139,8 +155,21 @@ class Timeline(QWidget):  # type: ignore[misc]
     # ------------------------------------------------------------------ Public API
 
     def set_range(self, first: int, last: int) -> None:
+        """Set the visible frame range. Degenerate ranges (empty
+        session, single still, swapped bounds) widen to a 100-frame
+        minimum so the user always sees a timeline track instead
+        of a blank rectangle.
+
+        The widening only affects the visual ticks / track — the
+        controller's navigable range stays at the real bounds, so
+        scrubbing past the actual last frame is still clamped by
+        the upstream guards (see :meth:`PlayerController.set_navigable_range`).
+        """
         self._first = first
-        self._last = max(first, last)
+        # ``last`` clamped to >= first protects against swapped
+        # arguments; the extra max with ``first + _DEFAULT_LENGTH - 1``
+        # is the empty / single-still skeleton.
+        self._last = max(first, last, first + self._DEFAULT_LENGTH - 1)
         self.update()
 
     def set_current_frame(self, frame: int) -> None:
