@@ -44,7 +44,7 @@
 
     <article class="release">
       <div class="release-meta">
-        <span class="ver">v1.5.14<span style="opacity:0.55; font-size:0.7em; margin-left:0.4em;">in dev</span></span>
+        <span class="ver">v1.5.14</span>
         <span class="date">2026-05-18</span>
         <span class="tagline">Contact sheet mode + annotations re-architected per-layer + Save Frame As… full-source render.</span>
       </div>
@@ -79,6 +79,7 @@
           <li class="new"><strong>Timeline always shows a 100-frame skeleton</strong> when the session is empty, instead of collapsing to a blank rectangle. Short sequences keep their actual length — the widening only kicks in on truly degenerate ranges.</li>
           <li class="new"><strong>Contact-sheet mode always boots in normal display</strong> regardless of the last persisted <code>enabled</code> flag — opening a session that was closed in CS mode no longer lands the user on the grid view by surprise. The other CS state (grid choice, divisor, labels) is preserved.</li>
           <li class="new"><strong>Axis presets share the master x-axis</strong> with the layer bars — the 100-frame skeleton widening is applied at <code>LayerPanel.broad_master_range</code> (single source of truth) so the timeline and the bars never drift apart on short sequences.</li>
+          <li class="new"><strong>Pause / resume the alt-channel background prefetch</strong>. A small status indicator sits right next to the channel selector — <span style="color:#3FB950;">▶</span> in green when the prefetch is running, <span style="color:#E54B4B;">■</span> in red when it's stopped. Click flips the state: paused = no more disk I/O / decode / RAM churn for AOVs the reviewer isn't actively switching to; the active channel keeps decoding normally. Resume re-issues the full prefetch wave from the playhead.</li>
         </ul>
         <h4>Fixes</h4>
         <ul>
@@ -93,9 +94,7 @@
         <p style="opacity: 0.7; font-size: 0.92em; margin-top: 1em;">
           Test suite grew from 971 to 1024 (+53 cases covering the new
           contact-sheet, annotation-persistence v2, layer-source-token, and
-          resolution-picker code paths). Build still tagged
-          <code>FlickPlayer_v1.5.13</code> until the version bump in
-          <code>pyproject.toml</code> lands.
+          resolution-picker code paths).
         </p>
       </div>
     </article>
