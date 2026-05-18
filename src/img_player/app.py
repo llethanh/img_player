@@ -2324,10 +2324,16 @@ class ImgPlayerApp:
         try:
             if is_video_path:
                 metadata = probe_video(path)
+                # ``name=None`` → the factory derives the layer name
+                # from the new source's basename. The user explicitly
+                # wants this to update on a swap (replacing v1 with
+                # v2 is a common case, and the layer should read
+                # "render_v002" after — not stay on "render_v001").
+                # If they want a custom name, they rename after.
                 new_layer = Layer.from_video(
                     metadata,
                     offset=layer.offset,
-                    name=layer.name,
+                    name=None,
                 )
             else:
                 seq = scan(path)
@@ -2335,7 +2341,7 @@ class ImgPlayerApp:
                 new_layer = Layer.from_image(
                     seq,
                     offset=layer.offset,
-                    name=layer.name,
+                    name=None,
                 )
         except SequenceNotFoundError:
             self._window.set_status(
@@ -2372,7 +2378,22 @@ class ImgPlayerApp:
             is_still=new_layer.is_still,
             still_hold_frames=new_layer.still_hold_frames,
             channel_selection=None,
+            name=new_layer.name,
         )
+
+        # Source swap = new pixels behind the same (layer.id +
+        # offset + layer_in) cache signature. The signature token
+        # doesn't include the source path / basename (= bumping it
+        # would invalidate every cached entry from previous
+        # sessions). Clear the whole master cache instead so the
+        # display path produces a fresh decode against the new
+        # source. Cheap for the rare source-swap action; collateral
+        # eviction of other layers' frames is acceptable.
+        self._cache.clear()
+        # Per-layer compare / contact-sheet decoders too — their
+        # single-slot caches would otherwise serve stale pixels.
+        self._compare_decoder.invalidate(layer_id)
+        self._contact_sheet_decoder.invalidate(layer_id)
 
         # Re-render the current frame so the user sees the swap
         # immediately rather than waiting for the next playback /
