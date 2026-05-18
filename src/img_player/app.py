@@ -2382,13 +2382,24 @@ class ImgPlayerApp:
         )
 
         # Source swap = new pixels behind the same (layer.id +
-        # offset + layer_in) cache signature. The signature token
-        # doesn't include the source path / basename (= bumping it
-        # would invalidate every cached entry from previous
-        # sessions). Clear the whole master cache instead so the
-        # display path produces a fresh decode against the new
-        # source. Cheap for the rare source-swap action; collateral
-        # eviction of other layers' frames is acceptable.
+        # offset + layer_in) cache signature. Two distinct stale-
+        # data sources have to be flushed:
+        #
+        # 1. The per-layer ``_path_index`` in the master cache
+        #    caches ``frame_number -> Path`` for each layer; it's
+        #    built lazily and short-circuits when ``layer.id`` is
+        #    already a key. Without an explicit invalidate the
+        #    decoder reads from the OLD source's files even though
+        #    ``layer.sequence`` is now the new one.
+        # 2. The frame-content cache itself — the signature token
+        #    doesn't include the source path, so a swap with
+        #    matching offset / layer_in (= common case: re-render
+        #    with same frame range) hits stale entries instead of
+        #    triggering fresh decodes. Bumping the signature
+        #    format would invalidate every cached entry from
+        #    previous sessions; clearing the cache is cheap for
+        #    the rare source-swap action.
+        self._cache.invalidate_layer_paths(layer_id)
         self._cache.clear()
         # Per-layer compare / contact-sheet decoders too — their
         # single-slot caches would otherwise serve stale pixels.

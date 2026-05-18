@@ -399,6 +399,29 @@ class MasterFrameCache:
             self._bytes_used = 0
             self._epoch += 1
 
+    def invalidate_layer_paths(self, layer_id: str) -> None:
+        """Drop the cached path / mtime index for one layer.
+
+        Called from the app's "Replace source on layer" handler:
+        ``layer.id`` is preserved across the swap but the underlying
+        ``sequence.frames`` points at a different set of files.
+        :meth:`_ensure_indexed` skips re-indexing when ``layer.id``
+        is already a key in ``_path_index`` — so without this drop,
+        every subsequent decode reads from the OLD source's paths
+        even though ``layer.sequence`` is the new one.
+
+        Idempotent: a layer never indexed (= cache never accessed
+        it) is a no-op.
+        """
+        with self._lock:
+            self._path_index.pop(layer_id, None)
+            self._mtime_index.pop(layer_id, None)
+            # Drop the per-layer state snapshots too so the next
+            # ``_on_layer_modified`` diff doesn't treat the swap as
+            # a "small mutation" against the OLD baseline.
+            self._last_known_range.pop(layer_id, None)
+            self._last_known_state.pop(layer_id, None)
+
     # ------------------------------------------------------------------ Compat shims
 
     def attach(self, sequence) -> None:  # type: ignore[no-untyped-def]
