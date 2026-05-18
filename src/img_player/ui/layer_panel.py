@@ -41,6 +41,15 @@ from img_player.ui.theme import F, H, S
 # multiple layers stack up. Tuned to match the existing transport-bar
 # button heights for visual continuity.
 _ROW_HEIGHT = 22
+
+# Minimum number of frames the master-range axis covers, even when
+# the loaded content is shorter (single still, empty session). Keeps
+# the timeline skeleton visible AND keeps the layer bars on the same
+# axis as the timeline — without a shared widened range, the two
+# scrubbers would land at different x positions for the same frame.
+# Tied to ``Timeline._DEFAULT_LENGTH`` — bump both together if you
+# want a longer empty skeleton.
+_MIN_VISIBLE_LENGTH = 100
 _NUMBER_W = 26       # leftmost "#" column
 _EYE_W = 26          # visibility toggle
 _T_W = 22            # transparency (alpha_composite) toggle
@@ -1826,12 +1835,29 @@ class LayerPanel(QFrame):  # type: ignore[misc]
         Exposed so the main timeline can mirror the same scale — without
         this, the timeline is keyed on the loaded sequence's frame range
         while the layer bars are keyed on the union of source-potentials,
-        and the two scrubbers move at different speeds. Returns ``(0, 0)``
-        when the stack is empty.
+        and the two scrubbers move at different speeds. Returns
+        ``(0, _MIN_VISIBLE_LENGTH - 1)`` when the stack is empty.
+
+        Empty / very-short ranges are widened to a
+        ``_MIN_VISIBLE_LENGTH``-frame minimum so the timeline
+        skeleton stays visible (= the user always has a place to
+        scrub) AND so the layer bar rows share the same x-axis as
+        the timeline. Without the shared widening, the two
+        playhead cursors land at different pixel x for the same
+        master frame whenever the source is shorter than the
+        skeleton.
         """
         if not self._stack.layers():
-            return (0, 0)
-        return self._broad_master_range()
+            return (0, _MIN_VISIBLE_LENGTH - 1)
+        first, last = self._broad_master_range()
+        # Pre-widen at the source of truth so every consumer
+        # (timeline, layer bars, navigable-range clamps) sees the
+        # same range. The widening only kicks in when the real
+        # range is shorter than the minimum — long sequences pass
+        # through unchanged.
+        if last - first + 1 < _MIN_VISIBLE_LENGTH:
+            last = first + _MIN_VISIBLE_LENGTH - 1
+        return first, last
 
     def _broad_master_range(self) -> tuple[int, int]:
         """Master range that covers each layer's full source extent.

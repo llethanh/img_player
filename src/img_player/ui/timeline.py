@@ -156,20 +156,22 @@ class Timeline(QWidget):  # type: ignore[misc]
 
     def set_range(self, first: int, last: int) -> None:
         """Set the visible frame range. Degenerate ranges (empty
-        session, single still, swapped bounds) widen to a 100-frame
-        minimum so the user always sees a timeline track instead
-        of a blank rectangle.
+        session, single still) are pre-widened upstream so the
+        timeline always receives at least ``_DEFAULT_LENGTH``
+        frames. The local ``max(first, last)`` here is just a
+        defensive guard against swapped arguments — without it,
+        ``_last < _first`` would slip through into the paintEvent
+        early-return and the skeleton would disappear.
 
-        The widening only affects the visual ticks / track — the
-        controller's navigable range stays at the real bounds, so
-        scrubbing past the actual last frame is still clamped by
-        the upstream guards (see :meth:`PlayerController.set_navigable_range`).
+        Widening lives in :meth:`LayerPanel.broad_master_range` so
+        the same range is pushed to both the timeline and the
+        layer-bar rows below — without that shared axis, the two
+        playhead cursors would land at different x-positions
+        whenever the underlying sequence is shorter than the
+        widened skeleton.
         """
         self._first = first
-        # ``last`` clamped to >= first protects against swapped
-        # arguments; the extra max with ``first + _DEFAULT_LENGTH - 1``
-        # is the empty / single-still skeleton.
-        self._last = max(first, last, first + self._DEFAULT_LENGTH - 1)
+        self._last = max(first, last)
         self.update()
 
     def set_current_frame(self, frame: int) -> None:
