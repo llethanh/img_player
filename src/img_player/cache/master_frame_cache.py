@@ -1678,6 +1678,32 @@ class MasterFrameCache:
                 self._mtime_index.pop(stale_id, None)
                 self._last_known_range.pop(stale_id, None)
                 self._last_known_source.pop(stale_id, None)
+        # Source-swap detection on LIVE layers — covers the undo /
+        # redo path (LayerStack._restore fires layers_changed, NOT
+        # layer_modified). A layer kept its id but its underlying
+        # sequence may have flipped between sessions of the undo
+        # stack. Drop the lazily-built path_index for any such
+        # layer + clear all cached frames so the next decode reads
+        # the new files. The catch-all clear is overkill (we don't
+        # know WHICH frames touched this layer) but undo of a
+        # source swap is rare enough that the simplicity is worth
+        # the collateral re-decode.
+        any_source_changed = False
+        for layer in self._stack.layers():
+            prev_token = self._last_known_source.get(layer.id)
+            new_token = _layer_source_token(layer)
+            if prev_token is not None and prev_token != new_token:
+                self._path_index.pop(layer.id, None)
+                self._mtime_index.pop(layer.id, None)
+                any_source_changed = True
+        if any_source_changed:
+            with self._lock:
+                self._frames.clear()
+                self._missing.clear()
+                self._signature_last_seen.clear()
+                self._signature_first_cached.clear()
+                self._bytes_used = 0
+                self._epoch += 1
         # Snapshot the current master ranges + per-layer state so
         # the next ``layer_modified`` can diff against this baseline.
         for layer in self._stack.layers():
