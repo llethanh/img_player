@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "img_player"
-version = "1.5.14"
+version = "1.6.0"
 description = "VFX-grade image sequence player with OCIO color management"
 readme = "README.md"
 requires-python = ">=3.11"

@@ -220,8 +220,8 @@ def _draw_overlay(
     )
 
     # Info strips — rendered below the central box, one per field.
-    # Mirrors the layout of :class:`InfoBand` (one segment per row of
-    # data) so a user staring at the placeholder sees the same
+    # One segment per row of data so a user staring at the placeholder
+    # sees the same
     # "Layer 220 / 1140  ·  Frame 1101 / 1140" breakdown they'd see
     # in the HUD.
     #
@@ -323,9 +323,9 @@ def generate_missing_frame(
 ) -> QPixmap:
     """Generate a 'Missing Frame' QPixmap at the requested size.
 
-    Strips below the central box mirror the :class:`InfoBand`'s
+    Strips below the central box mirror the header info strip's
     "Layer  source/source_max" + "Frame  master/master_max"
-    breakdown — same convention as the bottom HUD so the user reads
+    breakdown — same convention as the HUD so the user reads
     the same info on the placeholder as they would in the live
     sequence.
 

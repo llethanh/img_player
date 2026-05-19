@@ -564,7 +564,6 @@ class ImgPlayerApp:
         # checked QAction aren't covered by Qt's dock-state blob.
         self._prefs.side_tab_index = self._window.side_tab_index()
         self._prefs.display_timecode = self._window.display_timecode()
-        self._prefs.info_band_segments = self._window.info_band_segments()
         # Side panel (Color / Comments) visibility — saveState no
         # longer covers it since the panel was lifted out of the
         # dock system.
@@ -1272,7 +1271,7 @@ class ImgPlayerApp:
         last, the GL paint would hog the slot and the QLabels would
         visibly trail by a frame.
         """
-        self._refresh_info_band_frames(frame)
+        self._refresh_header_strip_frames(frame)
         # Re-evaluate the active audio layer — the playhead may have
         # crossed a coverage boundary (entered / exited a clip) which
         # changes whether any layer should be feeding samples. Cheap
@@ -1907,9 +1906,10 @@ class ImgPlayerApp:
         self._display_array(composite)
         return True
 
-    def _refresh_info_band_frames(self, master_frame: int) -> None:
+    def _refresh_header_strip_frames(self, master_frame: int) -> None:
         """Push local-layer / global-timeline frame readouts to the
-        bottom info band. Called from :meth:`_on_frame_changed`.
+        header info strip (brief §2). Called from
+        :meth:`_on_frame_changed`.
 
         Conventions:
         * **Layer** uses the source-frame numbering the user sees on
@@ -1921,21 +1921,14 @@ class ImgPlayerApp:
           show. Upper bound is ``last`` (the broad master range's
           last frame, also the rightmost timeline tick).
         """
-        band = self._window.viewer.info_band
+        header = getattr(self._window, "_header_strip", None)
+        if header is None:
+            return
         # Local: source frame on the topmost visible layer.
         layer = (
             self._layer_stack.topmost_visible_at(master_frame)
             if self._layer_stack else None
         )
-        if layer is not None and layer.covers(master_frame):
-            band.set_local_frame(
-                layer.source_frame_at(master_frame),
-                layer.layer_out,
-            )
-            band.set_layer_name(layer.name)
-        else:
-            band.set_local_frame(None, None)
-            band.set_layer_name(None)
         # Global: absolute master frame.
         panel = getattr(self._window, "_layer_panel", None)
         if panel is not None:
@@ -1946,10 +1939,16 @@ class ImgPlayerApp:
             last = self._controller.sequence.last_frame
         else:
             last = 0
+        # The strip exposes two cells — "Layer N/total" (local source
+        # frame within the focused layer) and "Frame N/total" (master
+        # frame within the broad range).
+        if layer is not None and layer.covers(master_frame):
+            header.set_layer_position(
+                layer.source_frame_at(master_frame),
+                max(1, layer.layer_out),
+            )
         if last > 0:
-            band.set_global_frame(master_frame, last)
-        else:
-            band.set_global_frame(None, None)
+            header.set_frame_position(master_frame, last)
 
     def _refresh_status_selected_layers(self) -> None:
         """Push the panel's current selection to the bottom status bar.
@@ -2214,6 +2213,11 @@ class ImgPlayerApp:
         w.transport.set_reload_enabled(False)
         # Re-detect colorspace button — same gating as the rest.
         w.color_panel.set_redetect_enabled(False)
+        # Header info strip — hide on auto-detach so the empty-stack
+        # state matches what Ctrl+N produces.
+        header = getattr(w, "_header_strip", None)
+        if header is not None:
+            header.set_visible_for_sequence(False)
         # Clear the viewport — match the visual reset Ctrl+N does
         # so the user sees "no sequence" identically across both
         # entry points.
@@ -2636,8 +2640,10 @@ class ImgPlayerApp:
         # Timeline needs in/out markers and the fps for its timecode labels.
         self._window.timeline.set_in_out(state.in_frame, state.out_frame)
         self._window.timeline.set_fps(state.fps)
-        # Bottom info band fps readout follows the controller fps.
-        self._window.viewer.info_band.set_fps(state.fps)
+        # Header info strip (§2) fps readout follows the controller fps.
+        header = getattr(self._window, "_header_strip", None)
+        if header is not None:
+            header.set_fps(state.fps)
         # The layer-panel bars need the master in/out so their drag
         # snap targets reflect the playback range.
         panel = getattr(self._window, "_layer_panel", None)
@@ -3279,10 +3285,10 @@ class ImgPlayerApp:
         # And the comment panel — same reason; the thread should
         # follow the cursor in real time.
         self._window.comment_panel.set_current_frame(frame)
-        # The bottom info band's Layer / Frame readouts also follow
+        # The header strip's Layer / Frame readouts also follow
         # the scrub — without this they only refresh after the
         # debounced seek lands and ``frame_changed`` finally fires.
-        self._refresh_info_band_frames(frame)
+        self._refresh_header_strip_frames(frame)
         # Defer the expensive part.
         self._pending_seek = frame
         self._scrub_debounce.start()
@@ -3635,6 +3641,11 @@ class ImgPlayerApp:
         # Re-detect colorspace button — same gating as Export /
         # Save Frame: greyed out when no footage is loaded.
         self._window.color_panel.set_redetect_enabled(False)
+        # Header info strip (§2) — hide on detach, comes back via
+        # update_sequence_info on the next load.
+        header = getattr(self._window, "_header_strip", None)
+        if header is not None:
+            header.set_visible_for_sequence(False)
         # Reset the current-session pointer + title bar.
         # ``set_current_session_path(None)`` rewrites the title to
         # the bare "Flick Player" baseline.
@@ -4627,10 +4638,6 @@ def _apply_preferences_to_window(app: ImgPlayerApp) -> None:
     # routes through the same slot the user click triggers, so the
     # timeline + transport's frame display update accordingly.
     app._window.set_display_timecode(prefs.display_timecode)
-
-    # Info-band visible-segments — restored from prefs so the user's
-    # right-click toggles persist across runs.
-    app._window.set_info_band_segments(prefs.info_band_segments)
 
     # Side panel (Color / Comments) visibility — explicit pref now
     # that the panel was lifted out of the dock system.

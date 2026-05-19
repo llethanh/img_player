@@ -217,15 +217,24 @@ _TEMPLATES: dict[str, str] = {
     # * fill="none" everywhere except where a small filled accent
     #   reinforces the silhouette (the pin's body).
     "pen": (
+        # Replaced (2026-Q2) with the brief §11.4 silhouette — the
+        # previous legacy version was a thin diagonal stroke +
+        # off-axis parallelogram nib that rendered at small sizes as
+        # an abstract glyph (users reported it reading as a key or a
+        # wrench, not a pencil). The new SVG is a single closed
+        # quadrilateral body (the wood + paint of the pencil) with
+        # the lead tip at the bottom-left and the eraser end at the
+        # top-right, plus a short cross-line near the tip that
+        # suggests the wood / lead boundary. Reads instantly as
+        # "pencil" at 16 px.
         '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="none" '
-        'stroke="{color}" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">'
-        # body diagonal
-        '<path d="M3.5 12.5 L11.5 4.5"/>'
-        # tip cap (a small triangle at the top-right end of the body)
-        '<path d="M10.5 3.5 L13.5 6.5 L11.5 8.5 L8.5 5.5 Z"/>'
-        # short ground line under the tip — suggests the pen has just
-        # left a stroke
-        '<path d="M2 14 L4 14"/>'
+        'stroke="{color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
+        # Pencil body: closed 5-vertex polygon traced from the lead
+        # tip (2.5, 13.5) up the left edge, across the top-right
+        # eraser, and back down the right edge to close.
+        '<path d="M2.5 13.5 L2.5 10.5 L9.5 3.5 L12.5 6.5 L5.5 13.5 Z"/>'
+        # Wood / lead boundary line — short stroke near the tip.
+        '<path d="M8.5 4.5 L11.5 7.5"/>'
         "</svg>"
     ),
     "eraser": (
@@ -337,6 +346,377 @@ _TEMPLATES: dict[str, str] = {
         '<path d="M10 14 L10 10 L14 10"/>'
         "</svg>"
     ),
+
+    # ===== Brief 2026-Q2 icon set (§11) ==================================
+    # Added below as a self-contained block to avoid touching the existing
+    # icons that widget code already imports by name. Where the brief
+    # introduces a new geometry for an existing concept, we add it under
+    # a fresh name (e.g. ``skip-start``) so callers can migrate at their
+    # own pace. The legacy keys (``first``, ``prev``, ``pen``, …) keep
+    # working unchanged.
+    #
+    # All icons in this block follow the brief's conventions:
+    # * viewBox 16 × 16
+    # * stroke="{color}", stroke-width="1.5", linecap+linejoin="round"
+    # * fill="none" everywhere except where the silhouette needs a fill
+    #   (play triangle, stop square) — those use fill="{color}" too so
+    #   the colour-substitution applies to the whole mark.
+    # * "currentColor"-style: a single {color} slot per template, the
+    #   renderer (cf. _render_pixmap) substitutes it.
+
+    # ---- §11.1 Transport ------------------------------------------------
+
+    # Play / reverse-play triangles rendered as STROKE-only outlines.
+    # Used by the transport's primary play key in the redesigned
+    # transport bar where the button face is a thin amber-bordered
+    # box (BG_SURFACE inside) — a filled triangle on that face
+    # reads as "active" already; the outline variant lets the
+    # button:checked QSS rule add the active fill on top instead.
+    "play-outline": (
+        '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="none" '
+        'stroke="{color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
+        '<path d="M5 3.5 L13 8 L5 12.5 Z"/>'
+        "</svg>"
+    ),
+    "play-reverse-outline": (
+        '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="none" '
+        'stroke="{color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
+        '<path d="M11 3.5 L3 8 L11 12.5 Z"/>'
+        "</svg>"
+    ),
+
+    "skip-start": (
+        '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="none" '
+        'stroke="{color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
+        '<path d="M4.5 3.5 L4.5 12.5"/>'
+        '<path d="M13 3.5 L6 8 L13 12.5 L13 3.5 Z" fill="{color}"/>'
+        "</svg>"
+    ),
+    "step-back": (
+        '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="none" '
+        'stroke="{color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
+        '<path d="M11 3.5 L5 8 L11 12.5"/>'
+        "</svg>"
+    ),
+    "step-fwd": (
+        '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="none" '
+        'stroke="{color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
+        '<path d="M5 3.5 L11 8 L5 12.5"/>'
+        "</svg>"
+    ),
+    "skip-end": (
+        '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="none" '
+        'stroke="{color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
+        '<path d="M11.5 3.5 L11.5 12.5"/>'
+        '<path d="M3 3.5 L10 8 L3 12.5 L3 3.5 Z" fill="{color}"/>'
+        "</svg>"
+    ),
+    # Loop — two arcs forming a closed cycle with arrow tips on each end.
+    "loop": (
+        '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="none" '
+        'stroke="{color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
+        '<path d="M3 7 a4.5 4.5 0 0 1 8 -2 L12.5 6"/>'
+        '<path d="M12.5 3 L12.5 6 L9.5 6"/>'
+        '<path d="M13 9 a4.5 4.5 0 0 1 -8 2 L3.5 10"/>'
+        '<path d="M3.5 13 L3.5 10 L6.5 10"/>'
+        "</svg>"
+    ),
+    # Mark IN — vertical bar + arrow pointing right (toward the range).
+    "mark-in": (
+        '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="none" '
+        'stroke="{color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
+        '<path d="M3.5 3 L3.5 13"/>'
+        '<path d="M3.5 8 L12 8"/>'
+        '<path d="M9.5 5.5 L12 8 L9.5 10.5"/>'
+        "</svg>"
+    ),
+    "mark-out": (
+        '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="none" '
+        'stroke="{color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
+        '<path d="M12.5 3 L12.5 13"/>'
+        '<path d="M12.5 8 L4 8"/>'
+        '<path d="M6.5 5.5 L4 8 L6.5 10.5"/>'
+        "</svg>"
+    ),
+    # Clear IN/OUT — both vertical bars with a heavy strikethrough.
+    "clear-in-out": (
+        '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="none" '
+        'stroke="{color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
+        '<path d="M4 4 L4 12"/>'
+        '<path d="M12 4 L12 12"/>'
+        '<path d="M4 8 L12 8" opacity="0.55"/>'
+        '<path d="M2 2 L14 14" stroke-width="2"/>'
+        "</svg>"
+    ),
+    # Cache prev — double chevron left.
+    "cache-prev": (
+        '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="none" '
+        'stroke="{color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
+        '<path d="M7 4 L3 8 L7 12"/>'
+        '<path d="M13 4 L9 8 L13 12"/>'
+        "</svg>"
+    ),
+    "cache-next": (
+        '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="none" '
+        'stroke="{color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
+        '<path d="M3 4 L7 8 L3 12"/>'
+        '<path d="M9 4 L13 8 L9 12"/>'
+        "</svg>"
+    ),
+    # Annotation hide — eye with a heavy slash through it.
+    "ann-hide": (
+        '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="none" '
+        'stroke="{color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
+        '<path d="M1.5 8 C3.5 4.5 5.5 3.5 8 3.5 C10.5 3.5 12.5 4.5 14.5 8'
+        ' C12.5 11.5 10.5 12.5 8 12.5 C5.5 12.5 3.5 11.5 1.5 8 Z"/>'
+        '<circle cx="8" cy="8" r="2"/>'
+        '<path d="M2.5 2.5 L13.5 13.5" stroke-width="2"/>'
+        "</svg>"
+    ),
+    # Audio — speaker silhouette + sound waves.
+    "audio": (
+        '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="none" '
+        'stroke="{color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
+        '<path d="M2.5 6.5 L2.5 9.5 L5 9.5 L8.5 12.5 L8.5 3.5 L5 6.5 Z" fill="{color}"/>'
+        '<path d="M10.5 6 a2.5 2.5 0 0 1 0 4"/>'
+        '<path d="M12 4 a5 5 0 0 1 0 8"/>'
+        "</svg>"
+    ),
+    # Audio mute — speaker silhouette + X mark (no waves).
+    "audio-mute": (
+        '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="none" '
+        'stroke="{color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
+        '<path d="M2.5 6.5 L2.5 9.5 L5 9.5 L8.5 12.5 L8.5 3.5 L5 6.5 Z" fill="{color}"/>'
+        '<path d="M11 6 L14 10"/>'
+        '<path d="M14 6 L11 10"/>'
+        "</svg>"
+    ),
+    # Fullscreen (brief style, slightly different from fullscreen_enter
+    # above — kept under a fresh name so callers can opt in).
+    "fullscreen": (
+        '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="none" '
+        'stroke="{color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
+        '<path d="M2.5 6 L2.5 2.5 L6 2.5"/>'
+        '<path d="M13.5 6 L13.5 2.5 L10 2.5"/>'
+        '<path d="M2.5 10 L2.5 13.5 L6 13.5"/>'
+        '<path d="M13.5 10 L13.5 13.5 L10 13.5"/>'
+        "</svg>"
+    ),
+
+    # ---- §11.2 Compare modes -------------------------------------------
+
+    "compare-vwipe": (
+        '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="none" '
+        'stroke="{color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
+        '<rect x="2.5" y="3.5" width="11" height="9" rx="1"/>'
+        '<path d="M8 3.5 L8 12.5"/>'
+        '<path d="M2.5 3.5 L8 3.5 L8 12.5 L2.5 12.5 Z" fill="{color}" '
+        'stroke="none" opacity="0.40"/>'
+        "</svg>"
+    ),
+    "compare-hwipe": (
+        '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="none" '
+        'stroke="{color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
+        '<rect x="2.5" y="3.5" width="11" height="9" rx="1"/>'
+        '<path d="M2.5 8 L13.5 8"/>'
+        '<path d="M2.5 3.5 L13.5 3.5 L13.5 8 L2.5 8 Z" fill="{color}" '
+        'stroke="none" opacity="0.40"/>'
+        "</svg>"
+    ),
+    "compare-opacity": (
+        '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="none" '
+        'stroke="{color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
+        '<rect x="2" y="2" width="8" height="8" rx="1"/>'
+        '<rect x="6" y="6" width="8" height="8" rx="1" fill="{color}" '
+        'stroke="{color}" opacity="0.55"/>'
+        "</svg>"
+    ),
+    # Solo B — outlined rect with the letter B punched in the middle.
+    "compare-solo-b": (
+        '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">'
+        '<rect x="2" y="3.5" width="12" height="9" rx="1" fill="none" '
+        'stroke="{color}" stroke-width="1.5"/>'
+        '<text x="8" y="10.5" text-anchor="middle" '
+        'font-family="JetBrains Mono, Consolas, monospace" font-size="7.5" '
+        'font-weight="700" fill="{color}">B</text>'
+        "</svg>"
+    ),
+    # Swap arrows — two anti-parallel arrows (used to permute A ↔ B in
+    # the compare-band field selectors).
+    "swap-arrows": (
+        '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="none" '
+        'stroke="{color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
+        '<path d="M2.5 6 L12 6"/>'
+        '<path d="M10 4 L12 6 L10 8"/>'
+        '<path d="M13.5 10 L4 10"/>'
+        '<path d="M6 8 L4 10 L6 12"/>'
+        "</svg>"
+    ),
+    # Swap A↔B — A label upper-left, B label lower-right, with
+    # circular arrows hinting at the rotation.
+    "swap-ab": (
+        '<svg viewBox="0 0 16 16">'
+        '<text x="2.5" y="7" font-family="JetBrains Mono, Consolas, monospace" '
+        'font-size="5.5" font-weight="700" fill="{color}">A</text>'
+        '<text x="9.5" y="13" font-family="JetBrains Mono, Consolas, monospace" '
+        'font-size="5.5" font-weight="700" fill="{color}">B</text>'
+        '<path d="M6 5 L9 5 M9 5 L7.5 3.5 M9 5 L7.5 6.5'
+        ' M10 11 L7 11 M7 11 L8.5 9.5 M7 11 L8.5 12.5" '
+        'fill="none" stroke="{color}" stroke-width="1.2" '
+        'stroke-linecap="round" stroke-linejoin="round"/>'
+        "</svg>"
+    ),
+
+    # ---- §11.3 App-level -----------------------------------------------
+
+    # A/B toggle — outlined rect with the left half shaded, suggesting
+    # a "compare A/B" mode that's available but not necessarily on.
+    # Drawn near-full-bleed in the 16×16 box so it stays crisp at the
+    # toolbar's 18 px icon size.
+    "ab-toggle": (
+        '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="none" '
+        'stroke="{color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
+        '<rect x="2" y="2" width="12" height="12" rx="1.6"/>'
+        '<path d="M2 2 L8 2 L8 14 L2 14 Z" fill="{color}" '
+        'stroke="none" opacity="0.40"/>'
+        '<path d="M8 2 L8 14"/>'
+        "</svg>"
+    ),
+    # Contact-sheet — 2 × 2 grid of rounded squares, near-full-bleed in
+    # the 16×16 box so the grid reads crisply at 18 px.
+    "contact-sheet": (
+        '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="none" '
+        'stroke="{color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
+        '<rect x="2" y="2" width="5.4" height="5.4" rx="1"/>'
+        '<rect x="8.6" y="2" width="5.4" height="5.4" rx="1"/>'
+        '<rect x="2" y="8.6" width="5.4" height="5.4" rx="1"/>'
+        '<rect x="8.6" y="8.6" width="5.4" height="5.4" rx="1"/>'
+        "</svg>"
+    ),
+    # Refresh — two arcs forming a full circle with chevron arrowheads.
+    # (Brief style — see also "reload" above for a single-arc variant.)
+    "refresh": (
+        '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="none" '
+        'stroke="{color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
+        '<path d="M2.5 8 a5.5 5.5 0 0 1 9.5 -3.5"/>'
+        '<path d="M12 2 L12 5.5 L8.5 5.5"/>'
+        '<path d="M13.5 8 a5.5 5.5 0 0 1 -9.5 3.5"/>'
+        '<path d="M4 14 L4 10.5 L7.5 10.5"/>'
+        "</svg>"
+    ),
+    # Save — floppy disk silhouette with a fold suggesting the cap.
+    "save": (
+        '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="none" '
+        'stroke="{color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
+        '<path d="M3 2 L11 2 L14 5 L14 14 L2 14 L2 3 Z"/>'
+        '<path d="M4.5 2 L4.5 6 L10 6 L10 2"/>'
+        '<rect x="4" y="9" width="8" height="5" rx="0.5" fill="{color}" '
+        'stroke="none" opacity="0.35"/>'
+        "</svg>"
+    ),
+    # Chevron down — combo box dropdown indicator.
+    "chevron-down": (
+        '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="none" '
+        'stroke="{color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
+        '<path d="M4 6 L8 10 L12 6"/>'
+        "</svg>"
+    ),
+    # Info "i" — circle outline with a dot above an i-line.
+    "info-i": (
+        '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="none" '
+        'stroke="{color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
+        '<circle cx="8" cy="8" r="6"/>'
+        '<path d="M8 5 L8 5.01" stroke-width="2"/>'
+        '<path d="M8 7.5 L8 11"/>'
+        "</svg>"
+    ),
+    # BG checker — checkerboard pattern silhouette (used by the
+    # transparency-bg picker in the top toolbar).
+    "bg-checker": (
+        '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">'
+        '<rect x="2" y="2" width="12" height="12" rx="1.5" fill="none" '
+        'stroke="{color}" stroke-width="1.5"/>'
+        '<g opacity="0.7" fill="{color}">'
+        '<rect x="3" y="3" width="2.5" height="2.5"/>'
+        '<rect x="8.5" y="3" width="2.5" height="2.5"/>'
+        '<rect x="5.5" y="5.5" width="2.5" height="2.5"/>'
+        '<rect x="11" y="5.5" width="2" height="2.5"/>'
+        '<rect x="3" y="8.5" width="2.5" height="2.5"/>'
+        '<rect x="8.5" y="8.5" width="2.5" height="2.5"/>'
+        '<rect x="5.5" y="11" width="2.5" height="2"/>'
+        '<rect x="11" y="11" width="2" height="2"/>'
+        '</g>'
+        "</svg>"
+    ),
+
+    # ---- §11.4 Annotation palette --------------------------------------
+
+    # Eraser (brief variant) — backspace-style silhouette with an X
+    # punched in. Kept under a new key so callers can opt in; the
+    # legacy "eraser" key stays for compat.
+    "eraser-backspace": (
+        '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="none" '
+        'stroke="{color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
+        '<path d="M2.5 8 L5.5 4.5 L13.5 4.5 L13.5 11.5 L5.5 11.5 Z"/>'
+        '<path d="M8 6.5 L11 9.5"/>'
+        '<path d="M11 6.5 L8 9.5"/>'
+        "</svg>"
+    ),
+    # Ghost mode — clock face with the trailing marks fading out, hints
+    # at the "ephemeral strokes that decay over time" semantic of the
+    # ghost mode in the annotation palette.
+    "ghost-clock": (
+        '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="none" '
+        'stroke="{color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
+        '<circle cx="8" cy="8" r="5.5"/>'
+        '<path d="M8 4.5 L8 8 L10.5 9.5"/>'
+        '<path d="M8 2 L8 2.7"/>'
+        '<path d="M13.5 8 L12.8 8" opacity="0.65"/>'
+        '<path d="M8 14 L8 13.3" opacity="0.35"/>'
+        "</svg>"
+    ),
+    # Pin (brief variant) — thumbtack viewed from above, distinct from
+    # the legacy "pin" which is viewed from the side.
+    "pin-dock": (
+        '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="none" '
+        'stroke="{color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
+        '<circle cx="8" cy="6.5" r="3"/>'
+        '<path d="M8 9.5 L8 14"/>'
+        '<path d="M5.5 4.5 L7.5 4.5" stroke-width="2"/>'
+        "</svg>"
+    ),
+    # Close — clean X mark.
+    "close": (
+        '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="none" '
+        'stroke="{color}" stroke-width="1.5" stroke-linecap="round">'
+        '<path d="M4 4 L12 12"/>'
+        '<path d="M12 4 L4 12"/>'
+        "</svg>"
+    ),
+
+    # ---- §11.5 Layer panel ---------------------------------------------
+
+    # Eye (visibility ON) — almond shape with pupil. Same silhouette as
+    # the inverted "ann-hide" above minus the slash.
+    "eye": (
+        '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="none" '
+        'stroke="{color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
+        '<path d="M1.5 8 C3.5 4.5 5.5 3.5 8 3.5 C10.5 3.5 12.5 4.5 14.5 8'
+        ' C12.5 11.5 10.5 12.5 8 12.5 C5.5 12.5 3.5 11.5 1.5 8 Z"/>'
+        '<circle cx="8" cy="8" r="2"/>'
+        "</svg>"
+    ),
+    # Eye off — alias of ann-hide so layer-panel code can stay
+    # semantically tied to the layer concept.
+    "eye-off": (
+        '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="none" '
+        'stroke="{color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
+        '<path d="M1.5 8 C3.5 4.5 5.5 3.5 8 3.5 C10.5 3.5 12.5 4.5 14.5 8'
+        ' C12.5 11.5 10.5 12.5 8 12.5 C5.5 12.5 3.5 11.5 1.5 8 Z"/>'
+        '<circle cx="8" cy="8" r="2"/>'
+        '<path d="M2.5 2.5 L13.5 13.5" stroke-width="2"/>'
+        "</svg>"
+    ),
 }
 
 
@@ -423,6 +803,38 @@ def make_icon(
         icon.addPixmap(
             disabled_pix, QIcon.Mode.Disabled, QIcon.State.On,
         )
+    return icon
+
+
+@lru_cache(maxsize=64)
+def make_toggle_icon(
+    name: str,
+    size: int = 18,
+    off_color: str = H.TEXT_PRIMARY,
+    on_color: str = H.ACC_BRIGHT,
+) -> QIcon:
+    """Return a checkable-button ``QIcon`` — white at rest, orange when on.
+
+    The icon carries two ``Normal``-mode pixmaps: ``State.Off`` painted
+    in ``off_color`` (white) and ``State.On`` painted in ``on_color``
+    (the amber accent). Qt picks the pixmap from the button's checked
+    state automatically, so assigning this icon **once** to a checkable
+    button gives the "white until activated, orange once activated,
+    white again when deactivated" behaviour with no signal wiring.
+
+    Disabled appearance is left to Qt's automatic graying of whichever
+    state pixmap is current. Memoized on the argument tuple — see
+    :func:`make_icon` for the caching rationale.
+    """
+    icon = QIcon()
+    icon.addPixmap(
+        _render_pixmap(name, off_color, size),
+        QIcon.Mode.Normal, QIcon.State.Off,
+    )
+    icon.addPixmap(
+        _render_pixmap(name, on_color, size),
+        QIcon.Mode.Normal, QIcon.State.On,
+    )
     return icon
 
 

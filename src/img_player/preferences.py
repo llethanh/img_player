@@ -566,27 +566,6 @@ class Preferences:
         self._s.setValue("view/display_timecode", bool(value))
 
     @property
-    def info_band_segments(self) -> tuple[str, ...]:
-        """Visible segments of the bottom info band (orange HUD).
-
-        Comma-separated keys from :data:`info_band.SEGMENT_KEYS`. The
-        default ``"name,size,fps,local,global"`` mirrors the band's
-        post-construction state — first launch sees every readout.
-        """
-        raw = self._s.value(
-            "view/info_band_segments",
-            "name,size,fps,local,global",
-        )
-        if not isinstance(raw, str):
-            return ("name", "size", "fps", "local", "global")
-        return tuple(k.strip() for k in raw.split(",") if k.strip())
-
-    @info_band_segments.setter
-    def info_band_segments(self, value) -> None:  # type: ignore[no-untyped-def]
-        joined = ",".join(value) if not isinstance(value, str) else value
-        self._s.setValue("view/info_band_segments", joined)
-
-    @property
     def side_panel_visible(self) -> bool:
         """Whether the right-hand Color/Comments panel is visible.
 

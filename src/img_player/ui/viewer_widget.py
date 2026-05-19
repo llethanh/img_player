@@ -20,7 +20,6 @@ from img_player.ui.drop_zone import (
     DropOverlay,
     install_file_drop_zone,
 )
-from img_player.ui.info_band import InfoBand
 
 
 class ViewerWidget(QWidget):  # type: ignore[misc]
@@ -51,7 +50,7 @@ class ViewerWidget(QWidget):  # type: ignore[misc]
         # OUT of the QStackedLayout — on Windows the QOpenGLWidget
         # composes via native surface and a stacked sibling can race
         # the GL paint, producing dropped first-paints of the overlay.
-        # The same pattern as :class:`InfoBand` (child of ``self``,
+        # The same pattern as the header strip (child of ``self``,
         # ``raise_()``d after resize) sidesteps it.
         self._compare_labels = CompareLabelsOverlay(self)
         # Hand the overlay a handle on the GL viewport so it can read
@@ -71,16 +70,18 @@ class ViewerWidget(QWidget):  # type: ignore[misc]
             lambda paths: self.replace_requested.emit(paths),
         )
 
-        # Bottom HUD — image dims / fps / local layer frame / global
-        # timeline frame. Child of ``self`` (not in the stacked
-        # layout) so we can position it absolutely flush with the
-        # bottom edge of the viewer (= just above the timeline panel
-        # in the main layout). The image-dimensions readout that
-        # used to live as a separate top-right corner label was
-        # retired — duplicated info in two places, the band reads
-        # better.
-        self._info_band = InfoBand(self)
-        self._info_band.raise_()
+        # Header info strip — brief §2. The orange cartouche with
+        # sequence name / resolution / fps / Layer / Frame. Floating
+        # overlay flush with the bottom edge of the viewer (the user
+        # asked for it to overlay inside the display area, not take
+        # layout space below it). Built as a child of self so the
+        # parent-relative absolute positioning naturally tracks
+        # viewer resizes. Hidden by default; surfaces when
+        # ``set_visible_for_sequence(True)`` fires from
+        # ``MainWindow.update_sequence_info``.
+        from img_player.ui.header_strip import HeaderInfoStrip  # noqa: PLC0415
+        self._header_strip = HeaderInfoStrip(self)
+        self._header_strip.raise_()
 
     @property
     def gl(self) -> GLViewport:
@@ -95,15 +96,19 @@ class ViewerWidget(QWidget):  # type: ignore[misc]
         return self._compare_labels
 
     @property
-    def info_band(self) -> InfoBand:
-        return self._info_band
+    def header_strip(self):  # type: ignore[no-untyped-def]
+        """Floating header cartouche (sequence name / resolution / fps
+        / Layer / Frame), pinned to the bottom edge of the viewer.
+        See :mod:`img_player.ui.header_strip`."""
+        return self._header_strip
 
-    def _reposition_info_band(self) -> None:
-        """Pin the info band to the bottom edge of the viewer, full
-        width. Visible / hidden state isn't touched here — the
-        caller controls it."""
-        h = self._info_band.height()
-        self._info_band.setGeometry(0, self.height() - h, self.width(), h)
+    def _reposition_header_strip(self) -> None:
+        """Pin the header info strip to the bottom edge of the viewer.
+        The strip overlays the bottom of the image (the user prefers
+        this to taking layout space below the viewer). Visible state
+        is controlled by the caller via ``set_visible_for_sequence``."""
+        h = self._header_strip.height()
+        self._header_strip.setGeometry(0, self.height() - h, self.width(), h)
 
     def resizeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         super().resizeEvent(event)
@@ -112,7 +117,7 @@ class ViewerWidget(QWidget):  # type: ignore[misc]
         # but trivial to support).
         if self._drop_overlay.isVisible():
             self._drop_overlay.setGeometry(self.rect())
-        self._reposition_info_band()
+        self._reposition_header_strip()
         # Compare-mode A/B overlay tracks the viewer rect (it's a
         # plain child, not in the QStackedLayout). Without this it'd
         # stay at its initial 0×0 size and paint nothing.

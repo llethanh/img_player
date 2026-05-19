@@ -10,6 +10,14 @@ Pure UI — emits signals, doesn't own the state. The owning app is
 the single source of truth and re-feeds the band on every state
 change so a programmatic update (session load, keyboard shortcut)
 keeps the widget in sync without bespoke setters.
+
+Visual restyle (2026-Q2 redesign): each A/B picker is now a single
+horizontal "pill row" (tag pill + layer index + filename + chevron)
+that wraps the existing QComboBox so that the dropdown logic /
+signal contract stays unchanged. The 3 compare modes live in a
+sunken segmented well; the Solo-B / Swap-A↔B buttons keep their
+existing signals but use the global ``btnToggle`` / ``btnIcon``
+QSS variants.
 """
 
 from __future__ import annotations
@@ -36,7 +44,7 @@ from img_player.compare.state import (
     MODE_VERTICAL,
 )
 from img_player.ui.icons import make_icon
-from img_player.ui.theme import C, G, H, S
+from img_player.ui.theme import C, F, G, H, S
 
 # Sizing knobs for the layer dropdowns. The combo's preferred width
 # follows the longest currently-listed name (via Qt's
@@ -56,11 +64,11 @@ _MODE_TOOLTIPS: dict[str, str] = {
     MODE_OPACITY: "Opacity blend",
 }
 
-# Maps each mode token to the icon template name.
+# Maps each mode token to the brief's new segmented-control icon set.
 _MODE_ICONS: dict[str, str] = {
-    MODE_VERTICAL: "compare_vert",
-    MODE_HORIZONTAL: "compare_horiz",
-    MODE_OPACITY: "opacity",
+    MODE_VERTICAL: "compare-vwipe",
+    MODE_HORIZONTAL: "compare-hwipe",
+    MODE_OPACITY: "compare-opacity",
 }
 
 
@@ -87,19 +95,20 @@ class _LayerOption:
 class SeamBar(QWidget):  # type: ignore[misc]
     """Click/drag horizontal bar showing the seam position 0..1.
 
-    Visually a "loading bar": dark track, orange fill from the left
-    to the current value, centred percentage label rendered with the
-    inverse colour over the fill so the digits stay legible across
-    the boundary. Cleaner read than a thumb-on-track slider for the
-    A/B-wipe use case and plays better with the rest of the design
-    system (no native QSlider chrome to fight).
+    Visually a sunken track with a warm-amber fill from the left to
+    the current value and a thin bright thumb stroke at the seam.
+    The brief calls for the fill to be ``ACC_TINT_30`` (translucent)
+    with a 1 px right border in ``ACC_BRIGHT`` for the seam stroke,
+    plus a soft outer glow. Cleaner read than a thumb-on-track slider
+    for the A/B-wipe use case and plays better with the rest of the
+    design system (no native QSlider chrome to fight).
     """
 
     seam_changed = Signal(float)
 
     BAR_W = 140
     BAR_W_MIN = 60
-    BAR_H = G.INPUT_H
+    BAR_H = G.CTRL_BUTTON_H  # 28 — matches the rest of the band
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -170,20 +179,20 @@ class SeamBar(QWidget):  # type: ignore[misc]
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         rect = QRectF(0, 0, self.width(), self.height())
-        radius = float(G.RADIUS_MD)
+        radius = float(G.RADIUS_SM)
         track_rect = rect.adjusted(0.5, 0.5, -0.5, -0.5)
 
-        # Track (full width, dark fill).
-        painter.setPen(QPen(C.BORDER_DEFAULT, 1))
-        painter.setBrush(QBrush(C.BG_SURFACE))
+        # Track — sunken well, hairline border. Reads as "below the
+        # surface", which is the brief's visual idiom for slider /
+        # seam tracks.
+        painter.setPen(QPen(C.BORDER_SUB, 1))
+        painter.setBrush(QBrush(C.BG_SUNKEN))
         painter.drawRoundedRect(track_rect, radius, radius)
 
-        # Filled portion — same idiom as the timeline's cache bar:
-        # translucent accent fill (50 % alpha, ``C.CACHE_BAR``) with
-        # an opaque accent outline (``C.CACHE_BAR_BORDER``). Lifts
-        # the warm fill off the dark track without over-saturating.
-        # Clipped to the rounded track so the left edge stays
-        # rounded; the right edge is the seam itself.
+        # Filled portion — translucent accent (ACC_TINT_30) so the
+        # "A" letter at the left stays legible across the fill. The
+        # right edge is the seam itself; we stroke it 1 px in
+        # ACC_BRIGHT so the boundary reads as a hard wipe line.
         fill_w = max(0.0, rect.width() * self._value)
         if fill_w > 0:
             painter.save()
@@ -191,40 +200,36 @@ class SeamBar(QWidget):  # type: ignore[misc]
             track_path.addRoundedRect(track_rect, radius, radius)
             painter.setClipPath(track_path)
             fill_rect = QRectF(rect.left(), rect.top(), fill_w, rect.height())
-            # Translucent accent fill — visible but doesn't drown out
-            # the centred "Split" label that sits across the seam.
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QBrush(C.CACHE_BAR))
+            painter.setBrush(QBrush(C.ACC_TINT_30))
             painter.drawRect(fill_rect)
-            # Opaque accent outline tracing the fill. The clip-path
-            # crops strokes that would land outside the track's
-            # rounded shape, so the outline naturally follows the
-            # left rounded corners and stops at the seam on the right.
+            # Seam stroke — bright accent line on the right edge of
+            # the fill, plus a soft outer glow one px outside for the
+            # "lit" feel the brief calls for.
+            seam_x = fill_rect.right()
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.setPen(QPen(C.CACHE_BAR_BORDER, 1.0))
-            painter.drawRect(fill_rect.adjusted(0.5, 0.5, -0.5, -0.5))
+            painter.setPen(QPen(C.ACC_GLOW, 3))
+            painter.drawLine(
+                int(seam_x), int(rect.top()),
+                int(seam_x), int(rect.bottom()),
+            )
+            painter.setPen(QPen(C.ACC_BRIGHT, 1))
+            painter.drawLine(
+                int(seam_x), int(rect.top()),
+                int(seam_x), int(rect.bottom()),
+            )
             painter.restore()
 
-        # "Split" label centred. Warm cream so it stays legible
-        # across the boundary between the orange fill and the dark
-        # unfilled remainder.
-        painter.setPen(QPen(QColor("#FFE5C0")))
+        # A / B end-labels — accent at full opacity so the letters
+        # stand out from the translucent fill underneath. Same
+        # convention as the on-image overlay so the user reads "A is
+        # the left bucket, B is the right bucket" everywhere compare
+        # mode shows up.
+        painter.setPen(QPen(C.ACC_BRIGHT))
         font = painter.font()
         font.setBold(True)
-        font.setPixelSize(11)
+        font.setPixelSize(F.SIZE_PILL)
         painter.setFont(font)
-        painter.drawText(
-            rect, Qt.AlignmentFlag.AlignCenter, "Split",
-        )
-
-        # A / B end-labels — orange-on-orange when over the fill,
-        # orange-on-dark when over the empty track. Using the accent
-        # colour at full opacity guarantees the letters stand out from
-        # the translucent fill underneath without needing a contrast
-        # swap mid-bar. Same convention as the on-image overlay so the
-        # user sees "A is the left bucket, B is the right bucket"
-        # everywhere compare mode shows up.
-        painter.setPen(QPen(QColor(232, 144, 28)))
         a_rect = QRectF(rect.left() + 4, rect.top(), 14, rect.height())
         b_rect = QRectF(rect.right() - 18, rect.top(), 14, rect.height())
         painter.drawText(a_rect, Qt.AlignmentFlag.AlignCenter, "A")
@@ -236,15 +241,110 @@ class SeamBar(QWidget):  # type: ignore[misc]
 # ============================================================================
 
 
+def _build_layer_picker_qss() -> str:
+    """QSS for the A / B picker container (tag pill + name combo).
+
+    The picker is a QFrame styled to look like a single bordered
+    surface; the QComboBox inside is "naked" (no border / no
+    background) so the picker reads as one rectangular control even
+    though the dropdown is still a stock QComboBox under the hood.
+    """
+    return (
+        "QFrame#cmpPicker {"
+        f"  background: {H.BG_SURFACE};"
+        f"  border: 1px solid {H.BORDER_DEF};"
+        f"  border-radius: {G.RADIUS_MD}px;"
+        "}"
+        "QFrame#cmpPicker:hover {"
+        f"  border-color: {H.BORDER_STR};"
+        "}"
+        # Tag pill — small monospace letter with the accent tint, the
+        # brief's signature "A / B" cartouche.
+        "QLabel#cmpTag {"
+        f"  background: {H.ACC_TINT_10};"
+        f"  border: 1px solid {H.ACC_BORDER_ON};"
+        f"  color: {H.ACC_BRIGHT};"
+        f"  border-radius: {G.RADIUS_SM}px;"
+        "  padding: 1px 6px;"
+        f"  font-family: {F.FAMILY_MONO};"
+        f"  font-size: {F.SIZE_MONO_LABEL}px;"
+        "  font-weight: 700;"
+        "}"
+        # Index ("1.", "2.") — secondary mono.
+        "QLabel#cmpIdx {"
+        f"  color: {H.T_SEC};"
+        f"  font-family: {F.FAMILY_MONO};"
+        "  font-size: 10.5px;"
+        "  font-weight: 500;"
+        "  padding: 0;"
+        "}"
+        # The combo lives inside the picker. Strip its border / bg so
+        # the picker reads as one bordered control. The dropdown
+        # itself (QAbstractItemView) is styled by the global QSS.
+        "QComboBox#cmpCombo {"
+        "  background: transparent;"
+        "  border: none;"
+        f"  color: {H.T_PRI};"
+        f"  font-family: {F.FAMILY_MONO};"
+        f"  font-size: {F.SIZE_MONO_CODE}px;"
+        "  padding: 0 2px 0 4px;"
+        "  min-height: 22px;"
+        "  max-height: 22px;"
+        "}"
+        "QComboBox#cmpCombo:hover {"
+        "  background: transparent;"
+        "  border: none;"
+        "}"
+        "QComboBox#cmpCombo::drop-down {"
+        "  border: none;"
+        "  width: 14px;"
+        "}"
+    )
+
+
+def _build_mode_well_qss() -> str:
+    """QSS for the segmented-control well that holds the mode buttons.
+
+    The container is a sunken frame; the active button picks up the
+    accent tint via the global ``btnToggle`` rule (we don't have to
+    redefine it here).
+    """
+    return (
+        "QFrame#cmpModeWell {"
+        f"  background: {H.BG_SUNKEN};"
+        f"  border: 1px solid {H.BORDER_SUB};"
+        f"  border-radius: {G.RADIUS_MD}px;"
+        "}"
+        "QPushButton#cmpMode {"
+        "  background: transparent;"
+        "  border: 1px solid transparent;"
+        f"  border-radius: {G.RADIUS_SM}px;"
+        "  padding: 0;"
+        "  min-height: 22px;"
+        "  max-height: 22px;"
+        "  min-width: 32px;"
+        "  max-width: 32px;"
+        "}"
+        "QPushButton#cmpMode:hover {"
+        f"  background: {H.BG_HOVER};"
+        "}"
+        "QPushButton#cmpMode:checked {"
+        f"  background: {H.BG_SURFACE};"
+        f"  border: 1px solid {H.ACC_BORDER_ON};"
+        f"  color: {H.ACC_BRIGHT};"
+        "}"
+    )
+
+
 class CompareBand(QFrame):  # type: ignore[misc]
-    """``[A ▼]  ⇄  [B ▼]  [Vert] [Horiz] [Opacity]  ▰▰▰░░ 50%  A↔B  ✕``."""
+    """``[A│1.│name.####.png ⌄] [⇄] [B│2.│name.####.png ⌄] │ [▌|▌|▒|B] │ A[──●──]B │ [A⇄B]``."""
 
     # User picked a different layer in dropdown A or B. The app
     # writes the new id into CompareState and triggers a redraw.
     layer_a_picked = Signal(str)
     layer_b_picked = Signal(str)
-    # User clicked one of the four mode buttons. Carries the mode
-    # token (one of :data:`COMPARE_MODES`).
+    # User clicked one of the mode buttons. Carries the mode token
+    # (one of :data:`COMPARE_MODES`).
     mode_picked = Signal(str)
     # Seam slider moved (0..100 → 0.0..1.0 on the receiver side).
     # Continuous: emits while dragging. The viewer redraws live.
@@ -257,7 +357,7 @@ class CompareBand(QFrame):  # type: ignore[misc]
     # User clicked ⇄ — permute A and B.
     swap_layers_requested = Signal()
 
-    BAND_HEIGHT = G.INPUT_H + 4
+    BAND_HEIGHT = G.CTRL_BUTTON_H + 4  # 32 — leaves 2 px breathing top/bottom
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -269,90 +369,66 @@ class CompareBand(QFrame):  # type: ignore[misc]
         # its own raised panel.
         self.setStyleSheet(
             "QFrame#compareBand { background: transparent; }"
-            # Mode buttons (object-named below) — pull the accent
-            # fill on :checked so they read as "active button" rather
-            # than the dim default-checked state which looks like a
-            # tab. Same pattern the TC pill in the timeline gutter
-            # uses.
-            "QPushButton#cmpMode:checked {"
-            f"  background-color: {H.ACCENT};"
-            f"  color: {H.BG_DEEP};"
-            f"  border: 1px solid {H.ACCENT_BRIGHT};"
-            "}"
-            "QPushButton#cmpMode:checked:hover {"
-            f"  background-color: {H.ACCENT_BRIGHT};"
-            "}"
+            + _build_layer_picker_qss()
+            + _build_mode_well_qss()
         )
         self.setFixedHeight(self.BAND_HEIGHT)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 2, 0, 2)
-        layout.setSpacing(S.SM)
+        layout.setSpacing(S.S_6)
 
-        # ---- Layer A dropdown ----
-        layout.addWidget(QLabel("A"))
-        # Stock QComboBox: ``setMinimumContentsLength`` drives both
-        # ``sizeHint`` and ``minimumSizeHint`` (Qt's behaviour) — fine
-        # here because the band is no longer wedged into a non-
-        # squeezable corner widget. The QHBoxLayout the band lives in
-        # (the right toolbar built in ``MainWindow._build_menu``)
-        # absorbs the squeeze through its leading stretch first; once
-        # the stretch is at zero, Qt's standard layout shrinks
-        # Preferred-policy widgets like the combo down to their
-        # minimumSizeHint. ``setMaximumWidth`` keeps a long layer
-        # name from expanding the combo past a reasonable cap.
-        self._combo_a = QComboBox()
-        self._combo_a.setFixedHeight(G.INPUT_H)
-        self._combo_a.setMinimumContentsLength(_COMBO_MIN_CHARS)
-        self._combo_a.setMaximumWidth(_COMBO_MAX_PX)
-        self._combo_a.setSizePolicy(
-            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed,
-        )
+        # ---- Layer A picker (composite pill) ----
+        self._picker_a, self._combo_a = self._build_picker("A")
         self._combo_a.activated.connect(self._on_a_activated)
-        layout.addWidget(self._combo_a)
+        layout.addWidget(self._picker_a)
 
-        # ⇄ swap layers button (permute A/B in the dropdowns).
-        self._swap_layers_btn = QPushButton("⇄")
-        self._swap_layers_btn.setFixedSize(G.INPUT_H, G.INPUT_H)
+        # ⇄ swap layers button (permute A/B in the dropdowns). Ghost
+        # icon button — no background at rest, accent border on
+        # hover via the global QSS.
+        self._swap_layers_btn = QPushButton()
+        self._swap_layers_btn.setObjectName("btnIcon")
+        self._swap_layers_btn.setIcon(make_icon("swap-arrows", color=H.T_PRI))
+        self._swap_layers_btn.setIconSize(QSize(16, 16))
         self._swap_layers_btn.setToolTip("Swap layers (Ctrl+W)")
         self._swap_layers_btn.clicked.connect(self.swap_layers_requested.emit)
         layout.addWidget(self._swap_layers_btn)
 
-        # ---- Layer B dropdown ----
-        layout.addWidget(QLabel("B"))
-        self._combo_b = QComboBox()
-        self._combo_b.setFixedHeight(G.INPUT_H)
-        self._combo_b.setMinimumContentsLength(_COMBO_MIN_CHARS)
-        self._combo_b.setMaximumWidth(_COMBO_MAX_PX)
-        self._combo_b.setSizePolicy(
-            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed,
-        )
+        # ---- Layer B picker ----
+        self._picker_b, self._combo_b = self._build_picker("B")
         self._combo_b.activated.connect(self._on_b_activated)
-        layout.addWidget(self._combo_b)
+        layout.addWidget(self._picker_b)
 
-        # ---- Mode buttons (mutually exclusive) ----
-        # Icon buttons — text labels were ambiguous at small widths
-        # and didn't convey the mode visually. Each icon is a small
-        # SVG drawn from ``icons.py`` (compare_vert / compare_horiz
-        # / opacity). Object-named so the local stylesheet can
-        # target ``:checked`` without bleeding into every other
-        # QPushButton in the band.
+        # Thin separator between layer-pickers and mode well.
+        layout.addWidget(self._build_separator())
+
+        # ---- Mode buttons (segmented well) ----
+        self._mode_well = QFrame()
+        self._mode_well.setObjectName("cmpModeWell")
+        self._mode_well.setFixedHeight(G.CTRL_BUTTON_H)
+        well_layout = QHBoxLayout(self._mode_well)
+        well_layout.setContentsMargins(2, 2, 2, 2)
+        well_layout.setSpacing(1)
+
         self._mode_group = QButtonGroup(self)
         self._mode_group.setExclusive(True)
         self._mode_buttons: dict[str, QPushButton] = {}
-        _icon_color = "#FFE5C0"  # warm cream — readable on the band's bg
         for mode in COMPARE_MODES:
             btn = QPushButton()
             btn.setObjectName("cmpMode")
-            btn.setIcon(make_icon(_MODE_ICONS[mode], color=_icon_color))
-            btn.setIconSize(QSize(18, 18))
+            btn.setIcon(make_icon(_MODE_ICONS[mode], color=H.T_PRI))
+            btn.setIconSize(QSize(14, 14))
             btn.setCheckable(True)
-            btn.setFixedSize(G.INPUT_H + 8, G.INPUT_H)
             btn.setToolTip(_MODE_TOOLTIPS[mode])
+            btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             btn.clicked.connect(lambda _checked, m=mode: self.mode_picked.emit(m))
             self._mode_group.addButton(btn)
             self._mode_buttons[mode] = btn
-            layout.addWidget(btn)
+            well_layout.addWidget(btn)
+        layout.addWidget(self._mode_well)
+
+        # Thin separator between mode well and seam bar.
+        layout.addWidget(self._build_separator())
 
         # ---- Seam bar (custom progress-style indicator) ----
         self._seam_bar = SeamBar()
@@ -364,10 +440,12 @@ class CompareBand(QFrame):  # type: ignore[misc]
         # Checkable: when down, ``swap_showing_b`` is True and the
         # compose path returns full B regardless of the blend mode.
         # When up, the picked blend mode + slider apply normally.
+        # ``btnToggle`` opts into the orange-tint :checked state
+        # defined by the global QSS.
         self._swap_btn = QPushButton("A↔B")
+        self._swap_btn.setObjectName("btnToggle")
         self._swap_btn.setCheckable(True)
-        self._swap_btn.setObjectName("cmpMode")
-        self._swap_btn.setFixedHeight(G.INPUT_H)
+        self._swap_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._swap_btn.setToolTip(
             "Show full B (override mode) — click again to return to the blend",
         )
@@ -381,6 +459,66 @@ class CompareBand(QFrame):  # type: ignore[misc]
         # ``close_requested`` signal is kept on the class so a
         # future affordance can re-emit it, but the band never
         # fires it on its own anymore.
+
+    # ------------------------------------------------------------------ Helpers
+
+    def _build_picker(self, tag: str) -> tuple[QFrame, QComboBox]:
+        """Build one A/B composite picker: ``[tag│idx│name ⌄]``.
+
+        The picker is a QFrame styled like a single bordered surface
+        via the ``#cmpPicker`` rule. The combo inside is "naked" (no
+        bg / border) and carries the current layer name + a chevron.
+        We keep a separate index QLabel that the public ``set_state``
+        path can update without re-rendering the whole combo (the
+        combo's items already include the "1. " prefix in their text
+        for the dropdown row).
+        """
+        picker = QFrame()
+        picker.setObjectName("cmpPicker")
+        picker.setFixedHeight(G.CTRL_BUTTON_H)
+        h = QHBoxLayout(picker)
+        h.setContentsMargins(4, 2, 2, 2)
+        h.setSpacing(S.S_4)
+
+        # Tag pill ("A" / "B").
+        tag_lbl = QLabel(tag)
+        tag_lbl.setObjectName("cmpTag")
+        tag_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        h.addWidget(tag_lbl)
+
+        # Combo — naked, expands to fill. The combo's items carry the
+        # "1. shot.exr" prefix already (set in ``set_available_layers``)
+        # so the current-text reads the whole picker line.
+        combo = QComboBox()
+        combo.setObjectName("cmpCombo")
+        combo.setMinimumContentsLength(_COMBO_MIN_CHARS)
+        combo.setMaximumWidth(_COMBO_MAX_PX)
+        combo.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed,
+        )
+        # Custom chevron icon — the bare QSS arrow image isn't
+        # readable on the dark surface. We let Qt draw its default
+        # arrow but override it in the combo's stylesheet would mean
+        # shipping a PNG; instead we tolerate the default 8 px arrow
+        # which renders OK on the surface tint. (A future polish pass
+        # could swap in the ``chevron-down`` SVG via QProxyStyle.)
+        h.addWidget(combo, 1)
+
+        return picker, combo
+
+    def _build_separator(self) -> QWidget:
+        """Vertical hairline used between band groups.
+
+        1 px wide × 22 px tall in BORDER_SUB — same recipe as the
+        transport bar's :func:`_separator`. Wrapped in a container
+        so the surrounding layout has a little breathing room around
+        the thin line.
+        """
+        sep = QWidget()
+        sep.setFixedWidth(1)
+        sep.setFixedHeight(G.CTRL_SEP_H)
+        sep.setStyleSheet(f"background:{H.BORDER_SUB};")
+        return sep
 
     # ------------------------------------------------------------------ Public API
 

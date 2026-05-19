@@ -38,8 +38,8 @@ from img_player.sequence.channels import (
 )
 from img_player.ui.channel_menu import ChannelMenu
 from img_player.ui.frame_display import DisplayMode, FrameDisplay
-from img_player.ui.icons import make_icon
-from img_player.ui.theme import G, H, S
+from img_player.ui.icons import make_icon, make_toggle_icon
+from img_player.ui.theme import F, G, H, S
 
 if TYPE_CHECKING:
     from img_player.player.state import PlaybackState
@@ -50,9 +50,9 @@ _LOOP_CYCLE = [LoopMode.LOOP, LoopMode.ONCE, LoopMode.PING_PONG]
 # annotation toolbar's ✏️ 🧽 📌 (colorful OS-rendered emojis rather
 # than monochrome text symbols).
 _LOOP_LABELS = {
-    LoopMode.LOOP:      ("🔁", "Loop (play → first frame at the end)"),
-    LoopMode.ONCE:      ("▶️", "Play once (stop at the end)"),
-    LoopMode.PING_PONG: ("🏓", "Ping-pong (reverse at the end)"),
+    LoopMode.LOOP:      ("loop", "Loop (play → first frame at the end)"),
+    LoopMode.ONCE:      ("step-fwd", "Play once (stop at the end)"),
+    LoopMode.PING_PONG: ("swap-arrows", "Ping-pong (reverse at the end)"),
 }
 
 
@@ -221,22 +221,35 @@ class TransportBar(QWidget):  # type: ignore[misc]
         self._loop_mode = LoopMode.LOOP
 
         # --- In/Out markers -------------------------------------------------
-        # Same emoji-as-label style as the annotation toolbar
-        # (✏️ 🧽 📌). Native OS rendering = colourful glyphs that
-        # signal start / end / clean-up at a glance.
-        self._mark_in_btn  = _text_button("🚩", "Mark IN at current frame (I)")
-        self._mark_out_btn = _text_button("🏁", "Mark OUT at current frame (O)")
-        self._clear_io_btn = _text_button("🧹", "Clear IN/OUT range (Shift+R)")
+        # Brief §5 + §11.1: line-art monochrome SVG icons (mark-in /
+        # mark-out / clear-in-out) replace the legacy emoji glyphs
+        # (🚩 🏁 🧹) which rendered as colour emojis or empty squares
+        # depending on the system font stack.
+        self._mark_in_btn  = _icon_button(
+            make_icon("mark-in"), "Mark IN at current frame (I)",
+        )
+        self._mark_out_btn = _icon_button(
+            make_icon("mark-out"), "Mark OUT at current frame (O)",
+        )
+        self._clear_io_btn = _icon_button(
+            make_icon("clear-in-out"), "Clear IN/OUT range (Shift+R)",
+        )
 
         self._mark_in_btn.clicked.connect(self.mark_in_clicked.emit)
         self._mark_out_btn.clicked.connect(self.mark_out_clicked.emit)
         self._clear_io_btn.clicked.connect(self.clear_in_out_clicked.emit)
 
         # --- Loop mode ------------------------------------------------------
-        # Initial label reflects the default LOOP mode; the click
-        # handler swaps it through ``_LOOP_LABELS`` as the user
-        # cycles modes.
-        self._loop_btn = _text_button("🔁", "Loop mode (click to cycle)")
+        # Brief §5: line-art loop icon (SVG) instead of the 🔁 emoji.
+        # This is a 3-way MODE selector (LOOP / ONCE / PING_PONG), not
+        # an on/off toggle — so it stays white at all times and the
+        # current mode is read from the glyph itself (loop / step-fwd /
+        # swap-arrows), which ``_refresh_loop_button`` swaps on cycle.
+        # Non-checkable: a checked state would pick up the orange
+        # ``:checked`` tint, but there is no "off" mode to contrast it.
+        self._loop_btn = _icon_button(
+            make_icon("loop"), "Loop mode (click to cycle)",
+        )
         self._loop_btn.clicked.connect(self._cycle_loop_mode)
 
         # --- Playback controls ---------------------------------------------
@@ -248,18 +261,83 @@ class TransportBar(QWidget):  # type: ignore[misc]
         # the frame display, forward_play right of it. The frame
         # display itself sits at the visual centre between the two
         # play buttons — matches the Nuke-style transport.
-        self._first_btn = _icon_button(make_icon("first"), "Go to first frame (Home)")
-        self._prev_btn  = _icon_button(make_icon("prev"),  "Previous frame (Left)")
+        # Use the new brief icon set for the step / skip glyphs;
+        # ``first`` / ``last`` are kept as backwards-compatible aliases
+        # but the brief-named ``skip-start`` / ``skip-end`` carry the
+        # updated geometry, and ``step-back`` / ``step-fwd`` replace
+        # the legacy ``prev`` / ``next`` chevrons.
+        self._first_btn = _icon_button(make_icon("skip-start"), "Go to first frame (Home)")
+        self._prev_btn  = _icon_button(make_icon("step-back"),  "Previous frame (Left)")
+        # Reverse / forward play — outlined orange box with an
+        # orange-stroke triangle inside. User explicitly asked for
+        # the outline look (vs the previous filled-gradient
+        # btnPrimary): the button face stays in BG_SURFACE with an
+        # ACC_BRIGHT 1.5px border, and the triangle is a stroke-only
+        # SVG in ACC_BRIGHT. Reads as "play" while staying visually
+        # quiet enough not to dominate the toolbar like the previous
+        # gradient face did.
         self._reverse_play_btn = _icon_button(
-            make_icon("play_reverse", color=H.ACCENT),
+            make_icon("play-reverse-outline", color=H.T_PRI),
             "Play in reverse (J)",
         )
         self._play_btn  = _icon_button(
-            make_icon("play", color=H.ACCENT),
+            make_icon("play-outline", color=H.T_PRI),
             "Play forward (L)",
         )
-        self._next_btn  = _icon_button(make_icon("next"),  "Next frame (Right)")
-        self._last_btn  = _icon_button(make_icon("last"),  "Go to last frame (End)")
+        self._next_btn  = _icon_button(make_icon("step-fwd"),   "Next frame (Right)")
+        self._last_btn  = _icon_button(make_icon("skip-end"),   "Go to last frame (End)")
+
+        # Play buttons keep the wider 38 px footprint so they read as
+        # the toolbar's primary actions. They follow the same
+        # white-when-idle / orange-when-active rule as every other
+        # button: a neutral border + white triangle while stopped,
+        # an orange border + orange glyph while that direction plays.
+        # The buttons stay non-checkable (their pressed state is the
+        # transport state machine's job, not a user toggle); the
+        # active styling is driven from :meth:`update_from_state` via
+        # :meth:`_set_play_btn_active`.
+        self._play_qss_idle = (
+            f"QPushButton {{"
+            f"  background-color: {H.BG_SURFACE};"
+            f"  border: 1.5px solid {H.BORDER_STR};"
+            f"  border-radius: {G.RADIUS_MD}px;"
+            f"  padding: 0;"
+            f"}}"
+            f"QPushButton:hover {{"
+            f"  background-color: {H.BG_HOVER};"
+            f"}}"
+            f"QPushButton:pressed {{"
+            f"  background-color: {H.ACC_TINT_14};"
+            f"}}"
+            f"QPushButton:disabled {{"
+            f"  border-color: {H.BORDER_DEF};"
+            f"  background-color: {H.BG_STRIP};"
+            f"}}"
+        )
+        # Active variant — orange border + tinted face while playing.
+        self._play_qss_active = (
+            f"QPushButton {{"
+            f"  background-color: {H.ACC_TINT_14};"
+            f"  border: 1.5px solid {H.ACC_BRIGHT};"
+            f"  border-radius: {G.RADIUS_MD}px;"
+            f"  padding: 0;"
+            f"}}"
+            f"QPushButton:hover {{"
+            f"  background-color: {H.ACC_TINT_30};"
+            f"}}"
+        )
+        for play_btn in (self._reverse_play_btn, self._play_btn):
+            # Drop the btnIcon objectName (set by _icon_button) so our
+            # inline border QSS isn't fighting the global #btnIcon
+            # rule for specificity.
+            play_btn.setObjectName("")
+            play_btn.setFixedSize(G.CTRL_PRIMARY_W, G.CTRL_BUTTON_H)
+            play_btn.setStyleSheet(self._play_qss_idle)
+        # Tracks which play buttons currently wear the active QSS so
+        # :meth:`update_from_state` only re-applies the stylesheet on
+        # an idle↔active transition (re-polishing every frame would be
+        # wasteful).
+        self._play_btn_active: dict[int, bool] = {}
 
         # --- Frame / timecode display -------------------------------------
         # Sits between the navigation half and the playback half so the
@@ -284,62 +362,43 @@ class TransportBar(QWidget):  # type: ignore[misc]
         # logical group, exposed via three signals (toggle / prev /
         # next). The toggle button is checkable and reflects whether
         # the toolbar is currently visible.
-        # ⏮️ / ⏭️ — track-skip emojis with U+FE0F variation selector for
-        # consistent emoji-presentation across systems (the bare
-        # codepoints have Emoji_Presentation=Yes by default, but the
-        # selector is belt-and-braces against any future renderer
-        # that reads them as text). ✏️ is U+270F LOWER RIGHT PENCIL,
-        # which is text-by-default — the selector is REQUIRED here to
-        # get the colorful pencil glyph the user picked from the
-        # original toolbar mockup.
-        self._annotation_prev_btn = _text_button(
-            "⏮️", "Frame annotée précédente ([)"
+        #
+        # Brief §5 + §11: SVG line-art icons (cache-prev / pen /
+        # cache-next / ann-hide) replace the legacy emoji glyphs
+        # (⏮️ ✏️ ⏭️ 👁/🚫). The annotation_prev / next semantically
+        # double as "previous / next annotated frame" navigation —
+        # the cache-prev / cache-next glyphs (double chevrons) read
+        # cleanly as "jump to neighbouring annotated frame" too.
+        self._annotation_prev_btn = _icon_button(
+            make_icon("cache-prev"), "Frame annotée précédente ([)",
         )
-        self._annotation_toggle_btn = _text_button(
-            "✏️", "Afficher / masquer la toolbar d'annotation (D)"
+        # Pen — the annotation-tool entry point. White at rest like
+        # every other toggle; turns orange once checked (toolbar
+        # visible), with the global ``QPushButton:checked`` rule also
+        # tinting the background so the active state is unambiguous.
+        self._annotation_toggle_btn = _icon_button(
+            make_toggle_icon("pen"),
+            "Afficher / masquer la toolbar d'annotation (D)",
         )
         self._annotation_toggle_btn.setCheckable(True)
-        self._annotation_next_btn = _text_button(
-            "⏭️", "Frame annotée suivante (])"
+        self._annotation_next_btn = _icon_button(
+            make_icon("cache-next"), "Frame annotée suivante (])",
         )
-        # 👁 — show / hide annotations DURING playback. Checkable so
-        # the user can lock it in either state. Default = checked
+        # Show / hide annotations DURING playback. Checkable so the
+        # user can lock it in either state. Default = checked
         # (annotations visible during play) to match the legacy
         # behaviour. Same toggle the ``A`` keyboard shortcut drives.
-        # Inline stylesheet so checked vs unchecked is unambiguously
-        # visible — without it the colour-emoji rendered by the OS
-        # looks identical in both states (font-color CSS doesn't
-        # touch coloured emoji glyphs). We tint the BACKGROUND
-        # instead and add a ``◌`` strike-overlay via the glyph swap
-        # so the difference reads at a glance.
-        self._annotation_show_play_btn = _text_button(
-            "👁", "Afficher les annotations pendant la lecture (A)"
+        # The ``btnIcon:checked`` global QSS rule paints the active
+        # state in ACC_BRIGHT — no inline stylesheet needed anymore.
+        # On toggle we keep the same icon (the slashed circle reads
+        # as "hide" in both states); the checked state's background
+        # tint signals "currently visible".
+        self._annotation_show_play_btn = _icon_button(
+            make_toggle_icon("ann-hide"),
+            "Afficher les annotations pendant la lecture (A)",
         )
         self._annotation_show_play_btn.setCheckable(True)
         self._annotation_show_play_btn.setChecked(True)
-        self._annotation_show_play_btn.setStyleSheet(
-            "QPushButton {"
-            "  font-size: 11pt;"
-            "  padding: 0;"
-            "}"
-            "QPushButton:checked {"
-            f"  background: {H.ACCENT_DIM};"
-            f"  border: 1px solid {H.ACCENT};"
-            f"  border-radius: {G.RADIUS_SM}px;"
-            "}"
-            "QPushButton:!checked {"
-            f"  background: {H.BG_RAISED};"
-            f"  border: 1px solid {H.BORDER_DEFAULT};"
-            f"  border-radius: {G.RADIUS_SM}px;"
-            "}"
-        )
-        # Glyph swap on toggle: open eye when ON, crossed eye when
-        # OFF. Belt-and-braces with the background tint so even users
-        # whose theme washes out the accent colour still see the
-        # state change immediately.
-        self._annotation_show_play_btn.toggled.connect(
-            lambda on: self._annotation_show_play_btn.setText("👁" if on else "🚫")
-        )
         self._annotation_prev_btn.clicked.connect(self.annotation_prev_clicked.emit)
         self._annotation_toggle_btn.clicked.connect(
             self.annotation_toggle_clicked.emit
@@ -355,184 +414,82 @@ class TransportBar(QWidget):  # type: ignore[misc]
 
         # --- Export button (v0.5.0) -----------------------------------
         # 💾 floppy-disk emoji is the universal "save / export" cue.
+        # Brief §8 + §11.3: SVG line-art glyphs replace the legacy
+        # emoji buttons (💾 / 🔄) and the previous custom-QSS compare /
+        # contact-sheet buttons. All four lean on the global #btnIcon
+        # / #btnToggle QSS variants from theme.build_stylesheet() so
+        # no ad-hoc border/hover stylesheets remain — the active
+        # (checked) state automatically picks up ACC_BRIGHT background
+        # tint + border.
+
+        # --- Export button (SVG save) ---------------------------------
         # Disabled until a sequence is loaded — the app flips it on
         # via ``set_export_enabled``.
-        self._export_btn = _text_button(
-            "💾", "Export sequence to image seq or video (Ctrl+Shift+E)"
+        self._export_btn = _icon_button(
+            make_icon("save"),
+            "Export sequence to image seq or video (Ctrl+Shift+E)",
         )
         self._export_btn.clicked.connect(self.export_clicked.emit)
         self._export_btn.setEnabled(False)
 
-        # --- Reload button (v0.5.1) -----------------------------------
-        # 🔄 = smart re-scan. Keeps cached frames whose mtime is
-        # unchanged, drops the rest, picks up files that were added
-        # to the source folder while the app was running. Disabled
-        # until a sequence is loaded.
-        self._reload_btn = _text_button(
-            "🔄", "Reload cache — re-scan source folder (Ctrl+R)"
+        # --- Reload button (SVG refresh) ------------------------------
+        # Smart re-scan — keeps cached frames whose mtime is unchanged,
+        # drops the rest, picks up files that were added to the source
+        # folder while the app was running. Disabled until a sequence
+        # is loaded.
+        self._reload_btn = _icon_button(
+            make_icon("refresh"),
+            "Reload cache — re-scan source folder (Ctrl+R)",
         )
         self._reload_btn.clicked.connect(self.reload_clicked.emit)
         self._reload_btn.setEnabled(False)
 
-        # --- Compare toggle (v1.2) ------------------------------------
-        # Split-view icon (rectangle, vertical seam, A | B labels) in
-        # the warm accent so it stands out on the menu-bar row as a
-        # mode toggle rather than a generic transport control.
-        # Checkable: stays "down" while compare mode is active.
-        # Disabled until the stack has at least two layers — there's
-        # nothing meaningful to compare against otherwise.
+        # --- Compare toggle (SVG ab-toggle) ---------------------------
+        # The A/B compare entry point in the top-right toolbar. White
+        # at rest; turns orange once checked (compare mode active),
+        # with the global #btnTopBar:checked QSS also tinting the
+        # background. Disabled until the layer stack reaches at least
+        # two layers. Sized via the #btnTopBar loop further down.
         self._compare_btn = _icon_button(
-            make_icon(
-                "compare",
-                color=H.ACCENT,
-                size=22,
-                disabled_color=H.TEXT_DISABLED,
-            ),
+            make_toggle_icon("ab-toggle"),
             "Compare two layers (W)",
         )
-        # Render the icon larger inside its button than the
-        # default G.ICON_SIZE (18) — this mark fills the button
-        # less visually than the simpler arrow / disk glyphs and
-        # was reading as "tiny" by comparison. 22 px gives it the
-        # same on-screen weight as the other buttons.
-        self._compare_btn.setIconSize(QSize(22, 22))
         self._compare_btn.setCheckable(True)
         self._compare_btn.clicked.connect(self.compare_toggled.emit)
-        # Use ``border`` shorthand (not bare ``border-color``) so Qt
-        # draws all 4 sides at the same width / style — bare
-        # ``border-color`` left the bottom edge unrendered in some
-        # paint paths. Add ``background-color`` so the rule isn't
-        # ambiguous about the surface bg either; padding stays from
-        # the global cascade.
-        # Pin every property explicitly. The minute one is left to
-        # the global cascade Qt's QSS engine seems to drop the
-        # bottom edge on this checkable QPushButton (probably a
-        # native-style merge artefact specific to the corner-widget
-        # context). Including ``min-width`` / ``min-height`` /
-        # ``padding`` / ``border-radius`` alongside the explicit
-        # per-side borders has been the only reliable way to keep
-        # all four edges painted.
-        _border = f"1px solid {H.ACCENT_DIM}"
-        _border_h = f"1px solid {H.ACCENT}"
-        _border_chk = f"1px solid {H.ACCENT_BRIGHT}"
-        # Disabled state — desaturated dim border + muted bg, so the
-        # button reads "not actionable yet" when the layer stack only
-        # has 0 or 1 entry. Uses a neutral border (not BORDER_SUBTLE
-        # which collapses into the QMenuBar's bottom rule) so the
-        # 4 edges stay visible. Icon is auto-greyed by Qt's Disabled
-        # pixmap mode (handled in icons.make_icon).
-        _border_dis = f"1px solid {H.BORDER_DEFAULT}"
-        self._compare_btn.setStyleSheet(
-            f"QPushButton {{"
-            f"  background-color: {H.BG_SURFACE};"
-            f"  color: {H.TEXT_PRIMARY};"
-            f"  border-top: {_border};"
-            f"  border-bottom: {_border};"
-            f"  border-left: {_border};"
-            f"  border-right: {_border};"
-            f"  border-radius: 3px;"
-            f"  padding: 0;"
-            f"}}"
-            f"QPushButton:hover {{"
-            f"  background-color: {H.BG_HOVER};"
-            f"  border-top: {_border_h};"
-            f"  border-bottom: {_border_h};"
-            f"  border-left: {_border_h};"
-            f"  border-right: {_border_h};"
-            f"}}"
-            f"QPushButton:checked {{"
-            f"  background-color: {H.BG_SELECT};"
-            f"  border-top: {_border_chk};"
-            f"  border-bottom: {_border_chk};"
-            f"  border-left: {_border_chk};"
-            f"  border-right: {_border_chk};"
-            f"}}"
-            f"QPushButton:disabled {{"
-            f"  background-color: {H.BG_BASE};"
-            f"  color: {H.TEXT_DISABLED};"
-            f"  border-top: {_border_dis};"
-            f"  border-bottom: {_border_dis};"
-            f"  border-left: {_border_dis};"
-            f"  border-right: {_border_dis};"
-            f"}}"
-        )
-        # Disabled by default — no sequence loaded means there's
-        # nothing to compare. The app's ``_refresh_after_stack_change``
-        # flips it on once the layer stack reaches at least 2 layers.
-        # The :disabled QSS rule above paints a desaturated frame
-        # using ``BORDER_DEFAULT`` (instead of BORDER_SUBTLE) so the
-        # button still reads "not actionable yet" without the bottom
-        # edge collapsing into a neighbouring border.
         self._compare_btn.setEnabled(False)
 
-        # --- Contact sheet --------------------------------------------------
-        # Two separate buttons sitting side-by-side in the toolbar:
-        # * ``_contact_sheet_btn`` — the main toggle, just the grid
-        #   icon, same shape as the compare button.
-        # * ``_contact_sheet_menu_btn`` — a tiny chevron / "…" button
-        #   that opens the settings popup.
-        # The earlier QToolButton(MenuButtonPopup) approach overlapped
-        # the chevron on top of the icon at the toolbar's compact
-        # button size; the two-button layout makes each affordance
-        # legible without competing for pixels.
+        # --- Contact sheet toggle (SVG contact-sheet) -----------------
+        # Sibling to the compare toggle. Same white-off / orange-on
+        # toggle icon + #btnTopBar treatment so the two review-mode
+        # buttons read as a group. The legacy ``⋯`` kebab menu next to
+        # it (settings popup) remains here for backwards-compat with
+        # main_window.py references but is NOT added to any visible
+        # layout — those settings live in the ContactSheetBand toolbar
+        # that appears above the viewer when the mode is on.
         from PySide6.QtWidgets import QMenu  # noqa: PLC0415 — local to this section
         self._contact_sheet_btn = _icon_button(
-            make_icon(
-                "grid",
-                color=H.ACCENT,
-                size=22,
-                disabled_color=H.TEXT_DISABLED,
-            ),
+            make_toggle_icon("contact-sheet"),
             "Contact sheet — all layers tiled in a grid (Ctrl+G)",
         )
-        self._contact_sheet_btn.setIconSize(QSize(22, 22))
         self._contact_sheet_btn.setCheckable(True)
         self._contact_sheet_btn.clicked.connect(
             self.contact_sheet_toggled.emit,
         )
-        # Grey border when inactive (matches the default transport
-        # buttons), accent only when the mode is checked / on hover.
-        # Earlier we mirrored the compare button's QSS which painted
-        # an orange border even when CS was off — user feedback was
-        # that the cadre looked permanently "active" and competed
-        # visually with the rest of the toolbar.
-        _cs_border = f"1px solid {H.BORDER_DEFAULT}"
-        _cs_border_h = f"1px solid {H.ACCENT}"
-        _cs_border_chk = f"1px solid {H.ACCENT_BRIGHT}"
-        self._contact_sheet_btn.setStyleSheet(
-            f"QPushButton {{"
-            f"  background-color: {H.BG_SURFACE};"
-            f"  color: {H.TEXT_PRIMARY};"
-            f"  border-top: {_cs_border};"
-            f"  border-bottom: {_cs_border};"
-            f"  border-left: {_cs_border};"
-            f"  border-right: {_cs_border};"
-            f"  border-radius: 3px;"
-            f"  padding: 0;"
-            f"}}"
-            f"QPushButton:hover {{"
-            f"  background-color: {H.BG_HOVER};"
-            f"  border-top: {_cs_border_h};"
-            f"  border-bottom: {_cs_border_h};"
-            f"  border-left: {_cs_border_h};"
-            f"  border-right: {_cs_border_h};"
-            f"}}"
-            f"QPushButton:checked {{"
-            f"  background-color: {H.BG_SELECT};"
-            f"  border-top: {_cs_border_chk};"
-            f"  border-bottom: {_cs_border_chk};"
-            f"  border-left: {_cs_border_chk};"
-            f"  border-right: {_cs_border_chk};"
-            f"}}"
-            f"QPushButton:disabled {{"
-            f"  background-color: {H.BG_BASE};"
-            f"  color: {H.TEXT_DISABLED};"
-            f"  border-top: {_cs_border};"
-            f"  border-bottom: {_cs_border};"
-            f"  border-left: {_cs_border};"
-            f"  border-right: {_cs_border};"
-            f"}}"
-        )
+
+        # The four top-toolbar icon buttons (compare, contact-sheet,
+        # reload, export) wear the larger ``#btnTopBar`` footprint —
+        # 34×32 with a 20 px glyph — so the top bar's controls are
+        # easier to hit than the compact 30×28 transport-bar buttons.
+        # ``setFixedSize`` is re-applied here because ``_icon_button``
+        # pinned the widget to the smaller 30×28 — the QSS rule alone
+        # can't grow past the widget's hard maximum.
+        for _top_btn in (
+            self._compare_btn, self._contact_sheet_btn,
+            self._reload_btn, self._export_btn,
+        ):
+            _top_btn.setObjectName("btnTopBar")
+            _top_btn.setFixedSize(34, 32)
+            _top_btn.setIconSize(QSize(20, 20))
 
         # Settings popup: tiny QToolButton with the "options" glyph,
         # InstantPopup so a single click opens the menu. App-side
@@ -585,10 +542,28 @@ class TransportBar(QWidget):  # type: ignore[misc]
         self._fps_combo = QLineEdit()
         self._fps_combo.setText("24")
         self._fps_combo.setFixedWidth(40)
-        self._fps_combo.setFixedHeight(G.INPUT_H)
+        self._fps_combo.setFixedHeight(G.CTRL_INPUT_H)
         self._fps_combo.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._fps_combo.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
         self._fps_combo.setToolTip("Playback rate (fps) — type a value, Enter to apply")
+        # Brief §5 readout style: dark BG_BASE field, hairline border,
+        # monospace digits. Overrides the global QLineEdit rule which
+        # paints BG_SURFACE (too bright next to the gradient play key).
+        self._fps_combo.setStyleSheet(
+            "QLineEdit {"
+            f"  background:{H.BG_BASE};"
+            f"  border:1px solid {H.BORDER_DEF};"
+            f"  border-radius:{G.RADIUS_MD}px;"
+            f"  color:{H.T_PRI};"
+            f"  font-family:{F.FAMILY_MONO};"
+            f"  font-size:{F.SIZE_MONO_CODE}px;"
+            "  font-weight:500;"
+            "}"
+            "QLineEdit:focus {"
+            f"  border:1px solid {H.ACC};"
+            f"  color:{H.ACC_BRIGHT};"
+            "}"
+        )
         validator = QDoubleValidator(0.1, 1000.0, 3, self._fps_combo)
         validator.setNotation(QDoubleValidator.Notation.StandardNotation)
         self._fps_combo.setValidator(validator)
@@ -715,14 +690,12 @@ class TransportBar(QWidget):  # type: ignore[misc]
         self._current_bg_mode: int = 0
         self._bg_button = _ChannelModeButton()
         self._bg_button.setFixedHeight(G.BTN_TRANSPORT_H)
-        # 22 (icon) + 20 (arrow) + slack. Earlier 44 was too tight:
-        # Qt's MenuButtonPopup zone reserves a bit more than the
-        # declared ``menu-button width`` for the arrow chrome, so
-        # the arrow ended up drawing into the icon's right edge.
-        # 52 keeps them visually separated while staying compact
-        # enough that the ``BG :`` label sits right next to the
-        # swatch.
-        self._bg_button.setFixedWidth(52)
+        # 22 (icon) + 20 (arrow) + generous slack. Earlier 44 / 52
+        # were too tight — Qt's MenuButtonPopup zone reserves a bit
+        # more than the declared ``menu-button width`` for the arrow
+        # chrome, so the swatch and the dropdown arrow ended up
+        # touching. 66 leaves a clear gap between the two.
+        self._bg_button.setFixedWidth(66)
         self._bg_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._bg_button.setToolButtonStyle(
             Qt.ToolButtonStyle.ToolButtonIconOnly,
@@ -806,6 +779,10 @@ class TransportBar(QWidget):  # type: ignore[misc]
         # asked to free up the bar.
         layout.addWidget(self._first_btn)
         layout.addWidget(self._prev_btn)
+        # User asked for both play directions to be visible: the
+        # reverse play button sits to the LEFT of the forward play.
+        # Both share the outlined orange-box look (set above) so
+        # they read as paired primary actions.
         layout.addWidget(self._reverse_play_btn)
         layout.addWidget(self._play_btn)
         layout.addWidget(self._next_btn)
@@ -826,6 +803,15 @@ class TransportBar(QWidget):  # type: ignore[misc]
         layout.addWidget(_separator())
         fps_label = QLabel("FPS")
         fps_label.setFixedWidth(24)
+        # Brief §5 mono caption — secondary text, JetBrains Mono with
+        # a hint of letter-spacing so the three-letter label reads as
+        # a key, not as body text.
+        fps_label.setStyleSheet(
+            f"color:{H.T_SEC};"
+            "letter-spacing:0.08em;"
+            f"font-family:{F.FAMILY_MONO};"
+            f"font-size:{F.SIZE_MONO_LABEL}px;"
+        )
         layout.addWidget(fps_label)
         layout.addWidget(self._fps_combo)
 
@@ -854,8 +840,13 @@ class TransportBar(QWidget):  # type: ignore[misc]
         # ``_show_volume_popup``.
         self._volume_popup_closed_at: float = 0.0
         self._volume_btn = QPushButton()
-        self._volume_btn.setFixedSize(G.BTN_TRANSPORT_W, G.BTN_TRANSPORT_H)
-        self._volume_btn.setText("🔊")
+        self._volume_btn.setObjectName("btnIcon")
+        self._volume_btn.setFixedSize(G.CTRL_ICON_W, G.CTRL_BUTTON_H)
+        # Use the brief's ``audio`` SVG glyph at rest. The mute swap
+        # is driven by ``_refresh_volume_button`` below; we initialise
+        # to the un-muted icon here.
+        self._volume_btn.setIcon(make_icon("audio", color=H.T_PRI))
+        self._volume_btn.setIconSize(QSize(16, 16))
         self._volume_btn.setToolTip("Volume")
         self._volume_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._volume_btn.clicked.connect(self._show_volume_popup)
@@ -868,8 +859,9 @@ class TransportBar(QWidget):  # type: ignore[misc]
         # ``set_fullscreen_state``.
         layout.addWidget(_separator())
         self._fullscreen_btn = QPushButton()
-        self._fullscreen_btn.setFixedSize(G.BTN_TRANSPORT_W, G.BTN_TRANSPORT_H)
-        self._fullscreen_btn.setIcon(make_icon("fullscreen_enter"))
+        self._fullscreen_btn.setObjectName("btnIcon")
+        self._fullscreen_btn.setFixedSize(G.CTRL_ICON_W, G.CTRL_BUTTON_H)
+        self._fullscreen_btn.setIcon(make_icon("fullscreen"))
         self._fullscreen_btn.setIconSize(QSize(16, 16))
         self._fullscreen_btn.setToolTip("Fullscreen (F)")
         self._fullscreen_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -882,9 +874,16 @@ class TransportBar(QWidget):  # type: ignore[misc]
 
     def set_fullscreen_state(self, on: bool) -> None:
         """Swap the fullscreen button's icon to reflect the current
-        mode. Called from ``MainWindow`` when fullscreen toggles."""
+        mode. Called from ``MainWindow`` when fullscreen toggles.
+
+        The brief introduces a single ``fullscreen`` icon (vs the
+        legacy enter/exit pair); we still use the legacy
+        ``fullscreen_exit`` for the active state since the new icon
+        set has no contract glyph yet. Resting state uses the brief's
+        ``fullscreen``.
+        """
         self._fullscreen_btn.setIcon(
-            make_icon("fullscreen_exit" if on else "fullscreen_enter")
+            make_icon("fullscreen_exit" if on else "fullscreen")
         )
         self._fullscreen_btn.setToolTip(
             "Exit fullscreen (F / Esc)" if on else "Fullscreen (F)"
@@ -1068,11 +1067,14 @@ class TransportBar(QWidget):  # type: ignore[misc]
 
     def _refresh_volume_icon(self) -> None:
         """Icon swap based purely on the current slider value: zero
-        reads as muted (🔇), any positive value reads as audible
-        (🔊). No second source of truth — mute is implicit in the
-        slider position."""
+        reads as muted, any positive value reads as audible. No
+        second source of truth — mute is implicit in the slider
+        position. Swaps between the brief's ``audio`` and
+        ``audio-mute`` glyphs."""
         muted = self._volume_value == 0
-        self._volume_btn.setText("🔇" if muted else "🔊")
+        self._volume_btn.setIcon(
+            make_icon("audio-mute" if muted else "audio", color=H.T_PRI)
+        )
         self._volume_btn.setToolTip(
             "Volume — muted (slider at 0)" if muted else "Volume",
         )
@@ -1167,23 +1169,31 @@ class TransportBar(QWidget):  # type: ignore[misc]
         self._apply_bg_button_style()
 
     def update_from_state(self, state: PlaybackState) -> None:
-        # Swap the play button's icon between the two states. We keep
-        # the warm ACCENT colour on "play" (encourages the click) and
-        # use the neutral TEXT_PRIMARY on "pause" (calmer, less
-        # attention-grabbing while playback is in progress).
-        # The forward play button shows pause only when the controller
-        # is *playing forward*; while playing backward the pause icon
-        # belongs to the reverse button instead.
+        # Swap the play buttons between idle and active. While stopped
+        # a button wears a white triangle on a neutral border; while
+        # *its* direction plays it switches to an orange pause glyph
+        # on an orange border — the same white→orange rule as every
+        # other button. The forward button shows pause only when the
+        # controller is playing forward; the reverse button owns the
+        # pause glyph while playing backward.
         playing_fwd = state.is_playing and state.direction >= 0
         playing_rev = state.is_playing and state.direction < 0
         if playing_fwd:
-            self._play_btn.setIcon(make_icon("pause"))
+            self._play_btn.setIcon(make_icon("pause", color=H.ACC_BRIGHT))
         else:
-            self._play_btn.setIcon(make_icon("play", color=H.ACCENT))
+            self._play_btn.setIcon(
+                make_icon("play-outline", color=H.T_PRI),
+            )
         if playing_rev:
-            self._reverse_play_btn.setIcon(make_icon("pause"))
+            self._reverse_play_btn.setIcon(
+                make_icon("pause", color=H.ACC_BRIGHT),
+            )
         else:
-            self._reverse_play_btn.setIcon(make_icon("play_reverse", color=H.ACCENT))
+            self._reverse_play_btn.setIcon(
+                make_icon("play-reverse-outline", color=H.T_PRI),
+            )
+        self._set_play_btn_active(self._play_btn, playing_fwd)
+        self._set_play_btn_active(self._reverse_play_btn, playing_rev)
 
         # Push the current frame into the editable display.
         self._frame_display.set_frame(state.current_frame)
@@ -1263,10 +1273,10 @@ class TransportBar(QWidget):  # type: ignore[misc]
         self._annotation_show_play_btn.blockSignals(True)
         try:
             self._annotation_show_play_btn.setChecked(active)
-            # The ``toggled`` signal would normally drive the text
-            # swap; with signals blocked we have to do it manually
-            # so the glyph still matches the new state.
-            self._annotation_show_play_btn.setText("👁" if active else "🚫")
+            # The button now uses the SVG ``ann-hide`` icon and relies
+            # on the global ``btnIcon:checked`` QSS rule to paint the
+            # active state in ACC_BRIGHT — no manual glyph swap to do
+            # here anymore (the legacy emoji 👁/🚫 text path is gone).
         finally:
             self._annotation_show_play_btn.blockSignals(False)
 
@@ -1359,9 +1369,23 @@ class TransportBar(QWidget):  # type: ignore[misc]
         self.loop_mode_requested.emit(self._loop_mode)
 
     def _refresh_loop_button(self) -> None:
-        label, tooltip = _LOOP_LABELS[self._loop_mode]
-        self._loop_btn.setText(label)
+        icon_name, tooltip = _LOOP_LABELS[self._loop_mode]
+        # Re-paint the button's icon with the new mode's glyph — always
+        # white; the glyph shape (not the colour) signals the mode.
+        self._loop_btn.setIcon(make_icon(icon_name))
         self._loop_btn.setToolTip(tooltip)
+
+    def _set_play_btn_active(self, btn: QPushButton, active: bool) -> None:
+        """Swap a play button between the idle (white border) and
+        active (orange border) stylesheet — only on a real idle↔active
+        transition so playback frames don't trigger a needless
+        re-polish of the widget."""
+        if self._play_btn_active.get(id(btn)) == active:
+            return
+        self._play_btn_active[id(btn)] = active
+        btn.setStyleSheet(
+            self._play_qss_active if active else self._play_qss_idle,
+        )
 
     def _on_fps_text(self, text: str) -> None:
         fps = self._parse_fps(text)
@@ -1445,8 +1469,10 @@ class TransportBar(QWidget):  # type: ignore[misc]
             _swatch_icon(color, checker=is_checker, size=22),
         )
         self._bg_button.setStyleSheet(
+            # Right padding nudges the swatch icon left, away from the
+            # dropdown arrow, so the two read as clearly separate.
             "QToolButton {"
-            "  padding: 0;"
+            "  padding: 0 8px 0 0;"
             "}"
             # The swatch icon already has its own outline so the
             # two halves read as separate without an extra divider —
@@ -1642,9 +1668,16 @@ class TransportBar(QWidget):  # type: ignore[misc]
 
 def _icon_button(icon: QIcon, tooltip: str) -> QPushButton:
     btn = QPushButton()
+    # Opt into the global ``#btnIcon`` QSS variant — same 30×28
+    # footprint as the rest of the transport-bar icon buttons, with
+    # the brief's hover / pressed treatment baked in. We keep the
+    # explicit ``setFixedSize`` below because the QSS uses min/max
+    # width only; the height needs a setFixedHeight to defeat any
+    # parent layout that might try to stretch the button vertically.
+    btn.setObjectName("btnIcon")
     btn.setIcon(icon)
     btn.setIconSize(QSize(G.ICON_SIZE, G.ICON_SIZE))
-    btn.setFixedSize(G.BTN_TRANSPORT_W, G.BTN_TRANSPORT_H)
+    btn.setFixedSize(G.CTRL_ICON_W, G.CTRL_BUTTON_H)
     btn.setToolTip(tooltip)
     btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
     return btn
@@ -1685,7 +1718,7 @@ def _separator() -> QWidget:
     line.setFrameShadow(QFrame.Shadow.Plain)
     line.setFixedWidth(1)
     line.setFixedHeight(18)
-    line.setStyleSheet(f"background-color: {H.BORDER_DEFAULT};")
+    line.setStyleSheet(f"background-color: {H.BORDER_SUB};")
     h.addWidget(line)
     return container
 

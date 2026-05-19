@@ -287,7 +287,11 @@ class Timeline(QWidget):  # type: ignore[misc]
         del event
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        painter.fillRect(self.rect(), C.BG_DEEP)
+        # Brief §3 — timeline track sits on the deepest "ruler" surface
+        # (BG_TRACK = #0F1013). One step deeper than BG_DEEP so the
+        # warm cache-bar fills above read as "on top of" the track,
+        # not flush with the panel chrome.
+        painter.fillRect(self.rect(), C.BG_TRACK)
 
         if self._last <= self._first:
             return

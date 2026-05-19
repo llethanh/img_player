@@ -6,9 +6,13 @@ REM arguments that were passed in (or dropped on the .bat).
 setlocal
 set ENV_NAME=img_player
 
-REM Locate a conda install in a few common places.
+REM Locate a conda install. %LOCALAPPDATA%\miniforge3 is the default
+REM "Just Me" install location for the Miniforge Windows installer and
+REM was missing from the original probe list — adding it first since
+REM it's the common case for users who didn't pick "All Users".
 set ACTIVATE=
-if exist "%USERPROFILE%\miniforge3\Scripts\activate.bat" set ACTIVATE="%USERPROFILE%\miniforge3\Scripts\activate.bat"
+if exist "%LOCALAPPDATA%\miniforge3\Scripts\activate.bat" set ACTIVATE="%LOCALAPPDATA%\miniforge3\Scripts\activate.bat"
+if not defined ACTIVATE if exist "%USERPROFILE%\miniforge3\Scripts\activate.bat" set ACTIVATE="%USERPROFILE%\miniforge3\Scripts\activate.bat"
 if not defined ACTIVATE if exist "%USERPROFILE%\miniconda3\Scripts\activate.bat" set ACTIVATE="%USERPROFILE%\miniconda3\Scripts\activate.bat"
 if not defined ACTIVATE if exist "%USERPROFILE%\anaconda3\Scripts\activate.bat" set ACTIVATE="%USERPROFILE%\anaconda3\Scripts\activate.bat"
 if not defined ACTIVATE if exist "%ProgramData%\miniforge3\Scripts\activate.bat" set ACTIVATE="%ProgramData%\miniforge3\Scripts\activate.bat"
@@ -16,6 +20,7 @@ if not defined ACTIVATE (
     echo.
     echo [img_player] Could not find a conda / miniforge install.
     echo Looked in:
+    echo   %%LOCALAPPDATA%%\miniforge3
     echo   %%USERPROFILE%%\miniforge3
     echo   %%USERPROFILE%%\miniconda3
     echo   %%USERPROFILE%%\anaconda3

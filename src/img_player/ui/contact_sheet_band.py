@@ -38,7 +38,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from img_player.ui.theme import G, H, S
+from img_player.ui.theme import F, G, H, S
 
 
 class _SelectAllSpinBox(QSpinBox):  # type: ignore[misc]
@@ -186,7 +186,7 @@ class ContactSheetBand(QFrame):  # type: ignore[misc]
     # User clicked ✕ — exit contact-sheet mode entirely.
     close_requested = Signal()
 
-    BAND_HEIGHT = G.INPUT_H + 4
+    BAND_HEIGHT = G.CTRL_BUTTON_H + 4  # 32
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -196,19 +196,22 @@ class ContactSheetBand(QFrame):  # type: ignore[misc]
         # alongside the menu bar (see ``MainWindow._build_menu``), so
         # it should inherit the menu-bar background rather than draw
         # its own raised panel. Mirrors :class:`CompareBand`.
+        #
+        # The toggleable pills (Auto smart, Show labels) use the
+        # global ``btnToggle`` QSS variant — no local checked-state
+        # override needed here.
         self.setStyleSheet(
             "QFrame#contactSheetBand { background: transparent; }"
-            # Toggleable pills (Auto smart, Show labels) — same accent
-            # treatment as the compare-band mode buttons. Object-named
-            # so the rule doesn't bleed into every other QPushButton
-            # in the band.
-            "QPushButton#csPill:checked {"
-            f"  background-color: {H.ACCENT};"
-            f"  color: {H.BG_DEEP};"
-            f"  border: 1px solid {H.ACCENT_BRIGHT};"
-            "}"
-            "QPushButton#csPill:checked:hover {"
-            f"  background-color: {H.ACCENT_BRIGHT};"
+            # KV labels above each input — secondary mono uppercase
+            # text, brief §7. Object-named so the rule doesn't reset
+            # every other QLabel in the band (none currently, but
+            # future additions stay isolated).
+            "QLabel#csKV {"
+            f"  color: {H.T_SEC};"
+            f"  font-family: {F.FAMILY_MONO};"
+            f"  font-size: {F.SIZE_MONO_LABEL}px;"
+            "  font-weight: 500;"
+            "  padding: 0 2px;"
             "}"
         )
         self.setFixedHeight(self.BAND_HEIGHT)
@@ -223,7 +226,7 @@ class ContactSheetBand(QFrame):  # type: ignore[misc]
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 2, 0, 2)
-        layout.setSpacing(S.SM)
+        layout.setSpacing(S.S_6)
 
         # ---- Auto smart shortcut ----
         # Checkable pill — checked = "both dims auto". Clicking it
@@ -231,10 +234,12 @@ class ContactSheetBand(QFrame):  # type: ignore[misc]
         # would normally un-check, but for a "current state indicator"
         # un-checking is meaningless — the user has to pick a dim
         # explicitly via the spin-boxes to leave auto mode).
+        # ``btnToggle`` opts into the global QSS's orange-tint
+        # checked state.
         self._auto_btn = QPushButton("Auto smart")
-        self._auto_btn.setObjectName("csPill")
+        self._auto_btn.setObjectName("btnToggle")
         self._auto_btn.setCheckable(True)
-        self._auto_btn.setFixedHeight(G.INPUT_H)
+        self._auto_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._auto_btn.setToolTip(
             "Pick the grid automatically — smart layout that maximises "
             "per-tile area given the viewer's aspect ratio. Equivalent "
@@ -243,33 +248,31 @@ class ContactSheetBand(QFrame):  # type: ignore[misc]
         self._auto_btn.clicked.connect(self._on_auto_clicked)
         layout.addWidget(self._auto_btn)
 
-        # ---- Cols spin-box ----
-        cols_label = QLabel("Cols")
-        cols_label.setStyleSheet(f"color: {H.TEXT_SECONDARY};")
-        layout.addWidget(cols_label)
-        self._cols_spin = self._make_spin(
-            "Columns. 0 = Auto (computed from rows + layer count, or "
-            "from the viewer aspect if rows is also Auto).",
-        )
-        self._cols_spin.valueChanged.connect(self._on_cols_changed)
-        layout.addWidget(self._cols_spin)
+        # Thin separator before the grid group.
+        layout.addWidget(self._build_separator())
 
-        # ---- Rows spin-box ----
-        rows_label = QLabel("Rows")
-        rows_label.setStyleSheet(f"color: {H.TEXT_SECONDARY};")
-        layout.addWidget(rows_label)
-        self._rows_spin = self._make_spin(
-            "Rows. 0 = Auto (computed from cols + layer count, or "
-            "from the viewer aspect if cols is also Auto).",
-        )
-        self._rows_spin.valueChanged.connect(self._on_rows_changed)
-        layout.addWidget(self._rows_spin)
+        # ---- Cols KV ----
+        layout.addLayout(self._build_kv_group(
+            "COLS",
+            lambda: self._build_cols_spin(),
+            attr="_cols_spin",
+        ))
+
+        # ---- Rows KV ----
+        layout.addLayout(self._build_kv_group(
+            "ROWS",
+            lambda: self._build_rows_spin(),
+            attr="_rows_spin",
+        ))
+
+        # Thin separator before the labels group.
+        layout.addWidget(self._build_separator())
 
         # ---- Show labels ----
         self._labels_btn = QPushButton("Show labels")
-        self._labels_btn.setObjectName("csPill")
+        self._labels_btn.setObjectName("btnToggle")
         self._labels_btn.setCheckable(True)
-        self._labels_btn.setFixedHeight(G.INPUT_H)
+        self._labels_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._labels_btn.setToolTip(
             "Overlay the layer name on each tile in a warm-amber "
             "cartouche matching the rest of the UI accent. Off by "
@@ -279,17 +282,18 @@ class ContactSheetBand(QFrame):  # type: ignore[misc]
         self._labels_btn.toggled.connect(self._on_labels_toggled)
         layout.addWidget(self._labels_btn)
 
-        # ---- Label size combo ----
+        # Thin separator before the size / output combos.
+        layout.addWidget(self._build_separator())
+
+        # ---- Label size combo (KV-wrapped) ----
         # Scales the auto-computed typo size on each tile. The pill
         # background follows the text metrics so the cartouche
         # scales with it automatically. Disabled while Show labels
         # is off (no point picking a size when no label is rendered)
         # — that gating is applied by ``set_state``.
-        size_label = QLabel("Size")
-        size_label.setStyleSheet(f"color: {H.TEXT_SECONDARY};")
-        layout.addWidget(size_label)
         self._label_size_combo = QComboBox()
-        self._label_size_combo.setFixedHeight(G.INPUT_H)
+        self._label_size_combo.setFixedHeight(G.CTRL_INPUT_H)
+        self._label_size_combo.setMinimumWidth(78)
         self._label_size_combo.setSizePolicy(
             QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed,
         )
@@ -303,14 +307,14 @@ class ContactSheetBand(QFrame):  # type: ignore[misc]
             # back on activation without parsing the label string.
             self._label_size_combo.addItem(label, size)
         self._label_size_combo.activated.connect(self._on_label_size_activated)
-        layout.addWidget(self._label_size_combo)
+        layout.addLayout(
+            self._kv_wrap("SIZE", self._label_size_combo),
+        )
 
-        # ---- Output size combo ----
-        out_label = QLabel("Output")
-        out_label.setStyleSheet(f"color: {H.TEXT_SECONDARY};")
-        layout.addWidget(out_label)
+        # ---- Output size combo (KV-wrapped) ----
         self._output_combo = QComboBox()
-        self._output_combo.setFixedHeight(G.INPUT_H)
+        self._output_combo.setFixedHeight(G.CTRL_INPUT_H)
+        self._output_combo.setMinimumWidth(110)
         self._output_combo.setSizePolicy(
             QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed,
         )
@@ -322,7 +326,9 @@ class ContactSheetBand(QFrame):  # type: ignore[misc]
         for div, label in _DIVISOR_PRESETS:
             self._output_combo.addItem(label, div)
         self._output_combo.activated.connect(self._on_output_activated)
-        layout.addWidget(self._output_combo)
+        layout.addLayout(
+            self._kv_wrap("OUTPUT", self._output_combo),
+        )
 
         # NB: the older ✕ close button used to live here. It was
         # removed because clicking the transport's contact-sheet
@@ -401,6 +407,63 @@ class ContactSheetBand(QFrame):  # type: ignore[misc]
 
     # ------------------------------------------------------------------ Internals
 
+    def _build_separator(self) -> QWidget:
+        """Thin vertical hairline between band groups.
+
+        1 px wide × 22 px tall in BORDER_SUB — same recipe used by
+        the compare band so the two bands read as part of the same
+        design system.
+        """
+        sep = QWidget()
+        sep.setFixedWidth(1)
+        sep.setFixedHeight(G.CTRL_SEP_H)
+        sep.setStyleSheet(f"background:{H.BORDER_SUB};")
+        return sep
+
+    def _kv_wrap(self, label: str, control: QWidget) -> QHBoxLayout:
+        """Wrap a control in a horizontal KV pair (label + control).
+
+        The label is rendered in the mono "caption" style (secondary
+        text, uppercase) so the group reads as `KEY  [control]`.
+        Returns a QHBoxLayout the caller adds to the main band layout.
+        """
+        h = QHBoxLayout()
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(S.S_4)
+        kv = QLabel(label)
+        kv.setObjectName("csKV")
+        h.addWidget(kv)
+        h.addWidget(control)
+        return h
+
+    def _build_kv_group(
+        self, label: str, make_control, *, attr: str,
+    ) -> QHBoxLayout:
+        """Build a KV-wrapped control and assign it to ``self.<attr>``.
+
+        Tiny helper to keep the ``__init__`` body straight-line readable
+        for the cols / rows spin-box construction.
+        """
+        control = make_control()
+        setattr(self, attr, control)
+        return self._kv_wrap(label, control)
+
+    def _build_cols_spin(self) -> QSpinBox:
+        spin = self._make_spin(
+            "Columns. 0 = Auto (computed from rows + layer count, or "
+            "from the viewer aspect if rows is also Auto).",
+        )
+        spin.valueChanged.connect(self._on_cols_changed)
+        return spin
+
+    def _build_rows_spin(self) -> QSpinBox:
+        spin = self._make_spin(
+            "Rows. 0 = Auto (computed from cols + layer count, or "
+            "from the viewer aspect if cols is also Auto).",
+        )
+        spin.valueChanged.connect(self._on_rows_changed)
+        return spin
+
     def _make_spin(self, tooltip: str) -> QSpinBox:
         # Use the select-all-on-focus subclass so a single click in
         # the cols / rows field surfaces the current value already
@@ -420,7 +483,7 @@ class ContactSheetBand(QFrame):  # type: ignore[misc]
         # what it did. ``NoButtons`` collapses the widget to a pure
         # text editor.
         spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
-        spin.setFixedHeight(G.INPUT_H)
+        spin.setFixedHeight(G.CTRL_INPUT_H)
         spin.setFixedWidth(56)
         spin.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
         spin.setToolTip(tooltip)
