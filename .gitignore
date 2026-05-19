@@ -6,6 +6,10 @@ __pycache__/
 .eggs/
 build/
 dist/
+# Build artifacts — the bundle folder + zip belong on Drive/dist/,
+# never in git (a 130+ MB zip blew past GitHub's 100 MB file cap).
+EXE/
+*.zip
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
