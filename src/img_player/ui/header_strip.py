@@ -127,8 +127,14 @@ class HeaderInfoStrip(QWidget):  # type: ignore[misc]
         # sequence name and resolution to stay glued together.
         layout.addStretch(1)
 
-        # Hidden until the first sequence loads — the empty cartouche
-        # at boot would be visual noise on the "no project" state.
+        # Visibility is the AND of two independent gates:
+        #   * ``_has_sequence`` — auto: a sequence must be loaded (the
+        #     empty cartouche at boot would be visual noise).
+        #   * ``_user_visible`` — the user's toggle (ⓘ pill / Ctrl+I).
+        # Tracked separately so loading a new sequence never overrides
+        # the user's deliberate show/hide choice.
+        self._has_sequence = False
+        self._user_visible = True
         self.setVisible(False)
 
     # ------------------------------------------------------------------ Helpers
@@ -222,17 +228,6 @@ class HeaderInfoStrip(QWidget):  # type: ignore[misc]
         else:
             self._res_label.setText("—")
 
-    def set_layer_name(self, name: str | None) -> None:
-        """Legacy no-op — the dedicated "layer name to the right of
-        resolution" cell was removed at the user's request. The
-        sequence name on the LEFT (cell 1) is the canonical "layer
-        name" surface now. Kept as a method so the existing
-        ``app._refresh_info_band_frames`` call site doesn't have to
-        be conditionally guarded — passing through silently is
-        cheaper than wrapping the caller in ``hasattr``.
-        """
-        del name  # intentionally unused — see docstring
-
     def set_fps(self, fps: float | None) -> None:
         """Update cell 3. Accepts ``None`` to clear."""
         if fps and fps > 0:
@@ -249,11 +244,25 @@ class HeaderInfoStrip(QWidget):  # type: ignore[misc]
         self._render_kv(self._frame_label, f"{int(current)}/{int(total)}")
 
     def set_visible_for_sequence(self, has_sequence: bool) -> None:
-        """Show / hide the strip based on whether a sequence is loaded.
+        """Auto gate — record whether a sequence is loaded.
 
         Called from ``MainWindow.update_sequence_info`` (on load) and
-        from the New / detach paths (to hide). Equivalent to
-        ``setVisible(has_sequence)`` — wrapped under a named method
-        so the call sites read clearly.
+        from the New / detach paths (to hide). The strip only actually
+        shows when this AND the user's toggle are both on.
         """
-        self.setVisible(bool(has_sequence))
+        self._has_sequence = bool(has_sequence)
+        self._apply_visibility()
+
+    def set_user_visible(self, visible: bool) -> None:
+        """User gate — the ⓘ pill / Ctrl+I toggle.
+
+        Independent of :meth:`set_visible_for_sequence`: toggling the
+        strip off keeps it off across sequence loads.
+        """
+        self._user_visible = bool(visible)
+        self._apply_visibility()
+
+    def _apply_visibility(self) -> None:
+        """Resolve the two gates — the strip shows only when a
+        sequence is loaded AND the user hasn't toggled it off."""
+        self.setVisible(self._has_sequence and self._user_visible)

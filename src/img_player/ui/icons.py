@@ -571,23 +571,26 @@ _TEMPLATES: dict[str, str] = {
 
     # A/B toggle — outlined rect with the left half shaded, suggesting
     # a "compare A/B" mode that's available but not necessarily on.
+    # Drawn near-full-bleed in the 16×16 box so it stays crisp at the
+    # toolbar's 18 px icon size.
     "ab-toggle": (
         '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="none" '
         'stroke="{color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
-        '<rect x="2" y="3.5" width="12" height="9" rx="1.5"/>'
-        '<path d="M2 3.5 L8 3.5 L8 12.5 L2 12.5 Z" fill="{color}" '
+        '<rect x="2" y="2" width="12" height="12" rx="1.6"/>'
+        '<path d="M2 2 L8 2 L8 14 L2 14 Z" fill="{color}" '
         'stroke="none" opacity="0.40"/>'
-        '<path d="M8 3.5 L8 12.5"/>'
+        '<path d="M8 2 L8 14"/>'
         "</svg>"
     ),
-    # Contact-sheet — 2 × 2 grid of rounded squares.
+    # Contact-sheet — 2 × 2 grid of rounded squares, near-full-bleed in
+    # the 16×16 box so the grid reads crisply at 18 px.
     "contact-sheet": (
         '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="none" '
         'stroke="{color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
-        '<rect x="2.5" y="2.5" width="5" height="5" rx="0.6"/>'
-        '<rect x="8.5" y="2.5" width="5" height="5" rx="0.6"/>'
-        '<rect x="2.5" y="8.5" width="5" height="5" rx="0.6"/>'
-        '<rect x="8.5" y="8.5" width="5" height="5" rx="0.6"/>'
+        '<rect x="2" y="2" width="5.4" height="5.4" rx="1"/>'
+        '<rect x="8.6" y="2" width="5.4" height="5.4" rx="1"/>'
+        '<rect x="2" y="8.6" width="5.4" height="5.4" rx="1"/>'
+        '<rect x="8.6" y="8.6" width="5.4" height="5.4" rx="1"/>'
         "</svg>"
     ),
     # Refresh — two arcs forming a full circle with chevron arrowheads.
@@ -800,6 +803,38 @@ def make_icon(
         icon.addPixmap(
             disabled_pix, QIcon.Mode.Disabled, QIcon.State.On,
         )
+    return icon
+
+
+@lru_cache(maxsize=64)
+def make_toggle_icon(
+    name: str,
+    size: int = 18,
+    off_color: str = H.TEXT_PRIMARY,
+    on_color: str = H.ACC_BRIGHT,
+) -> QIcon:
+    """Return a checkable-button ``QIcon`` — white at rest, orange when on.
+
+    The icon carries two ``Normal``-mode pixmaps: ``State.Off`` painted
+    in ``off_color`` (white) and ``State.On`` painted in ``on_color``
+    (the amber accent). Qt picks the pixmap from the button's checked
+    state automatically, so assigning this icon **once** to a checkable
+    button gives the "white until activated, orange once activated,
+    white again when deactivated" behaviour with no signal wiring.
+
+    Disabled appearance is left to Qt's automatic graying of whichever
+    state pixmap is current. Memoized on the argument tuple — see
+    :func:`make_icon` for the caching rationale.
+    """
+    icon = QIcon()
+    icon.addPixmap(
+        _render_pixmap(name, off_color, size),
+        QIcon.Mode.Normal, QIcon.State.Off,
+    )
+    icon.addPixmap(
+        _render_pixmap(name, on_color, size),
+        QIcon.Mode.Normal, QIcon.State.On,
+    )
     return icon
 
 

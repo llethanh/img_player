@@ -620,6 +620,24 @@ QPushButton#btnToggle:checked {{
     color: {h.ACC_BRIGHT};
 }}
 
+/* Large icon button — the top toolbar (compare / contact-sheet /
+   reload / export). A notch bigger than #btnIcon (34×32 vs 30×28)
+   so the bar's primary controls are easier to hit. Covers plain
+   and checkable buttons; the :checked rule only fires on toggles. */
+QPushButton#btnTopBar {{
+    padding: 0;
+    min-width: 34px;
+    max-width: 34px;
+    min-height: 32px;
+    max-height: 32px;
+}}
+
+QPushButton#btnTopBar:checked {{
+    background-color: {h.ACC_TINT_14};
+    border: 1px solid {h.ACC};
+    color: {h.ACC_BRIGHT};
+}}
+
 /* Primary variant — used by the play key. Wider footprint and a
    subtle orange gradient. Set objectName("btnPrimary") to opt in. */
 QPushButton#btnPrimary {{

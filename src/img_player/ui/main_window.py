@@ -302,14 +302,14 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             self._tc_toggle_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             self._tc_toggle_btn.setStyleSheet(_pill_qss)
 
-            # Info-band pill — wired to the same QAction created later
+            # Info-strip pill — wired to the same QAction created later
             # in ``_build_menu`` so menu / shortcut / pill stay in sync.
             self._info_band_btn = QToolButton(self)
             self._info_band_btn.setText("ⓘ")
             self._info_band_btn.setCheckable(True)
             self._info_band_btn.setChecked(True)
             self._info_band_btn.setToolTip(
-                "Toggle bottom info band (Ctrl+I)"
+                "Toggle the display info strip (Ctrl+I)"
             )
             self._info_band_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             self._info_band_btn.setStyleSheet(_pill_qss)
@@ -379,9 +379,9 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         # Header info strip lives INSIDE the viewer now (floating
         # overlay pinned to the bottom edge) — see
         # ``ViewerWidget._reposition_header_strip``. Exposed here as
-        # ``self._header_strip`` for backwards-compat with the
-        # ``update_sequence_info`` / ``app._refresh_info_band_frames``
-        # call sites that still reach for it by attribute name.
+        # ``self._header_strip`` for the ``update_sequence_info`` /
+        # ``app._refresh_header_strip_frames`` call sites that reach
+        # for it by attribute name.
         self._header_strip = self._viewer.header_strip
         if self._master_timeline_panel is not None:
             layout.addWidget(self._master_timeline_panel)
@@ -923,17 +923,18 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self._show_tc_act.triggered.connect(self._on_toggle_timecode)
         view_menu.addAction(self._show_tc_act)
 
-        # Bottom info band — orange HUD with image size / fps / local
-        # & global frame numbers. On by default; user toggles with
-        # Ctrl+I, the View menu entry, or the ⓘ pill in the timeline
-        # gutter. Same triple-bind pattern as the TC pill below.
+        # Header info strip — the orange cartouche over the viewer
+        # (sequence name / resolution / fps / Layer / Frame). On by
+        # default; user toggles with Ctrl+I, the View menu entry, or
+        # the ⓘ pill in the timeline gutter. Same triple-bind pattern
+        # as the TC pill below.
         self._show_info_band_act = QAction(
-            "Show &info band", self, checkable=True,
+            "Show &info strip", self, checkable=True,
         )
         self._show_info_band_act.setShortcut(QKeySequence("Ctrl+I"))
         self._show_info_band_act.setChecked(True)
         self._show_info_band_act.toggled.connect(
-            self._viewer.info_band.setVisible,
+            self._viewer.header_strip.set_user_visible,
         )
         view_menu.addAction(self._show_info_band_act)
         ib_btn = getattr(self, "_info_band_btn", None)
@@ -949,16 +950,6 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                         ib_btn.blockSignals(False)
 
             self._show_info_band_act.toggled.connect(_sync_ib_btn)
-            # Right-click on the ⓘ pill → per-segment visibility menu
-            # (layer name / image size / fps / layer frame / timeline
-            # frame). Settings persist via :meth:`info_band_segments`
-            # round-tripped through ``Preferences``.
-            ib_btn.setContextMenuPolicy(
-                Qt.ContextMenuPolicy.CustomContextMenu,
-            )
-            ib_btn.customContextMenuRequested.connect(
-                self._on_info_band_btn_context_menu
-            )
 
         # The "TC" pill next to the frame readout (built earlier in
         # ``__init__``) drives the same action. Click → trigger the
@@ -1033,7 +1024,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         # automatically when the cursor enters a QAbstractButton,
         # which is the gentler equivalent of the ``:hover`` colour
         # we used to apply to the text glyph.
-        burger_size = 18
+        burger_size = 20
         burger_icon = QIcon()
         burger_icon.addPixmap(
             make_icon("menu", color=H.ACCENT, size=burger_size).pixmap(
@@ -1050,7 +1041,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         burger.setIcon(burger_icon)
         burger.setIconSize(QSize(burger_size, burger_size))
         burger.setAutoRaise(True)
-        burger.setFixedSize(36, 24)
+        burger.setFixedSize(40, 32)
         burger.setCursor(Qt.CursorShape.PointingHandCursor)
         burger.setToolTip("Show / hide the side panels")
         # The hover background gives a rounded affordance patch.
@@ -1233,9 +1224,9 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.setMenuWidget(top_bar)
 
     def _refresh_image_size_label(self) -> None:
-        """Push image dimensions to the bottom info band."""
+        """Push image dimensions to the header info strip."""
         w, h = self._viewer.gl.image_size()
-        self._viewer.info_band.set_image_size(w, h)
+        self._viewer.header_strip.set_resolution(w, h)
 
     def set_ocio_reload_callback(self, cb) -> None:  # type: ignore[no-untyped-def]
         """Register the App's hot-reload entry point.
@@ -1299,41 +1290,6 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self._preferences_dialog = dialog
         dialog.show()
 
-    def _on_info_band_btn_context_menu(self, pos) -> None:  # type: ignore[no-untyped-def]
-        """Right-click on the ⓘ pill — per-segment visibility menu.
-
-        Each segment of the bottom info band can be toggled
-        independently. The menu's checked state is sourced from the
-        band itself so external mutations (session restore, etc.)
-        stay reflected.
-        """
-        from PySide6.QtWidgets import QMenu
-
-        from img_player.ui.info_band import SEGMENT_KEYS, SEGMENT_LABELS
-        ib_btn = self._info_band_btn
-        band = self._viewer.info_band
-        menu = QMenu(self)
-        for key in SEGMENT_KEYS:
-            act = menu.addAction(SEGMENT_LABELS[key])
-            act.setCheckable(True)
-            act.setChecked(band.is_segment_visible(key))
-            # Default-arg trick captures ``key`` per-iteration; without
-            # it the lambda closes over the loop variable and every
-            # entry toggles the LAST key.
-            act.toggled.connect(
-                lambda on, k=key: band.set_segment_visible(k, on),
-            )
-        menu.exec(ib_btn.mapToGlobal(pos))
-
-    def info_band_segments(self) -> tuple[str, ...]:
-        """Snapshot the band's visible-segments tuple for prefs save."""
-        return self._viewer.info_band.visible_segments()
-
-    def set_info_band_segments(self, keys) -> None:  # type: ignore[no-untyped-def]
-        """Apply a previously-saved segments tuple. Called from app
-        prefs restore."""
-        self._viewer.info_band.set_visible_segments(keys)
-
     def _on_toggle_timecode(self, checked: bool) -> None:
         mode = "tc" if checked else "frames"
         # Both the timeline tick labels *and* the transport's
@@ -1341,9 +1297,6 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         # up with mismatched units between the two readouts.
         self._timeline.set_display_mode(mode)
         self._transport.set_display_mode(mode)
-        # The bottom info band's Layer / Frame readouts mirror the
-        # same toggle.
-        self._viewer.info_band.set_display_mode(mode)
 
     def _toggle_side_dock(self) -> None:
         """Show / hide the right-hand Color/Channels dock.
