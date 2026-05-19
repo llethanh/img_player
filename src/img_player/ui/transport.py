@@ -365,183 +365,70 @@ class TransportBar(QWidget):  # type: ignore[misc]
 
         # --- Export button (v0.5.0) -----------------------------------
         # 💾 floppy-disk emoji is the universal "save / export" cue.
+        # Brief §8 + §11.3: SVG line-art glyphs replace the legacy
+        # emoji buttons (💾 / 🔄) and the previous custom-QSS compare /
+        # contact-sheet buttons. All four lean on the global #btnIcon
+        # / #btnToggle QSS variants from theme.build_stylesheet() so
+        # no ad-hoc border/hover stylesheets remain — the active
+        # (checked) state automatically picks up ACC_BRIGHT background
+        # tint + border.
+
+        # --- Export button (SVG save) ---------------------------------
         # Disabled until a sequence is loaded — the app flips it on
         # via ``set_export_enabled``.
-        self._export_btn = _text_button(
-            "💾", "Export sequence to image seq or video (Ctrl+Shift+E)"
+        self._export_btn = _icon_button(
+            make_icon("save"),
+            "Export sequence to image seq or video (Ctrl+Shift+E)",
         )
         self._export_btn.clicked.connect(self.export_clicked.emit)
         self._export_btn.setEnabled(False)
 
-        # --- Reload button (v0.5.1) -----------------------------------
-        # 🔄 = smart re-scan. Keeps cached frames whose mtime is
-        # unchanged, drops the rest, picks up files that were added
-        # to the source folder while the app was running. Disabled
-        # until a sequence is loaded.
-        self._reload_btn = _text_button(
-            "🔄", "Reload cache — re-scan source folder (Ctrl+R)"
+        # --- Reload button (SVG refresh) ------------------------------
+        # Smart re-scan — keeps cached frames whose mtime is unchanged,
+        # drops the rest, picks up files that were added to the source
+        # folder while the app was running. Disabled until a sequence
+        # is loaded.
+        self._reload_btn = _icon_button(
+            make_icon("refresh"),
+            "Reload cache — re-scan source folder (Ctrl+R)",
         )
         self._reload_btn.clicked.connect(self.reload_clicked.emit)
         self._reload_btn.setEnabled(False)
 
-        # --- Compare toggle (v1.2) ------------------------------------
-        # Split-view icon (rectangle, vertical seam, A | B labels) in
-        # the warm accent so it stands out on the menu-bar row as a
-        # mode toggle rather than a generic transport control.
-        # Checkable: stays "down" while compare mode is active.
-        # Disabled until the stack has at least two layers — there's
-        # nothing meaningful to compare against otherwise.
+        # --- Compare toggle (SVG ab-toggle) ---------------------------
+        # The A/B compare entry point in the top-right toolbar. Painted
+        # in the warm accent (ACC_BRIGHT) at rest so it reads as
+        # "review mode" alongside the contact-sheet sibling — same
+        # visual language as the pen button on the transport side.
+        # Checkable: stays "down" + active-tinted while compare mode
+        # is active (via global btnToggle:checked QSS). Disabled until
+        # the layer stack reaches at least two layers.
         self._compare_btn = _icon_button(
-            make_icon(
-                "compare",
-                color=H.ACCENT,
-                size=22,
-                disabled_color=H.TEXT_DISABLED,
-            ),
+            make_icon("ab-toggle", color=H.ACC_BRIGHT),
             "Compare two layers (W)",
         )
-        # Render the icon larger inside its button than the
-        # default G.ICON_SIZE (18) — this mark fills the button
-        # less visually than the simpler arrow / disk glyphs and
-        # was reading as "tiny" by comparison. 22 px gives it the
-        # same on-screen weight as the other buttons.
-        self._compare_btn.setIconSize(QSize(22, 22))
+        self._compare_btn.setObjectName("btnToggle")
         self._compare_btn.setCheckable(True)
         self._compare_btn.clicked.connect(self.compare_toggled.emit)
-        # Use ``border`` shorthand (not bare ``border-color``) so Qt
-        # draws all 4 sides at the same width / style — bare
-        # ``border-color`` left the bottom edge unrendered in some
-        # paint paths. Add ``background-color`` so the rule isn't
-        # ambiguous about the surface bg either; padding stays from
-        # the global cascade.
-        # Pin every property explicitly. The minute one is left to
-        # the global cascade Qt's QSS engine seems to drop the
-        # bottom edge on this checkable QPushButton (probably a
-        # native-style merge artefact specific to the corner-widget
-        # context). Including ``min-width`` / ``min-height`` /
-        # ``padding`` / ``border-radius`` alongside the explicit
-        # per-side borders has been the only reliable way to keep
-        # all four edges painted.
-        _border = f"1px solid {H.ACCENT_DIM}"
-        _border_h = f"1px solid {H.ACCENT}"
-        _border_chk = f"1px solid {H.ACCENT_BRIGHT}"
-        # Disabled state — desaturated dim border + muted bg, so the
-        # button reads "not actionable yet" when the layer stack only
-        # has 0 or 1 entry. Uses a neutral border (not BORDER_SUBTLE
-        # which collapses into the QMenuBar's bottom rule) so the
-        # 4 edges stay visible. Icon is auto-greyed by Qt's Disabled
-        # pixmap mode (handled in icons.make_icon).
-        _border_dis = f"1px solid {H.BORDER_DEFAULT}"
-        self._compare_btn.setStyleSheet(
-            f"QPushButton {{"
-            f"  background-color: {H.BG_SURFACE};"
-            f"  color: {H.TEXT_PRIMARY};"
-            f"  border-top: {_border};"
-            f"  border-bottom: {_border};"
-            f"  border-left: {_border};"
-            f"  border-right: {_border};"
-            f"  border-radius: 3px;"
-            f"  padding: 0;"
-            f"}}"
-            f"QPushButton:hover {{"
-            f"  background-color: {H.BG_HOVER};"
-            f"  border-top: {_border_h};"
-            f"  border-bottom: {_border_h};"
-            f"  border-left: {_border_h};"
-            f"  border-right: {_border_h};"
-            f"}}"
-            f"QPushButton:checked {{"
-            f"  background-color: {H.BG_SELECT};"
-            f"  border-top: {_border_chk};"
-            f"  border-bottom: {_border_chk};"
-            f"  border-left: {_border_chk};"
-            f"  border-right: {_border_chk};"
-            f"}}"
-            f"QPushButton:disabled {{"
-            f"  background-color: {H.BG_BASE};"
-            f"  color: {H.TEXT_DISABLED};"
-            f"  border-top: {_border_dis};"
-            f"  border-bottom: {_border_dis};"
-            f"  border-left: {_border_dis};"
-            f"  border-right: {_border_dis};"
-            f"}}"
-        )
-        # Disabled by default — no sequence loaded means there's
-        # nothing to compare. The app's ``_refresh_after_stack_change``
-        # flips it on once the layer stack reaches at least 2 layers.
-        # The :disabled QSS rule above paints a desaturated frame
-        # using ``BORDER_DEFAULT`` (instead of BORDER_SUBTLE) so the
-        # button still reads "not actionable yet" without the bottom
-        # edge collapsing into a neighbouring border.
         self._compare_btn.setEnabled(False)
 
-        # --- Contact sheet --------------------------------------------------
-        # Two separate buttons sitting side-by-side in the toolbar:
-        # * ``_contact_sheet_btn`` — the main toggle, just the grid
-        #   icon, same shape as the compare button.
-        # * ``_contact_sheet_menu_btn`` — a tiny chevron / "…" button
-        #   that opens the settings popup.
-        # The earlier QToolButton(MenuButtonPopup) approach overlapped
-        # the chevron on top of the icon at the toolbar's compact
-        # button size; the two-button layout makes each affordance
-        # legible without competing for pixels.
+        # --- Contact sheet toggle (SVG contact-sheet) -----------------
+        # Sibling to the compare toggle. Same orange-icon + btnToggle
+        # treatment so the two review-mode buttons read as a group.
+        # The legacy ``⋯`` kebab menu next to it (settings popup)
+        # remains here for backwards-compat with main_window.py
+        # references but is NOT added to any visible layout — those
+        # settings live in the ContactSheetBand toolbar that appears
+        # above the viewer when the mode is on.
         from PySide6.QtWidgets import QMenu  # noqa: PLC0415 — local to this section
         self._contact_sheet_btn = _icon_button(
-            make_icon(
-                "grid",
-                color=H.ACCENT,
-                size=22,
-                disabled_color=H.TEXT_DISABLED,
-            ),
+            make_icon("contact-sheet", color=H.ACC_BRIGHT),
             "Contact sheet — all layers tiled in a grid (Ctrl+G)",
         )
-        self._contact_sheet_btn.setIconSize(QSize(22, 22))
+        self._contact_sheet_btn.setObjectName("btnToggle")
         self._contact_sheet_btn.setCheckable(True)
         self._contact_sheet_btn.clicked.connect(
             self.contact_sheet_toggled.emit,
-        )
-        # Grey border when inactive (matches the default transport
-        # buttons), accent only when the mode is checked / on hover.
-        # Earlier we mirrored the compare button's QSS which painted
-        # an orange border even when CS was off — user feedback was
-        # that the cadre looked permanently "active" and competed
-        # visually with the rest of the toolbar.
-        _cs_border = f"1px solid {H.BORDER_DEFAULT}"
-        _cs_border_h = f"1px solid {H.ACCENT}"
-        _cs_border_chk = f"1px solid {H.ACCENT_BRIGHT}"
-        self._contact_sheet_btn.setStyleSheet(
-            f"QPushButton {{"
-            f"  background-color: {H.BG_SURFACE};"
-            f"  color: {H.TEXT_PRIMARY};"
-            f"  border-top: {_cs_border};"
-            f"  border-bottom: {_cs_border};"
-            f"  border-left: {_cs_border};"
-            f"  border-right: {_cs_border};"
-            f"  border-radius: 3px;"
-            f"  padding: 0;"
-            f"}}"
-            f"QPushButton:hover {{"
-            f"  background-color: {H.BG_HOVER};"
-            f"  border-top: {_cs_border_h};"
-            f"  border-bottom: {_cs_border_h};"
-            f"  border-left: {_cs_border_h};"
-            f"  border-right: {_cs_border_h};"
-            f"}}"
-            f"QPushButton:checked {{"
-            f"  background-color: {H.BG_SELECT};"
-            f"  border-top: {_cs_border_chk};"
-            f"  border-bottom: {_cs_border_chk};"
-            f"  border-left: {_cs_border_chk};"
-            f"  border-right: {_cs_border_chk};"
-            f"}}"
-            f"QPushButton:disabled {{"
-            f"  background-color: {H.BG_BASE};"
-            f"  color: {H.TEXT_DISABLED};"
-            f"  border-top: {_cs_border};"
-            f"  border-bottom: {_cs_border};"
-            f"  border-left: {_cs_border};"
-            f"  border-right: {_cs_border};"
-            f"}}"
         )
 
         # Settings popup: tiny QToolButton with the "options" glyph,
