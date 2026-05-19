@@ -217,15 +217,24 @@ _TEMPLATES: dict[str, str] = {
     # * fill="none" everywhere except where a small filled accent
     #   reinforces the silhouette (the pin's body).
     "pen": (
+        # Replaced (2026-Q2) with the brief §11.4 silhouette — the
+        # previous legacy version was a thin diagonal stroke +
+        # off-axis parallelogram nib that rendered at small sizes as
+        # an abstract glyph (users reported it reading as a key or a
+        # wrench, not a pencil). The new SVG is a single closed
+        # quadrilateral body (the wood + paint of the pencil) with
+        # the lead tip at the bottom-left and the eraser end at the
+        # top-right, plus a short cross-line near the tip that
+        # suggests the wood / lead boundary. Reads instantly as
+        # "pencil" at 16 px.
         '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="none" '
-        'stroke="{color}" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">'
-        # body diagonal
-        '<path d="M3.5 12.5 L11.5 4.5"/>'
-        # tip cap (a small triangle at the top-right end of the body)
-        '<path d="M10.5 3.5 L13.5 6.5 L11.5 8.5 L8.5 5.5 Z"/>'
-        # short ground line under the tip — suggests the pen has just
-        # left a stroke
-        '<path d="M2 14 L4 14"/>'
+        'stroke="{color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
+        # Pencil body: closed 5-vertex polygon traced from the lead
+        # tip (2.5, 13.5) up the left edge, across the top-right
+        # eraser, and back down the right edge to close.
+        '<path d="M2.5 13.5 L2.5 10.5 L9.5 3.5 L12.5 6.5 L5.5 13.5 Z"/>'
+        # Wood / lead boundary line — short stroke near the tip.
+        '<path d="M8.5 4.5 L11.5 7.5"/>'
         "</svg>"
     ),
     "eraser": (
