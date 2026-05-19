@@ -59,19 +59,23 @@ class HeaderInfoStrip(QWidget):  # type: ignore[misc]
     HEIGHT = G.CTRL_BUTTON_H - 2  # 26 px per brief §2
     # Padding inside each cell, brief §2: padding-x 14.
     CELL_PAD_H = S.S_14
+    # Text colour — warm cream, matching the legacy InfoBand's
+    # ``#FFE5C0``. The user wants the strip's typo to read white like
+    # the old info band rather than orange.
+    TEXT_COLOR = "#FFE5C0"
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("headerInfoStrip")
         self.setFixedHeight(self.HEIGHT)
-        # Strip background: warm-amber at 40% alpha — visible orange
+        # Strip background: warm-amber at 30% alpha — a quiet orange
         # caption that still lets the image bleed through enough for
         # the user to see what's happening under the cartouche. Border
         # in ACC_DEEP frames the strip.
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet(
             f"QWidget#headerInfoStrip {{"
-            f"  background-color: rgba(232, 144, 28, 0.40);"
+            f"  background-color: rgba(232, 144, 28, 0.30);"
             f"  border: 1px solid {H.BORDER_ACC_DEEP};"
             f"  border-radius: {G.RADIUS_MD}px;"
             f"}}"
@@ -91,7 +95,7 @@ class HeaderInfoStrip(QWidget):  # type: ignore[misc]
         # added at the end of the layout absorbs any leftover
         # horizontal space.
         self._name_label = self._make_cell_label(
-            weight_600=True, expand=False, color=H.ACC_BRIGHT,
+            weight_600=True, expand=False, color=self.TEXT_COLOR,
         )
         self._name_label.setText("(no sequence)")
         layout.addWidget(self._name_label, 0)
@@ -140,7 +144,7 @@ class HeaderInfoStrip(QWidget):  # type: ignore[misc]
         # Padding-x baked into the QSS so each cell visually owns the
         # space between its hairline separators.
         weight = 600 if weight_600 else 500
-        col = color or H.ACC_BRIGHT
+        col = color or self.TEXT_COLOR
         label.setStyleSheet(
             f"color: {col};"
             f"font-family: {F.FAMILY_MONO};"
@@ -186,15 +190,15 @@ class HeaderInfoStrip(QWidget):  # type: ignore[misc]
         self._render_kv(label, "")
         return label
 
-    @staticmethod
-    def _render_kv(label: QLabel, value: str) -> None:
+    @classmethod
+    def _render_kv(cls, label: QLabel, value: str) -> None:
         prefix = label.property("kvPrefix") or ""
-        # The prefix sits at ~65 % alpha of the accent bright so the
+        # The prefix sits at ~65 % alpha of the cream text so the
         # value reads as the dominant info.
         html = (
-            f"<span style='color: rgba(245, 168, 48, 0.65);'>{prefix}</span>"
+            f"<span style='color: rgba(255, 229, 192, 0.65);'>{prefix}</span>"
             f"&nbsp;&nbsp;"
-            f"<span style='color: {H.ACC_BRIGHT};'>{value}</span>"
+            f"<span style='color: {cls.TEXT_COLOR};'>{value}</span>"
         )
         label.setText(html)
 
