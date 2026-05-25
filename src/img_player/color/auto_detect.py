@@ -307,6 +307,134 @@ _QT_NAMED_COLORSPACE_TO_DISPLAY: dict[str, str] = {
 }
 
 
+def detect_source_colorspace_from_video(
+    color_primaries: str | None,
+    color_trc: str | None,
+    available_colorspaces: Iterable[str],
+) -> DetectionResult:
+    """Pick a source colorspace from a video container's color tags.
+
+    Mirrors :func:`detect_source_colorspace` for video files: image
+    sequences carry their colorspace as OIIO / EXR header attributes,
+    whereas video files carry it in the container as the FFmpeg /
+    PyAV ``color_primaries`` + ``color_trc`` fields (filled in from
+    H.264 / HEVC SEI, Matroska color, MP4 ``colr`` atom, …).
+
+    The function only consumes those two fields — ``colorspace``
+    (matrix coefficients) and ``color_range`` describe the YUV → RGB
+    decode, not the OCIO source colorspace.
+
+    Common cases handled:
+
+    - **Rec.709 SDR** (the typical mp4 / mov / mkv consumer file) —
+      either ``bt709`` primaries / ``bt709`` TRC, OR both fields
+      unspecified (most encoders leave them blank and assume Rec.709).
+    - **HDR PQ** — ``smpte2084`` TRC, usually with ``bt2020`` primaries.
+    - **HDR HLG** — ``arib-std-b67`` TRC (BT.2100 HLG).
+    - **Rec.2020 SDR** — ``bt2020`` primaries with non-HDR TRC.
+    - **Display P3** — ``smpte432`` primaries (P3-D65) or ``smpte431``
+      (P3 DCI).
+    - **sRGB** — ``iec61966-2-1`` TRC.
+    - **Rec.601** — ``smpte170m`` (NTSC) or ``bt470bg`` (PAL) primaries.
+
+    Returns a :class:`DetectionResult` with ``colorspace=None`` when
+    the active OCIO config has no matching name; ``reason`` always
+    quotes the tags the container declared so the user can see
+    what was probed.
+    """
+    available = list(available_colorspaces)
+    # Tag string for the log line — keep the raw values so the user
+    # sees what the container actually claimed.
+    tag = (
+        f"video container: primaries={color_primaries or 'unspec'} "
+        f"trc={color_trc or 'unspec'}"
+    )
+    # PyAV's enum names come through as ``"bt709"`` / ``"smpte2084"``;
+    # newer / older builds and some demuxers use ``smpte_2084`` or
+    # ``arib-std-b67``. Strip BOTH separators so the match expressions
+    # below compare against a single canonical form (lowercase, no
+    # punctuation).
+    pri = (color_primaries or "").lower().replace("_", "").replace("-", "")
+    trc = (color_trc or "").lower().replace("_", "").replace("-", "")
+
+    def _first_match(candidates: Iterable[str]) -> str | None:
+        for cand in candidates:
+            cs = _find_colorspace(cand, available)
+            if cs is not None:
+                return cs
+        return None
+
+    # HDR PQ — smpte2084 always implies BT.2100 PQ regardless of
+    # primaries (encoders sometimes leave primaries blank for PQ).
+    if trc == "smpte2084":
+        cs = _first_match([
+            "Rec.2020 ST2084", "ST2084 Rec.2020", "Rec.2020-ST2084",
+            "Rec.2020 PQ", "BT.2100 PQ", "PQ",
+        ])
+        if cs is not None:
+            return DetectionResult(cs, tag)
+
+    # HDR HLG — arib-std-b67 is BT.2100 HLG.
+    if trc == "aribstdb67":
+        cs = _first_match([
+            "Rec.2020 HLG", "Rec.2020-HLG", "HLG Rec.2020",
+            "BT.2100 HLG", "HLG",
+        ])
+        if cs is not None:
+            return DetectionResult(cs, tag)
+
+    # Rec.2020 SDR (rare but covers BT.2020 SDR cinema deliverables).
+    if pri == "bt2020" and trc not in {"smpte2084", "aribstdb67"}:
+        cs = _first_match(["Rec.2020", "Rec.ITU-R BT.2020"])
+        if cs is not None:
+            return DetectionResult(cs, tag)
+
+    # Display P3 — smpte432 is P3-D65 (Apple), smpte431 is P3-DCI.
+    if pri in {"smpte432", "smpte431"}:
+        cs = _first_match([
+            "Display P3", "P3 D65", "P3-D65", "DCI-P3", "P3-DCI",
+        ])
+        if cs is not None:
+            return DetectionResult(cs, tag)
+
+    # sRGB — explicit IEC 61966-2-1 transfer (with bt709 primaries).
+    if trc == "iec6196621":
+        cs = _first_match([
+            "sRGB", "sRGB - Texture", "sRGB-Texture", "sRGB - Display",
+        ])
+        if cs is not None:
+            return DetectionResult(cs, tag)
+
+    # Rec.601 (NTSC / PAL) — legacy SD video. Tested BEFORE Rec.709
+    # because the BT.601 primaries (``smpte170m`` / ``bt470bg``) are
+    # the distinguishing signal: SD content with these primaries
+    # often carries ``bt709`` as the matrix/TRC tag in the wild, and
+    # the primaries are what actually scopes the gamut.
+    if pri in {"smpte170m", "bt470bg"}:
+        cs = _first_match([
+            "Rec.601 (NTSC)" if pri == "smpte170m" else "Rec.601 (PAL)",
+            "Rec.601", "BT.601", "sdtv-rec601",
+        ])
+        if cs is not None:
+            return DetectionResult(cs, tag)
+
+    # Rec.709 — the dominant SDR case. Match if EITHER axis is bt709,
+    # OR both are unspecified (most consumer encoders skip the tags
+    # and the spec defaults to Rec.709).
+    if pri == "bt709" or trc == "bt709" or (not pri and not trc):
+        cs = _first_match([
+            "Rec.709", "Rec.1886 / Rec.709 Video",
+            "Rec.709 - Display", "Rec.1886 Rec.709 - Display",
+            "Rec.709 (sRGB primaries)",
+        ])
+        if cs is not None:
+            return DetectionResult(cs, tag)
+
+    return DetectionResult(
+        None, f"{tag} — no matching colorspace in the active OCIO config",
+    )
+
+
 def detect_display(
     qt_named_hint: str | None,
     available_displays: Iterable[str],

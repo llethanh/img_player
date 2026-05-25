@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from PySide6.QtCore import QSize, Signal
+from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
@@ -19,7 +20,32 @@ from PySide6.QtWidgets import (
 
 from img_player.color.ocio_manager import OCIOManager
 from img_player.ui.icons import make_icon
-from img_player.ui.theme import H, S
+from img_player.ui.theme import F, H, S
+
+
+def _fit_combo_popup_to_contents(combo: QComboBox, *, extra_px: int = 40) -> None:
+    """Widen a combo's dropdown popup so the longest item is fully
+    readable, without resizing the combo button itself.
+
+    OCIO display / view / colorspace names can run to ~30 characters
+    ("Rec.1886 Rec.709 - Display", "ST2084-P3-D65 - Display", …) and
+    the popup defaults to the button's width — which truncates them
+    with an ellipsis. We measure each item with the explicit mono
+    font the combo uses (per the global QSS), pick the widest, then
+    set the view's ``minimumWidth`` to that plus a small allowance
+    for the scrollbar + padding.
+
+    Call after every ``addItems``: at construction and again after
+    every rebuild (``_refresh_views``, ``reload_manager``).
+    """
+    fm = QFontMetrics(F.mono(F.SIZE_MONO_CODE))
+    max_w = 0
+    for i in range(combo.count()):
+        w = fm.horizontalAdvance(combo.itemText(i))
+        if w > max_w:
+            max_w = w
+    if max_w > 0:
+        combo.view().setMinimumWidth(max_w + extra_px)
 
 
 class ColorPanel(QWidget):  # type: ignore[misc]
@@ -54,6 +80,7 @@ class ColorPanel(QWidget):  # type: ignore[misc]
 
         self._src_combo = QComboBox()
         self._src_combo.addItems(manager.list_colorspaces())
+        _fit_combo_popup_to_contents(self._src_combo)
         default_src = manager.role("scene_linear") or manager.list_colorspaces()[0]
         self._src_combo.setCurrentText(default_src)
 
@@ -88,6 +115,7 @@ class ColorPanel(QWidget):  # type: ignore[misc]
 
         self._display_combo = QComboBox()
         self._display_combo.addItems(manager.list_displays())
+        _fit_combo_popup_to_contents(self._display_combo)
         default_display = manager.default_display()
         self._display_combo.setCurrentText(default_display)
 
@@ -318,11 +346,13 @@ class ColorPanel(QWidget):  # type: ignore[misc]
             self._src_combo.blockSignals(True)
             self._src_combo.clear()
             self._src_combo.addItems(new_colorspaces)
+            _fit_combo_popup_to_contents(self._src_combo)
             self._src_combo.blockSignals(False)
 
             self._display_combo.blockSignals(True)
             self._display_combo.clear()
             self._display_combo.addItems(new_displays)
+            _fit_combo_popup_to_contents(self._display_combo)
             self._display_combo.blockSignals(False)
 
             # Preserve source if still available; otherwise scene_linear
@@ -409,6 +439,7 @@ class ColorPanel(QWidget):  # type: ignore[misc]
         self._view_combo.blockSignals(True)
         self._view_combo.clear()
         self._view_combo.addItems(self._manager.list_views(display))
+        _fit_combo_popup_to_contents(self._view_combo)
         default_view = self._manager.default_view(display)
         if default_view:
             self._view_combo.setCurrentText(default_view)

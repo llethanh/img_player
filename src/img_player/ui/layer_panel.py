@@ -1567,11 +1567,17 @@ class LayerPanel(QFrame):  # type: ignore[misc]
         for path in targets:
             try:
                 if sys.platform.startswith("win"):
-                    # /select, highlights the file inside its folder.
-                    # Comma-after-flag is mandatory — explorer parses
-                    # this as a single token.
+                    # ``/select,`` highlights the file inside its folder.
+                    # Build the command as a single string with the path
+                    # quoted — the list form has Popen wrap the WHOLE
+                    # ``/select,…`` token in quotes (because of spaces),
+                    # which Explorer can't parse: it expects
+                    # ``/select,"path"`` with only the path quoted.
+                    # Critical for paths with spaces and for UNC paths
+                    # (``\\server\share\…``) — the previous list form
+                    # silently opened the wrong folder for both.
                     subprocess.Popen(
-                        ["explorer", f"/select,{path}"],
+                        f'explorer.exe /select,"{path}"',
                     )
                 elif sys.platform == "darwin":
                     subprocess.Popen(["open", "-R", str(path)])

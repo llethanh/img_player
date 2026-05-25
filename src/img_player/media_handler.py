@@ -159,6 +159,14 @@ def open_video_path(app: ImgPlayerApp, path: Path) -> None:
     app._controller.state_changed.emit(app._controller._state)  # type: ignore[attr-defined]
     app._controller.frame_changed.emit(layer.master_start)
     app._window.update_sequence_info(layer.sequence)
+    # Mirror the image-sequence load path (``scan_handler``): run the
+    # source-colorspace auto-detect against the new layer. The video
+    # branch of ``_guess_source_colorspace`` reads the container's
+    # color tags (color_primaries / color_trc) from the layer's
+    # ``video_metadata`` — without this a loaded mp4 / mov / mkv
+    # would stay on the default colorspace even when the container
+    # explicitly declares Rec.709, HDR PQ, HLG, Rec.2020 etc.
+    app._guess_source_colorspace(layer.sequence, layer=layer)
     if metadata.fps is not None:
         app._window.set_status(
             f"Loaded video {path.name} "
@@ -194,6 +202,10 @@ def add_video_layer(app: ImgPlayerApp, path: Path) -> bool:
         return False
     layer = Layer.from_video(metadata)
     app._layer_stack.add(layer, position=0)
+    # Same rationale as ``open_video_path``: feed the container's
+    # color tags into the source-colorspace auto-detect so adding a
+    # video layer matches the behaviour of adding an image sequence.
+    app._guess_source_colorspace(layer.sequence, layer=layer)
     return True
 
 

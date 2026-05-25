@@ -17,6 +17,7 @@ from img_player.color.auto_detect import (
     classify_source_colorspace,
     detect_display,
     detect_source_colorspace,
+    detect_source_colorspace_from_video,
     detect_view,
 )
 
@@ -378,3 +379,108 @@ class TestDetectView:
         # we fall back to the explicit default.
         assert result.colorspace == "ACES 1.0 SDR-video"
         assert "falling back" in result.reason
+
+
+# ---------------------------------------------------------------------- Video container
+
+# An OCIO config that covers the common video-container colorspaces
+# (Rec.709 / Rec.2020 SDR / HDR PQ + HLG / Display P3 / Rec.601).
+# Names roughly mirror the ACES Studio config + the AgX / OCIO 2.x
+# display family.
+VIDEO_OCIO_CONFIG = [
+    "Raw",
+    "ACES2065-1",
+    "ACEScg",
+    "Rec.709",
+    "Rec.1886 / Rec.709 Video",
+    "sRGB",
+    "Rec.2020",
+    "Rec.2020 ST2084",
+    "Rec.2020 HLG",
+    "Display P3",
+    "Rec.601 (NTSC)",
+    "Rec.601 (PAL)",
+]
+
+
+class TestDetectSourceColorspaceFromVideo:
+    """Pure-function tests for the video-container variant."""
+
+    def test_rec709_explicit_tags(self) -> None:
+        # The dominant SDR mp4 / mov case — both axes tagged bt709.
+        result = detect_source_colorspace_from_video(
+            "bt709", "bt709", VIDEO_OCIO_CONFIG,
+        )
+        assert result.colorspace == "Rec.709"
+        assert "bt709" in result.reason
+
+    def test_unspecified_tags_default_to_rec709(self) -> None:
+        # Most consumer encoders leave the color tags blank; the spec
+        # says assume Rec.709, which is also what the wider VFX
+        # tooling does.
+        result = detect_source_colorspace_from_video(
+            None, None, VIDEO_OCIO_CONFIG,
+        )
+        assert result.colorspace == "Rec.709"
+
+    def test_hdr_pq(self) -> None:
+        # ST.2084 transfer always means HDR PQ.
+        result = detect_source_colorspace_from_video(
+            "bt2020", "smpte2084", VIDEO_OCIO_CONFIG,
+        )
+        assert result.colorspace == "Rec.2020 ST2084"
+
+    def test_hdr_pq_pyav_underscore_spelling(self) -> None:
+        # Newer PyAV reports ``smpte_2084`` / ``arib_std_b67`` with
+        # underscores — the function normalises to dashes.
+        result = detect_source_colorspace_from_video(
+            "bt2020", "smpte_2084", VIDEO_OCIO_CONFIG,
+        )
+        assert result.colorspace == "Rec.2020 ST2084"
+
+    def test_hdr_hlg(self) -> None:
+        result = detect_source_colorspace_from_video(
+            "bt2020", "arib-std-b67", VIDEO_OCIO_CONFIG,
+        )
+        assert result.colorspace == "Rec.2020 HLG"
+
+    def test_rec2020_sdr(self) -> None:
+        # BT.2020 primaries with non-HDR TRC → Rec.2020 SDR, not PQ.
+        result = detect_source_colorspace_from_video(
+            "bt2020", "bt709", VIDEO_OCIO_CONFIG,
+        )
+        assert result.colorspace == "Rec.2020"
+
+    def test_display_p3(self) -> None:
+        result = detect_source_colorspace_from_video(
+            "smpte432", "iec61966-2-1", VIDEO_OCIO_CONFIG,
+        )
+        assert result.colorspace == "Display P3"
+
+    def test_srgb_via_iec_tag(self) -> None:
+        # iec61966-2-1 TRC with no specific primaries → sRGB.
+        result = detect_source_colorspace_from_video(
+            "bt709", "iec61966-2-1", VIDEO_OCIO_CONFIG,
+        )
+        assert result.colorspace == "sRGB"
+
+    def test_rec601_ntsc(self) -> None:
+        result = detect_source_colorspace_from_video(
+            "smpte170m", "bt709", VIDEO_OCIO_CONFIG,
+        )
+        assert result.colorspace == "Rec.601 (NTSC)"
+
+    def test_rec601_pal(self) -> None:
+        result = detect_source_colorspace_from_video(
+            "bt470bg", "bt709", VIDEO_OCIO_CONFIG,
+        )
+        assert result.colorspace == "Rec.601 (PAL)"
+
+    def test_no_match_when_config_lacks_target(self) -> None:
+        # Config without Rec.2020 entries → PQ has no home.
+        thin_config = ["Raw", "sRGB", "Rec.709"]
+        result = detect_source_colorspace_from_video(
+            "bt2020", "smpte2084", thin_config,
+        )
+        assert result.colorspace is None
+        assert "no matching colorspace" in result.reason

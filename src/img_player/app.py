@@ -3025,6 +3025,86 @@ class ImgPlayerApp:
         new_state = not self._annotation_toolbar.is_ephemeral_mode()
         self._annotation_toolbar.set_ephemeral_mode(new_state)
 
+    def _persist_review_notes_sidecar(self) -> tuple[bool, bool]:
+        """Write the in-memory annotation + comment stores to their
+        shared sidecar (``.img_player_annotations.json``).
+
+        Returns ``(annotations_saved_ok, comments_saved_ok)`` — both
+        default to ``True`` when there's nothing dirty (no work,
+        no failure). On success the corresponding store is marked
+        clean, so a subsequent dirty-check (the close-time prompt,
+        a save-session-then-close gesture) sees a clean slate and
+        doesn't re-ask.
+
+        No-op when no sidecar path is known (no sequence loaded).
+        Shared by the close-time prompt :meth:`_prompt_save_annotations`
+        AND :meth:`_on_save_session_requested`, so an explicit Save
+        Session also persists pending review notes — the user thinks
+        of Save Session as "save everything I've changed", and
+        leaving the sidecar dirty after one fires the close prompt
+        for nothing.
+        """
+        if self._annotations_path is None or self._annotations_basename is None:
+            return True, True
+        annotations_dirty = self._annotation_store.is_dirty()
+        comments_dirty = self._comment_store.is_dirty()
+        if not annotations_dirty and not comments_dirty:
+            return True, True
+        saved_anno_ok = True
+        saved_com_ok = True
+        anno_layer_ids = (
+            self._annotation_store.layers_with_strokes()
+            if annotations_dirty else frozenset()
+        )
+        com_layer_ids = (
+            self._comment_store.layers_with_comments()
+            if comments_dirty else frozenset()
+        )
+        touched_layers = anno_layer_ids | com_layer_ids
+        for layer_id in touched_layers:
+            layer = self._layer_stack.find(layer_id)
+            # ``name_hint`` falls back to the last-known basename when
+            # the layer has been removed mid-session but still has
+            # unsaved strokes — better to write under the synthetic id
+            # than to lose the data.
+            name_hint = (
+                layer.sequence.base_name.rstrip("._-") or layer.sequence.base_name
+                if layer is not None and layer.sequence is not None
+                else self._annotations_basename or ""
+            )
+            source_path_hint = (
+                str(layer.sequence.directory)
+                if layer is not None and layer.sequence is not None
+                else ""
+            )
+            if layer_id in anno_layer_ids:
+                self._annotation_store.set_current_layer_id(layer_id)
+                ok = save_annotations(
+                    self._annotations_path,
+                    self._annotation_store,
+                    layer_id=layer_id,
+                    name_hint=name_hint,
+                    source_path_hint=source_path_hint,
+                )
+                if not ok:
+                    saved_anno_ok = False
+            if layer_id in com_layer_ids:
+                self._comment_store.set_current_layer_id(layer_id)
+                ok = save_comments(
+                    self._annotations_path,
+                    self._comment_store,
+                    layer_id=layer_id,
+                    name_hint=name_hint,
+                    source_path_hint=source_path_hint,
+                )
+                if not ok:
+                    saved_com_ok = False
+        if annotations_dirty and saved_anno_ok:
+            self._annotation_store.mark_clean()
+        if comments_dirty and saved_com_ok:
+            self._comment_store.mark_clean()
+        return saved_anno_ok, saved_com_ok
+
     def _prompt_save_annotations(self) -> bool:
         """Close-time prompt: ask whether to save review notes
         (annotations + comments — both share the sidecar).
@@ -3087,75 +3167,18 @@ class ImgPlayerApp:
         if clicked is cancel_btn:
             return False  # user backed out of the close
         if clicked is save_btn:
-            # Save both stores. Order matters: annotations first
-            # (they wrote the "frames" sub-tree); save_comments then
-            # reads that file and writes "comments" alongside it.
-            # Each is best-effort; we record per-store success so a
-            # partial failure (e.g. read-only dossier corrupted
-            # halfway) leaves the other store's dirty flag intact
-            # and the user can re-try.
-            # v2 sidecar — save every layer that has at least one
-            # stroke / comment. The persistence layer keeps the
-            # merge-on-read pattern so two consecutive saves (one
-            # for annotations, one for comments) don't clobber each
-            # other.
-            saved_anno_ok = True
-            saved_com_ok = True
-            anno_layer_ids = self._annotation_store.layers_with_strokes() if annotations_dirty else frozenset()
-            com_layer_ids = self._comment_store.layers_with_comments() if comments_dirty else frozenset()
-            touched_layers = anno_layer_ids | com_layer_ids
-            for layer_id in touched_layers:
-                layer = self._layer_stack.find(layer_id)
-                # ``name_hint`` falls back to the close-time basename
-                # when the layer has been removed mid-session but
-                # still has unsaved strokes (= the user deleted a
-                # row right before quitting). Better to write under
-                # the synthetic id than to lose the data.
-                name_hint = (
-                    layer.sequence.base_name.rstrip("._-") or layer.sequence.base_name
-                    if layer is not None and layer.sequence is not None
-                    else self._annotations_basename or ""
-                )
-                source_path_hint = (
-                    str(layer.sequence.directory)
-                    if layer is not None and layer.sequence is not None
-                    else ""
-                )
-                if layer_id in anno_layer_ids:
-                    # Make sure the store's current layer slot points
-                    # at this id before reading (to_dict() reads the
-                    # current layer's slice).
-                    self._annotation_store.set_current_layer_id(layer_id)
-                    ok = save_annotations(
-                        self._annotations_path,
-                        self._annotation_store,
-                        layer_id=layer_id,
-                        name_hint=name_hint,
-                        source_path_hint=source_path_hint,
-                    )
-                    if not ok:
-                        saved_anno_ok = False
-                if layer_id in com_layer_ids:
-                    self._comment_store.set_current_layer_id(layer_id)
-                    ok = save_comments(
-                        self._annotations_path,
-                        self._comment_store,
-                        layer_id=layer_id,
-                        name_hint=name_hint,
-                        source_path_hint=source_path_hint,
-                    )
-                    if not ok:
-                        saved_com_ok = False
-            if annotations_dirty and saved_anno_ok:
-                self._annotation_store.mark_clean()
-            elif annotations_dirty:
+            # Delegate the actual sidecar write to the shared helper,
+            # which is also used by File → Save session. Best-effort:
+            # on per-store failure we log but still let the close
+            # proceed — refusing to close after a save attempt would
+            # be worse UX than warning.
+            saved_anno_ok, saved_com_ok = self._persist_review_notes_sidecar()
+            if annotations_dirty and not saved_anno_ok:
                 log.warning(
                     "[annotations] save failed at close — "
                     "underlying error already logged."
                 )
-            if comments_dirty and saved_com_ok:
-                self._comment_store.mark_clean()
-            elif comments_dirty:
+            if comments_dirty and not saved_com_ok:
                 log.warning(
                     "[comment] save failed at close — "
                     "underlying error already logged."
@@ -4301,6 +4324,22 @@ class ImgPlayerApp:
             log.exception("[session] save failed for %s", path)
             self._window.set_status(f"Save session failed: {err}")
             return
+        # Also persist any pending review notes (annotations +
+        # comments) to their sidecar. The session file and the
+        # annotation sidecar are two distinct stores, so without
+        # this an explicit Save Session would still leave the stores
+        # dirty and the user would get the close-time "Save review
+        # notes?" prompt right after — confusing right after an
+        # explicit save. Best-effort: warn on failure but don't roll
+        # back the session save.
+        anno_ok, com_ok = self._persist_review_notes_sidecar()
+        if not anno_ok or not com_ok:
+            log.warning(
+                "[session] review-notes sidecar save reported a "
+                "failure (annotations_ok=%s, comments_ok=%s) — "
+                "underlying error already logged.",
+                anno_ok, com_ok,
+            )
         self._window.set_status(f"Session saved to {path}")
         # Track this session in the Open Recent Session list — the
         # user just declared interest in coming back to it.
@@ -4477,38 +4516,67 @@ class ImgPlayerApp:
                 "Re-detect: no footage loaded.",
             )
             return
-        self._guess_source_colorspace(seq)
+        # Pass the focused layer so the video branch can read its
+        # ``video_metadata.color_*`` tags. ``focused`` may be None when
+        # the controller's sequence isn't bound to a layer (legacy
+        # single-sequence path) — the image-only branch then runs.
+        self._guess_source_colorspace(seq, layer=focused)
 
-    def _guess_source_colorspace(self, seq: SequenceInfo) -> None:
+    def _guess_source_colorspace(
+        self, seq: SequenceInfo, *, layer: Layer | None = None,
+    ) -> None:
         """Auto-detect the source colorspace + the right view for it.
+
+        For image sequences the detection reads OIIO / EXR header
+        attributes via :func:`detect_source_colorspace`. For video
+        layers it reads the container's color tags (FFmpeg / PyAV
+        ``color_primaries`` + ``color_trc``) via
+        :func:`detect_source_colorspace_from_video`. The caller
+        passes ``layer`` so we can branch on ``layer.video_metadata``;
+        when omitted (legacy callers loading bare image sequences),
+        the image path runs.
 
         See :mod:`img_player.color.auto_detect` for the cascades. The
         user can always override via the Color panel.
         """
         from img_player.color.auto_detect import (
             detect_source_colorspace,
+            detect_source_colorspace_from_video,
             detect_view,
         )
         from img_player.io.reader import read_color_metadata
 
-        # Read the metadata of the first frame only — colour metadata
-        # is invariant across the sequence, and reading one header is
-        # cheap (no pixel decode).
-        first_path = seq.frames[0].path if seq.frames else None
-        metadata: dict[str, object] = {}
-        if first_path is not None:
-            try:
-                metadata = read_color_metadata(first_path)
-            except Exception:
-                log.exception("failed to read color metadata from %s", first_path)
-
-        source_result = detect_source_colorspace(
-            metadata=metadata,
-            extension=seq.extension,
-            available_colorspaces=self._ocio.list_colorspaces(),
-            scene_linear_role=self._ocio.role("scene_linear"),
-            unmarked_exr_source=self._prefs.unmarked_exr_source,
-        )
+        if layer is not None and layer.video_metadata is not None:
+            # Video path — read the container's color tags. The
+            # ``VideoMetadata`` field is named ``color_transfer`` (the
+            # PyAV / Matroska naming); the auto-detect parameter sticks
+            # to the FFmpeg ``color_trc`` shorthand.
+            vm = layer.video_metadata
+            source_result = detect_source_colorspace_from_video(
+                color_primaries=vm.color_primaries,
+                color_trc=vm.color_transfer,
+                available_colorspaces=self._ocio.list_colorspaces(),
+            )
+        else:
+            # Image-sequence path — read the first frame's OIIO header.
+            # Colour metadata is invariant across the sequence, and
+            # reading one header is cheap (no pixel decode).
+            first_path = seq.frames[0].path if seq.frames else None
+            metadata: dict[str, object] = {}
+            if first_path is not None:
+                try:
+                    metadata = read_color_metadata(first_path)
+                except Exception:
+                    log.exception(
+                        "failed to read color metadata from %s", first_path,
+                    )
+            source_result = detect_source_colorspace(
+                metadata=metadata,
+                extension=seq.extension,
+                available_colorspaces=self._ocio.list_colorspaces(),
+                scene_linear_role=self._ocio.role("scene_linear"),
+                unmarked_exr_source=self._prefs.unmarked_exr_source,
+            )
         # When the unmarked-EXR override fires, also pin the matching
         # view (if the user paired one). Without this the source would
         # change but the view would stay on whatever the auto-classifier

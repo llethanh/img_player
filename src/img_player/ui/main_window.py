@@ -1645,11 +1645,17 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             self.setWindowTitle("Flick Player")
 
     def _show_about(self) -> None:
+        # Pull the version from the package's ``__version__`` rather
+        # than hard-coding it here, so a release bump in
+        # ``pyproject.toml`` + ``__init__.py`` is the single source of
+        # truth — same string the splash and the ``--version`` CLI
+        # already use.
+        from img_player import __version__  # noqa: PLC0415
         QMessageBox.about(
             self,
             "About Flick Player",
             (
-                "<b>Flick Player</b><br>"
+                f"<b>Flick Player</b> &mdash; v{__version__}<br>"
                 "VFX-grade image sequence player.<br><br>"
                 "OCIO color management, async RAM cache, OpenGL viewport."
             ),
