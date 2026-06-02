@@ -50,7 +50,7 @@ build = [
 img_player = "img_player.__main__:main"
 
 [project.urls]
-Repository = "https://github.com/llethanh/img_player"
+Repository = "https://github.com/llethanh/FlickPlayer"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/img_player"]

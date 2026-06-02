@@ -5,7 +5,7 @@ Windows folder you can copy to any machine — no Python, no conda, no
 admin rights required on the target.
 
 > **TL;DR — just want the binary?** Grab the latest pre-built bundle
-> from **[GitHub Releases](https://github.com/llethanh/img_player/releases)**.
+> from **[GitHub Releases](https://github.com/llethanh/FlickPlayer/releases)**.
 > Unzip, double-click `img_player.exe`. The rest of this document is
 > only useful if you want to rebuild yourself.
 
@@ -27,8 +27,8 @@ cloud folder** (Google Drive Stream, OneDrive, Dropbox):
 repo to a local SSD path first**:
 
 ```
-git clone https://github.com/llethanh/img_player.git C:\Users\%USERNAME%\dev\img_player
-cd C:\Users\%USERNAME%\dev\img_player
+git clone https://github.com/llethanh/FlickPlayer.git C:\dev\FlickPlayer
+cd C:\dev\FlickPlayer
 build_exe.bat
 ```
 

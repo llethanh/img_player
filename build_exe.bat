@@ -18,7 +18,7 @@ REM ---- Refuse to build inside a synced cloud folder -------------------
 REM Google Drive Stream / OneDrive will fight Windows Defender and end
 REM up deleting img_player.exe (or worse, the OIIO DLLs). PyInstaller
 REM bootloader is a known false-positive AV target. Build on a *local*
-REM SSD path instead, e.g. C:\dev\img_player\.
+REM SSD path instead, e.g. C:\dev\FlickPlayer\.
 echo %CD% | findstr /I /C:"\Mon Drive" /C:"\My Drive" /C:"\OneDrive" /C:"\Dropbox" >nul
 if not errorlevel 1 (
     echo.
@@ -29,7 +29,7 @@ if not errorlevel 1 (
     echo            incomplete bundle.
     echo.
     echo            Move ^(or clone^) the repo to a local SSD path first:
-    echo              git clone https://github.com/llethanh/img_player.git C:\dev\img_player
+    echo              git clone https://github.com/llethanh/FlickPlayer.git C:\dev\FlickPlayer
     echo            Then re-run build_exe.bat from there.
     echo.
     pause
