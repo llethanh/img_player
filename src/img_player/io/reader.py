@@ -144,32 +144,40 @@ def read_frame(
         if staged is not None:
             path = staged
 
-    # EXR fast-path via PyOpenEXR.
+    # EXR dispatch — choose between PyOpenEXR and OIIO based on
+    # where the file lives.
     #
-    # Measured against this very network share + the AOV-heavy
-    # Maya CHARS sequence (1920×900, 158 raw / 50 grouped channels,
-    # 232 MB per frame, zips compression):
-    # * OIIO ImageInput → 3-ch decode : 1882 ms / frame cold serial
-    # * PyOpenEXR File()  → full decode: 1335 ms / frame cold serial
-    # That's ~30 % faster on cold network reads even though
-    # PyOpenEXR reads ALL the channels — OpenEXR's C++ lib has a
-    # more efficient I/O pattern than OIIO's wrapper. We pay a
-    # small RAM cost (extra channels held briefly) but gain real
-    # wall-clock playback / scrub speed.
+    # Measured on the AOV-heavy Maya CHARS sequence (1920×900,
+    # 158 raw / 50 grouped channels, 232 MB per frame, zips):
     #
-    # Falls back to OIIO on any error (multipart edge cases,
-    # missing PyOpenEXR install in tests, …). Tests can monkeypatch
-    # ``_read_exr_pyopenexr`` to ``None`` to force the OIIO path.
+    #   from M:\ (SMB)  : PyOpenEXR 1.0 s   OIIO 1.9 s   → use PyOpenEXR
+    #   from local SSD : PyOpenEXR 1.0 s   OIIO 0.14 s  → use OIIO
+    #
+    # Why the asymmetry: PyOpenEXR decodes ALL channels eagerly into
+    # per-key ndarrays — fast on SMB (it makes one optimal bulk read
+    # of the whole file) but slow on local (CPU-bound decompress of
+    # data we don't need). OIIO does the opposite: many small reads
+    # to skip AOVs and decode only the requested ones — terrible on
+    # SMB (RTT-bound), great on local SSD.
+    #
+    # With the staging cache in play, network-source frames get
+    # bulk-copied to local; from that point on we should switch to
+    # OIIO. The path translation above (``_staging_lookup``) means
+    # ``path`` is already the LOCAL staged copy at this point, so
+    # the check below correctly routes staged frames through OIIO.
     if path.suffix.lower() == ".exr":
-        try:
-            arr = _read_exr_pyopenexr(path, channels, as_half)
-            if arr is not None:
-                return arr
-        except Exception:  # noqa: BLE001 — fall through to OIIO
-            log.debug(
-                "PyOpenEXR fast-path failed for %s; falling back to OIIO",
-                path, exc_info=True,
-            )
+        from img_player.cache.network_staging import is_network_path  # noqa: PLC0415
+        if is_network_path(path):
+            # On-network read: PyOpenEXR is the fast path.
+            try:
+                arr = _read_exr_pyopenexr(path, channels, as_half)
+                if arr is not None:
+                    return arr
+            except Exception:  # noqa: BLE001 — fall through to OIIO
+                log.debug(
+                    "PyOpenEXR fast-path failed for %s; falling back to OIIO",
+                    path, exc_info=True,
+                )
 
     inp = oiio.ImageInput.open(str(path))
     if inp is None:
