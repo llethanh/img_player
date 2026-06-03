@@ -325,21 +325,13 @@ class VideoSourceManager:
         colour-managed path arrives once we surface the FFmpeg
         color-primaries / transfer enum at the OCIO input picker).
 
-        Optim: :class:`VideoSource` returns RGBA uint8 straight from
-        swscale (``frame.to_ndarray(format='rgba')``) instead of the
-        old RGB24 + manual alpha expansion. On a 2560×1440 frame the
-        old tail (``rgb→float32`` + ``np.empty(rgba)`` +
-        ``rgba[..,:3]=rgb`` + ``alpha=1.0``) cost ~42 ms; this
-        simpler one-pass cast + multiply drops to ~26 ms. Combined
-        with the swscale change in :class:`VideoSource`, full
-        decode-to-RGBA goes from 43 → 29 ms per frame at 1440p
-        (~1.5× faster, 23 → 34 fps theoretical ceiling).
+        Since v1.8.2 the conversion to float32 happens inside
+        :class:`VideoSource` (see ``_frame_to_rgba_f32``) so cached
+        frames return display-ready and ``decode_at`` is a pass-
+        through on the hot path. Per-frame cost on a 1440p cache
+        hit drops from ~26 ms (the cast pass) to ~3 ms (just the
+        thread sync) — that's what makes scrub-back / loop feel
+        truly instant rather than just "fast".
         """
         dec = self.get_or_open(layer_id, path)
-        rgba_u8 = dec.get(t_seconds)
-        # uint8 RGBA → float32 normalised. Single allocation, single
-        # pass over the buffer. ``copy=False`` lets numpy reuse the
-        # buffer when possible (it won't here — dtype differs — but
-        # the hint is correct and survives a future fast-path that
-        # could keep the data uint8).
-        return rgba_u8.astype(np.float32, copy=False) * (1.0 / 255.0)
+        return dec.get(t_seconds)

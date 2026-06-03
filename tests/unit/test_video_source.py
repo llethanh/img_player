@@ -62,7 +62,7 @@ class TestRamCache:
     def test_cache_starts_empty(self, tmp_path: Path) -> None:
         p = tmp_path / "v.mp4"
         _make_indexed_video(p, n_frames=8)
-        with VideoSource(p) as src:
+        with VideoSource(p, prefetch=False) as src:
             stats = src.cache_stats()
             assert stats["frames"] == 0
             assert stats["bytes"] == 0
@@ -71,7 +71,7 @@ class TestRamCache:
     def test_first_read_populates_cache(self, tmp_path: Path) -> None:
         p = tmp_path / "v.mp4"
         _make_indexed_video(p, n_frames=8)
-        with VideoSource(p) as src:
+        with VideoSource(p, prefetch=False) as src:
             src.frame_at_time(0.0)
             stats = src.cache_stats()
             assert stats["frames"] >= 1
@@ -80,7 +80,7 @@ class TestRamCache:
     def test_reread_does_not_grow_cache(self, tmp_path: Path) -> None:
         p = tmp_path / "v.mp4"
         _make_indexed_video(p, n_frames=8)
-        with VideoSource(p) as src:
+        with VideoSource(p, prefetch=False) as src:
             src.frame_at_time(0.0)
             frames_after_first = src.cache_stats()["frames"]
             src.frame_at_time(0.0)
@@ -96,16 +96,21 @@ class TestRamCache:
 
     def test_budget_evicts_oldest(self, tmp_path: Path) -> None:
         p = tmp_path / "v.mp4"
-        # 64×48 RGBA uint8 = 12 288 bytes/frame; with a 30 000-byte
-        # budget the cache fits 2 frames + a sliver, so a 3rd read
-        # must evict the 1st (LRU policy).
+        # 64×48 RGBA float32 = 49 152 bytes/frame (since v1.8.2 the
+        # cache stores display-ready float32 to skip the cast at
+        # read time). With a 110 000-byte budget the cache fits 2
+        # frames + a sliver, so a 3rd read must evict the 1st (LRU).
+        # ``prefetch=False`` keeps the test deterministic — the
+        # background worker would race with the manual reads.
         _make_indexed_video(p, n_frames=8)
-        with VideoSource(p, cache_budget_bytes=30_000) as src:
+        with VideoSource(
+            p, cache_budget_bytes=110_000, prefetch=False,
+        ) as src:
             src.frame_at_time(0.0 / 24)
             src.frame_at_time(1.0 / 24)
             src.frame_at_time(2.0 / 24)
             stats = src.cache_stats()
-            assert stats["bytes"] <= 30_000
+            assert stats["bytes"] <= 110_000
             # Cache shouldn't have grown past the budget.
             assert stats["frames"] <= 3
 
@@ -126,13 +131,18 @@ class TestRamCache:
 def _frame_index(arr: np.ndarray) -> int:
     """Recover the frame index from its dominant grey level.
 
-    VideoSource returns RGBA (4 channels) since v1.8.2; the alpha
-    plane is uniform 255 and would skew the mean. Use only the RGB
-    planes so the index recovery stays accurate regardless of the
-    decoded format.
+    VideoSource returns float32 RGBA (alpha uniform 1.0) since
+    v1.8.2; the alpha plane would skew the mean if averaged
+    together with RGB. Pulled the values are normalised to [0,1],
+    so multiply by 255 to recover the original grey level.
     """
     rgb = arr[..., :3]
-    return int(round(float(rgb.mean()) / 10.0))
+    # If the array is float32 in [0, 1], scale back up. uint8
+    # straight through.
+    mean = float(rgb.mean())
+    if np.issubdtype(arr.dtype, np.floating):
+        mean *= 255.0
+    return int(round(mean / 10.0))
 
 
 def test_open_close(tmp_path: Path) -> None:
@@ -153,11 +163,12 @@ def test_frame_at_time_first(tmp_path: Path) -> None:
     _make_indexed_video(p, n_frames=24, fps=24)
     with VideoSource(p) as src:
         arr = src.frame_at_time(0.0)
-        # VideoSource now returns RGBA uint8 (v1.8.2 perf change —
-        # see decode_at in video_renderer.py for the rationale). The
-        # alpha plane is always opaque (255) from swscale.
+        # VideoSource caches + returns float32 RGBA in [0, 1] since
+        # v1.8.2 — the conversion is rolled into the cache layer so
+        # cache hits return display-ready (no per-frame cast in
+        # decode_at). The alpha plane is uniform 1.0 from swscale.
         assert arr.shape == (48, 64, 4)
-        assert arr.dtype == np.uint8
+        assert arr.dtype == np.float32
         assert _frame_index(arr) == 0
 
 

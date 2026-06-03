@@ -38,12 +38,19 @@ log = logging.getLogger(__name__)
 
 
 # Default RAM budget for the per-source frame cache. Tunable via
-# ``Preferences.video_cache_budget_mb``. 2 GB fits ~140 frames at
-# 1440p RGBA uint8, ~256 frames at 1080p, ~1000 frames at 720p
-# — enough for the common VFX dailies clip (<60 s) to fit entirely
-# in RAM once warmed, matching the OpenRV "play through once,
-# scrub is instant" UX.
-DEFAULT_VIDEO_CACHE_BUDGET_BYTES: int = 2 * 1024 * 1024 * 1024
+# ``Preferences.video_cache_budget_mb``.
+#
+# Cached frames are stored as **float32 RGBA** rather than uint8 — that's
+# 4× heavier per frame but lets cache hits skip the
+# ``astype(float32) * (1/255)`` pass in ``decode_at`` (= 23 ms on a
+# 1440p frame, completely dominating any cache-hit savings if the cast
+# stayed downstream). With float32 cache:
+#   1440p frame = 2560×1440×4×4 = 57.6 MB   →  ~70 frames in 4 GB
+#   1080p frame = 1920×1080×4×4 = 31.6 MB   →  ~128 frames in 4 GB
+#    720p frame =  1280×720×4×4 = 14.0 MB   →  ~280 frames in 4 GB
+# Most VFX dailies are 30-90 s of 720p/1080p — fits end-to-end after
+# the prefetch worker finishes its sweep.
+DEFAULT_VIDEO_CACHE_BUDGET_BYTES: int = 4 * 1024 * 1024 * 1024
 
 
 class VideoSource:
@@ -186,12 +193,27 @@ class VideoSource:
     # Decode
     # ------------------------------------------------------------------
 
-    def frame_at_time(self, t_seconds: float) -> np.ndarray:
-        """Return the RGB24 frame whose presentation interval contains ``t``.
+    @staticmethod
+    def _frame_to_rgba_f32(frame) -> np.ndarray:  # type: ignore[no-untyped-def]
+        """PyAV frame → (H, W, 4) float32 normalised [0,1].
 
-        Output is an ``(H, W, 3)`` ``uint8`` ndarray in RGB order. The
-        future OCIO input transform will consume this; for now the
-        viewport's existing path treats it as already-display-ready.
+        The float32 conversion is rolled in here so cached frames
+        are display-ready: a cache hit returns immediately without
+        the ~23 ms ``astype(float32) * (1/255)`` pass that used to
+        live in :func:`video_renderer.decode_at`. Trade-off is 4×
+        RAM per cached frame — see the budget defaults in this
+        module's preamble for the math.
+        """
+        rgba_u8 = frame.to_ndarray(format="rgba")
+        return rgba_u8.astype(np.float32, copy=False) * (1.0 / 255.0)
+
+    def frame_at_time(self, t_seconds: float) -> np.ndarray:
+        """Return the frame whose presentation interval contains ``t``.
+
+        Output is an ``(H, W, 4)`` ``float32`` RGBA ndarray with
+        values in [0, 1] — display-ready, no further conversion in
+        ``decode_at``. The OCIO input transform, when wired, will
+        operate on this same array shape and dtype.
 
         Clamps ``t`` to ``[0, duration)``: requesting before-start
         returns the first frame, after-end returns the last decoded
@@ -262,7 +284,7 @@ class VideoSource:
                 if frame.pts is not None
                 else 0.0
             )
-            target_frame = frame.to_ndarray(format="rgba")
+            target_frame = self._frame_to_rgba_f32(frame)
             self._last_pts = pts
             self._last_frame = target_frame
             self._cache_put(int(round(pts * float(self.fps))), target_frame)
@@ -329,7 +351,7 @@ class VideoSource:
                 else 0.0
             )
             if pts <= t < pts + interval:
-                target_frame = frame.to_ndarray(format="rgba")
+                target_frame = self._frame_to_rgba_f32(frame)
                 self._last_pts = pts
                 self._last_frame = target_frame
                 self._cache_put(int(round(pts * float(self.fps))), target_frame)
@@ -341,7 +363,7 @@ class VideoSource:
                 # the seek lands past ``t`` (can happen when ``t`` is
                 # before the first keyframe).
                 if retried:
-                    target_frame = frame.to_ndarray(format="rgba")
+                    target_frame = self._frame_to_rgba_f32(frame)
                     self._last_pts = pts
                     self._last_frame = target_frame
                     self._cache_put(int(round(pts * float(self.fps))), target_frame)
@@ -358,7 +380,7 @@ class VideoSource:
                 if passing_idx not in self._frame_cache:
                     # Only convert + store if it isn't already there
                     # — avoids re-allocating on a re-traversed range.
-                    passing_arr = frame.to_ndarray(format="rgba")
+                    passing_arr = self._frame_to_rgba_f32(frame)
                     self._cache_put(passing_idx, passing_arr)
 
     def set_fast_seek(self, enabled: bool) -> None:
@@ -472,7 +494,7 @@ class VideoSource:
                         if idx > self._prefetch_max_cached_idx:
                             self._prefetch_max_cached_idx = idx
                         continue
-                arr = frame.to_ndarray(format="rgba")
+                arr = self._frame_to_rgba_f32(frame)
                 self._cache_put(idx, arr)
                 with self._cache_lock:
                     if idx > self._prefetch_max_cached_idx:
