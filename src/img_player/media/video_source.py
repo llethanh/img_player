@@ -59,6 +59,7 @@ class VideoSource:
         path: Path | str,
         *,
         cache_budget_bytes: int = DEFAULT_VIDEO_CACHE_BUDGET_BYTES,
+        prefetch: bool = True,
     ) -> None:
         self._path = Path(path)
         self._meta = probe_video(self._path)
@@ -118,6 +119,30 @@ class VideoSource:
         # across ``frame_at_time`` calls so a sequence of forward queries
         # decodes through the stream without redundant seeks.
         self._decoder = self._container.decode(self._stream)
+
+        # --- Background prefetch worker --------------------------
+        # OpenRV-style behaviour: as soon as the file opens, a
+        # dedicated thread decodes forward from t=0 and pushes every
+        # frame into the cache. The user sees the cache fill up
+        # "all at once" (~6× real-time for AV1 at 1440p) — by the
+        # time they hit Play, the first few seconds are RAM-hot and
+        # playback / scrubs feel instant.
+        #
+        # The worker uses its OWN PyAV container so it doesn't
+        # contend with the foreground ``self._container``. PyAV
+        # is not thread-safe per-container, but separate
+        # containers reading the same file is the standard pattern
+        # (it's how FFmpeg handles concurrent readers too).
+        self._prefetch_thread: threading.Thread | None = None
+        self._prefetch_stop = threading.Event()
+        self._prefetch_max_cached_idx: int = -1
+        if prefetch and self._frame_cache_budget > 0:
+            self._prefetch_thread = threading.Thread(
+                target=self._prefetch_loop,
+                name=f"VideoPrefetch[{self._path.name}]",
+                daemon=True,
+            )
+            self._prefetch_thread.start()
 
     # ------------------------------------------------------------------
     # Properties
@@ -373,6 +398,17 @@ class VideoSource:
     # ------------------------------------------------------------------
 
     def close(self) -> None:
+        # Stop the prefetch worker BEFORE tearing down the container —
+        # the worker has its own container, but we still want a clean
+        # exit so the thread joins quickly and doesn't trail past the
+        # close.
+        self._prefetch_stop.set()
+        if self._prefetch_thread is not None and self._prefetch_thread.is_alive():
+            # Daemon thread so process exit doesn't hang on us, but
+            # join briefly so resources release deterministically.
+            self._prefetch_thread.join(timeout=1.0)
+        self._prefetch_thread = None
+
         if self._container is not None:
             self._container.close()
             self._container = None  # type: ignore[assignment]
@@ -386,6 +422,87 @@ class VideoSource:
             with self._cache_lock:
                 self._frame_cache.clear()
                 self._frame_cache_bytes = 0
+                self._prefetch_max_cached_idx = -1
+
+    # ------------------------------------------------------------------
+    # Background prefetch
+    # ------------------------------------------------------------------
+
+    def _prefetch_loop(self) -> None:
+        """Sequentially decode frames into the cache.
+
+        Runs in its own thread with its own PyAV container so the
+        foreground decoder isn't blocked. Stops on:
+
+        * Stop event set (``close()`` / ``shutdown``)
+        * EOF reached on the prefetch stream
+        * Cache budget exhausted — at that point we exit and let the
+          foreground decoder manage what stays cached (= LRU
+          eviction follows real usage, not prefetch order)
+        """
+        import av  # noqa: PLC0415
+
+        try:
+            container = av.open(str(self._path), metadata_errors="replace")
+        except Exception:  # noqa: BLE001
+            log.debug(
+                "[video-prefetch] failed to open second container for %s",
+                self._path,
+            )
+            return
+
+        try:
+            stream = container.streams.video[0]
+            stream.thread_type = "AUTO"
+            fps = float(self.fps)
+            for frame in container.decode(stream):
+                if self._prefetch_stop.is_set():
+                    return
+                pts = (
+                    float(frame.pts * frame.time_base)
+                    if frame.pts is not None
+                    else 0.0
+                )
+                idx = int(round(pts * fps))
+                # Skip frames already cached (e.g. foreground decoder
+                # already pulled them) — saves the YUV → RGBA
+                # conversion cost.
+                with self._cache_lock:
+                    if idx in self._frame_cache:
+                        if idx > self._prefetch_max_cached_idx:
+                            self._prefetch_max_cached_idx = idx
+                        continue
+                arr = frame.to_ndarray(format="rgba")
+                self._cache_put(idx, arr)
+                with self._cache_lock:
+                    if idx > self._prefetch_max_cached_idx:
+                        self._prefetch_max_cached_idx = idx
+                    # Stop prefetching once we'd be evicting our own
+                    # work. Cheap: integer compare against the
+                    # current total. The foreground decoder takes
+                    # over once the user crosses the prefetch
+                    # frontier.
+                    near_budget = (
+                        self._frame_cache_bytes
+                        > self._frame_cache_budget * 0.95
+                    )
+                if near_budget:
+                    log.debug(
+                        "[video-prefetch] %s budget filled at frame %d",
+                        self._path.name, idx,
+                    )
+                    return
+        except Exception:  # noqa: BLE001
+            # Bad packet / codec hiccup / EOF — done.
+            log.debug(
+                "[video-prefetch] %s ended with exception",
+                self._path.name, exc_info=True,
+            )
+        finally:
+            try:
+                container.close()
+            except Exception:  # noqa: BLE001
+                pass
 
     # ------------------------------------------------------------------
     # RAM frame cache
@@ -427,13 +544,31 @@ class VideoSource:
                 self._frame_cache_bytes -= int(dropped.nbytes)
 
     def cache_stats(self) -> dict[str, int]:
-        """``{frames: N, bytes: B, budget: BUDGET}`` — for UI / debug.
-        Cheap, doesn't fault any work."""
+        """``{frames, bytes, budget, max_cached_idx, contiguous_to}``
+        — for UI cache-fill bars / debug. ``max_cached_idx`` is the
+        highest frame index the prefetch worker has reached;
+        ``contiguous_to`` is the highest frame index for which every
+        index from 0 onward is in the cache (= the bar's blue-tip
+        position the user sees in OpenRV-style timelines). Cheap,
+        doesn't fault any work."""
         with self._cache_lock:
+            # Contiguous-from-zero is straightforward when prefetch
+            # has been running sequentially: scan forward from 0
+            # until we hit a gap. Bounded by max_cached_idx so we
+            # never walk further than necessary.
+            contig = -1
+            cache = self._frame_cache
+            for i in range(0, self._prefetch_max_cached_idx + 1):
+                if i in cache:
+                    contig = i
+                else:
+                    break
             return {
-                "frames": len(self._frame_cache),
+                "frames": len(cache),
                 "bytes": self._frame_cache_bytes,
                 "budget": self._frame_cache_budget,
+                "max_cached_idx": self._prefetch_max_cached_idx,
+                "contiguous_to": contig,
             }
 
     def __enter__(self) -> VideoSource:
