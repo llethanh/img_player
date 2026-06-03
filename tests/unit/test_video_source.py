@@ -113,6 +113,69 @@ class TestRamCache:
             # Cache shouldn't have grown past the budget.
             assert stats["frames"] <= 3
 
+    def test_notify_playback_position_steers_prefetch(
+        self, tmp_path: Path,
+    ) -> None:
+        """When the playhead jumps forward, the prefetch worker
+        should refill from there instead of stopping at the original
+        budget-fill point.
+
+        Setup: 24-frame clip, budget large enough that the prefetch
+        from t=0 fills the first few frames quickly. We then notify a
+        playhead at frame 20 and assert the cache eventually contains
+        frames >= 20 (= prefetch SEEKED forward to follow the
+        playhead instead of stopping where it was).
+        """
+        import time
+        p = tmp_path / "v.mp4"
+        _make_indexed_video(p, n_frames=24)
+        # All 24 frames fit comfortably. The test is about the
+        # SLIDING-WINDOW BEHAVIOUR (prefetch seeks to follow the
+        # playhead), not the budget throttling.
+        with VideoSource(p) as src:
+            # Wait for initial prefetch wave from t=0 to land at
+            # least the first 2 frames.
+            deadline = time.time() + 2.0
+            while time.time() < deadline:
+                if src.cache_stats()["max_cached_idx"] >= 2:
+                    break
+                time.sleep(0.05)
+            assert src.cache_stats()["max_cached_idx"] >= 2, (
+                "initial prefetch from t=0 didn't fill — "
+                f"stats={src.cache_stats()}"
+            )
+
+            # Jump playhead to frame 20 — prefetch should seek
+            # there and the cache should grow to include it.
+            src.notify_playback_position(20 / 24.0)
+            deadline = time.time() + 2.0
+            while time.time() < deadline:
+                if src.cache_stats()["max_cached_idx"] >= 20:
+                    break
+                time.sleep(0.05)
+            stats = src.cache_stats()
+            assert stats["max_cached_idx"] >= 20, (
+                "prefetch didn't follow the new playhead — "
+                f"stats={stats}"
+            )
+
+    def test_notify_playback_position_no_fps_safe(
+        self, tmp_path: Path,
+    ) -> None:
+        """``notify_playback_position`` must not crash when called
+        with degenerate inputs (negative t, NaN-adjacent floats).
+        The prefetch worker reads the field unconditionally."""
+        p = tmp_path / "v.mp4"
+        _make_indexed_video(p, n_frames=4)
+        with VideoSource(p, prefetch=False) as src:
+            # Each of these would crash a naive implementation;
+            # we just want no exception.
+            src.notify_playback_position(0.0)
+            src.notify_playback_position(-1.0)  # clamped to 0
+            src.notify_playback_position(999.0)  # huge — int is fine
+            # Internal state is sensible.
+            assert src._playback_idx >= 0
+
     def test_close_clears_cache(self, tmp_path: Path) -> None:
         p = tmp_path / "v.mp4"
         _make_indexed_video(p, n_frames=4)

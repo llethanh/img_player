@@ -160,6 +160,13 @@ class VideoSource:
         self._prefetch_thread: threading.Thread | None = None
         self._prefetch_stop = threading.Event()
         self._prefetch_max_cached_idx: int = -1
+        # Playhead index — written by the foreground decoder via
+        # ``notify_playback_position`` on every frame request, read
+        # by the prefetch worker to decide where to decode next.
+        # A plain int is fine (CPython GIL makes int assignment
+        # atomic); a torn read is harmless because the next iteration
+        # corrects course.
+        self._playback_idx: int = 0
         if prefetch and self._frame_cache_budget > 0:
             self._prefetch_thread = threading.Thread(
                 target=self._prefetch_loop,
@@ -453,17 +460,44 @@ class VideoSource:
     # Background prefetch
     # ------------------------------------------------------------------
 
+    def notify_playback_position(self, t_seconds: float) -> None:
+        """Inform the prefetch worker where the playhead currently is.
+
+        Called by the foreground decoder on every frame request so
+        the prefetch thread keeps the cache filled **ahead of the
+        playhead** instead of running once from ``t=0`` and stopping
+        at budget. Cheap: a single integer write (GIL-atomic) — no
+        lock, no event, no allocation. Safe to call before the
+        prefetch thread exists (the worker reads the field on its
+        first iteration regardless).
+        """
+        if self._meta.fps is None:
+            return
+        # Clamp to ≥ 0 so a -0.001 jitter doesn't trick the worker
+        # into thinking the playhead jumped to a huge int.
+        self._playback_idx = max(0, int(round(t_seconds * float(self._meta.fps))))
+
     def _prefetch_loop(self) -> None:
-        """Sequentially decode frames into the cache.
+        """Continuously fill the cache ahead of the playhead.
+
+        Unlike the v1.8.2 one-shot variant (decode from t=0, exit at
+        budget), this runs until close() and follows the playhead:
+
+        1. **Track playhead** — re-read ``self._playback_idx`` between
+           every decoded frame.
+        2. **Seek if far** — if our current decode position is
+           noticeably behind or far ahead of the playhead, seek the
+           prefetch container to the playhead's keyframe.
+        3. **Throttle ahead** — once we have ~90% of the cache budget
+           queued ahead of the playhead, sleep briefly. As soon as
+           playback advances and the LRU evicts older frames, we
+           resume decoding forward.
+        4. **EOF wait** — at end-of-stream we don't exit; we wait for
+           the playhead to seek backward (loop / scrub) and resume
+           from there. Stop only on close().
 
         Runs in its own thread with its own PyAV container so the
-        foreground decoder isn't blocked. Stops on:
-
-        * Stop event set (``close()`` / ``shutdown``)
-        * EOF reached on the prefetch stream
-        * Cache budget exhausted — at that point we exit and let the
-          foreground decoder manage what stays cached (= LRU
-          eviction follows real usage, not prefetch order)
+        foreground decoder isn't blocked.
         """
         import av  # noqa: PLC0415
 
@@ -480,47 +514,111 @@ class VideoSource:
             stream = container.streams.video[0]
             stream.thread_type = "AUTO"
             fps = float(self.fps)
-            for frame in container.decode(stream):
-                if self._prefetch_stop.is_set():
+            # Per-frame footprint — learned from the first decoded
+            # frame, used to translate the byte budget into a
+            # frame-capacity for throttling. Default to 200 as a
+            # safe placeholder before we've seen a frame.
+            frame_capacity = 200
+            # Current decoder position (last decoded idx). -1 = fresh
+            # — forces the initial seek-to-playhead.
+            cur_idx = -1
+            # Last seek target — avoids redundant seeks when the
+            # playhead hasn't moved much.
+            last_seek_idx = -10**9
+            # Seek-trigger: if our decode position is more than this
+            # many frames away from the playhead, jump there instead
+            # of decode-forwarding through them. Forward of playhead
+            # we accept up to (frame_capacity * 1.5) frames of slack
+            # so we don't constantly seek backward while throttling.
+            BACKWARD_TOL = 5
+            decoder = container.decode(stream)
+
+            while not self._prefetch_stop.is_set():
+                pb_idx = self._playback_idx
+                forward_slack = max(60, int(frame_capacity * 1.5))
+                far_behind = cur_idx < pb_idx - BACKWARD_TOL
+                far_ahead = cur_idx > pb_idx + forward_slack
+                if cur_idx < 0 or far_behind or far_ahead:
+                    if pb_idx != last_seek_idx:
+                        target_us = max(0, int((pb_idx / fps) * 1_000_000))
+                        try:
+                            container.seek(
+                                target_us, backward=True, any_frame=False,
+                            )
+                            decoder = container.decode(stream)
+                            cur_idx = pb_idx - 1  # next decode lands at >= pb_idx
+                            last_seek_idx = pb_idx
+                        except Exception:  # noqa: BLE001
+                            log.debug(
+                                "[video-prefetch] seek failed",
+                                exc_info=True,
+                            )
+                            return
+
+                try:
+                    frame = next(decoder)
+                except StopIteration:
+                    # EOF — wait for the playhead to seek backward
+                    # (loop / scrub). Don't burn CPU spinning.
+                    if self._prefetch_stop.wait(timeout=0.5):
+                        return
+                    # If playhead moved backward while we waited,
+                    # the next loop iteration will seek us there.
+                    if self._playback_idx < cur_idx - BACKWARD_TOL:
+                        continue
+                    continue
+                except Exception:  # noqa: BLE001
+                    # Bad packet — typically a transient codec issue
+                    # near a seek. Bail rather than risk a tight
+                    # error loop.
+                    log.debug(
+                        "[video-prefetch] decode error", exc_info=True,
+                    )
                     return
+
                 pts = (
                     float(frame.pts * frame.time_base)
                     if frame.pts is not None
                     else 0.0
                 )
                 idx = int(round(pts * fps))
-                # Skip frames already cached (e.g. foreground decoder
-                # already pulled them) — saves the YUV → RGBA
-                # conversion cost.
+                cur_idx = idx
+
+                # Skip frames already cached — saves the YUV → RGBA
+                # conversion (~5-10 ms on 1440p).
                 with self._cache_lock:
                     if idx in self._frame_cache:
                         if idx > self._prefetch_max_cached_idx:
                             self._prefetch_max_cached_idx = idx
                         continue
+
                 arr = frame.to_ndarray(format="rgba")
                 self._cache_put(idx, arr)
+                # First frame: learn the per-frame footprint so the
+                # throttle uses an accurate capacity estimate.
+                if arr.nbytes > 0:
+                    frame_capacity = max(
+                        1, self._frame_cache_budget // int(arr.nbytes),
+                    )
                 with self._cache_lock:
                     if idx > self._prefetch_max_cached_idx:
                         self._prefetch_max_cached_idx = idx
-                    # Stop prefetching once we'd be evicting our own
-                    # work. Cheap: integer compare against the
-                    # current total. The foreground decoder takes
-                    # over once the user crosses the prefetch
-                    # frontier.
-                    near_budget = (
-                        self._frame_cache_bytes
-                        > self._frame_cache_budget * 0.95
-                    )
-                if near_budget:
-                    log.debug(
-                        "[video-prefetch] %s budget filled at frame %d",
-                        self._path.name, idx,
-                    )
-                    return
+
+                # Throttle: don't run more than ~90% of capacity
+                # ahead of the playhead. Beyond that, our new frames
+                # would just trigger LRU eviction of the frames the
+                # user is about to play. Sleep until playback
+                # catches up — checked every 50 ms.
+                throttle_limit = int(frame_capacity * 0.9)
+                while not self._prefetch_stop.is_set():
+                    ahead = cur_idx - self._playback_idx
+                    if ahead < throttle_limit:
+                        break
+                    if self._prefetch_stop.wait(timeout=0.05):
+                        return
         except Exception:  # noqa: BLE001
-            # Bad packet / codec hiccup / EOF — done.
             log.debug(
-                "[video-prefetch] %s ended with exception",
+                "[video-prefetch] %s loop ended with exception",
                 self._path.name, exc_info=True,
             )
         finally:
