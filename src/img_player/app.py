@@ -5042,7 +5042,42 @@ class ImgPlayerApp:
     def _refresh_cache_bar(self) -> None:
         if self._controller.sequence is None:
             return
-        self._window.timeline.set_cached_frames(self._cache.cached_frames())
+        # Start with the image-sequence cache (= MasterFrameCache).
+        cached_set = set(self._cache.cached_frames())
+        # Add video-layer cache contributions. Video layers bypass
+        # MasterFrameCache; their frames live in the per-source
+        # ``VideoSource._frame_cache`` filled by the background
+        # prefetch worker. We need to translate each video's local
+        # frame index back to MASTER timeline coordinates (= add
+        # the layer's ``master_start``) so the timeline highlights
+        # the right region.
+        for layer in self._layer_stack.layers():
+            if not getattr(layer, "is_video", False):
+                continue
+            if not getattr(layer, "visible", True):
+                continue
+            meta = getattr(layer, "video_metadata", None)
+            if meta is None:
+                continue
+            decoder = getattr(self._video_sources, "_decoders", {}).get(
+                layer.id,
+            )
+            if decoder is None:
+                continue
+            source = getattr(decoder, "_source", None)
+            if source is None:
+                continue
+            try:
+                # Cheap snapshot — copies key set under the source's
+                # own lock then returns.
+                with source._cache_lock:  # noqa: SLF001
+                    video_indices = list(source._frame_cache.keys())  # noqa: SLF001
+            except Exception:  # noqa: BLE001
+                continue
+            master_start = int(getattr(layer, "master_start", 0))
+            for vi in video_indices:
+                cached_set.add(vi + master_start)
+        self._window.timeline.set_cached_frames(frozenset(cached_set))
         self._window.timeline.set_missing_frames(self._cache.missing_frames())
         # Push the active channel's cache fill onto the channel
         # button so the bar paints over the closed dropdown too —
