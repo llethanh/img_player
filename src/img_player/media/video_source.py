@@ -191,7 +191,7 @@ class VideoSource:
                 if frame.pts is not None
                 else 0.0
             )
-            target_frame = frame.to_ndarray(format="rgb24")
+            target_frame = frame.to_ndarray(format="rgba")
             self._last_pts = pts
             self._last_frame = target_frame
             return target_frame
@@ -257,7 +257,7 @@ class VideoSource:
                 else 0.0
             )
             if pts <= t < pts + interval:
-                target_frame = frame.to_ndarray(format="rgb24")
+                target_frame = frame.to_ndarray(format="rgba")
                 self._last_pts = pts
                 self._last_frame = target_frame
                 return target_frame
@@ -268,7 +268,7 @@ class VideoSource:
                 # the seek lands past ``t`` (can happen when ``t`` is
                 # before the first keyframe).
                 if retried:
-                    target_frame = frame.to_ndarray(format="rgb24")
+                    target_frame = frame.to_ndarray(format="rgba")
                     self._last_pts = pts
                     self._last_frame = target_frame
                     return target_frame

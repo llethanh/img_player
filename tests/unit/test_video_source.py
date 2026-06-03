@@ -56,8 +56,15 @@ def _make_indexed_video(
 
 
 def _frame_index(arr: np.ndarray) -> int:
-    """Recover the frame index from its dominant grey level."""
-    return int(round(float(arr.mean()) / 10.0))
+    """Recover the frame index from its dominant grey level.
+
+    VideoSource returns RGBA (4 channels) since v1.8.2; the alpha
+    plane is uniform 255 and would skew the mean. Use only the RGB
+    planes so the index recovery stays accurate regardless of the
+    decoded format.
+    """
+    rgb = arr[..., :3]
+    return int(round(float(rgb.mean()) / 10.0))
 
 
 def test_open_close(tmp_path: Path) -> None:
@@ -78,7 +85,10 @@ def test_frame_at_time_first(tmp_path: Path) -> None:
     _make_indexed_video(p, n_frames=24, fps=24)
     with VideoSource(p) as src:
         arr = src.frame_at_time(0.0)
-        assert arr.shape == (48, 64, 3)
+        # VideoSource now returns RGBA uint8 (v1.8.2 perf change —
+        # see decode_at in video_renderer.py for the rationale). The
+        # alpha plane is always opaque (255) from swscale.
+        assert arr.shape == (48, 64, 4)
         assert arr.dtype == np.uint8
         assert _frame_index(arr) == 0
 
