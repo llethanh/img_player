@@ -55,6 +55,74 @@ def _make_indexed_video(
     container.close()
 
 
+class TestRamCache:
+    """Pin the v1.8.2 RAM cache contract: every decoded frame goes
+    into the LRU cache, re-reads hit RAM, eviction respects budget."""
+
+    def test_cache_starts_empty(self, tmp_path: Path) -> None:
+        p = tmp_path / "v.mp4"
+        _make_indexed_video(p, n_frames=8)
+        with VideoSource(p) as src:
+            stats = src.cache_stats()
+            assert stats["frames"] == 0
+            assert stats["bytes"] == 0
+            assert stats["budget"] > 0
+
+    def test_first_read_populates_cache(self, tmp_path: Path) -> None:
+        p = tmp_path / "v.mp4"
+        _make_indexed_video(p, n_frames=8)
+        with VideoSource(p) as src:
+            src.frame_at_time(0.0)
+            stats = src.cache_stats()
+            assert stats["frames"] >= 1
+            assert stats["bytes"] > 0
+
+    def test_reread_does_not_grow_cache(self, tmp_path: Path) -> None:
+        p = tmp_path / "v.mp4"
+        _make_indexed_video(p, n_frames=8)
+        with VideoSource(p) as src:
+            src.frame_at_time(0.0)
+            frames_after_first = src.cache_stats()["frames"]
+            src.frame_at_time(0.0)
+            src.frame_at_time(0.0)
+            assert src.cache_stats()["frames"] == frames_after_first
+
+    def test_zero_budget_disables_cache(self, tmp_path: Path) -> None:
+        p = tmp_path / "v.mp4"
+        _make_indexed_video(p, n_frames=4)
+        with VideoSource(p, cache_budget_bytes=0) as src:
+            src.frame_at_time(0.0)
+            assert src.cache_stats()["frames"] == 0
+
+    def test_budget_evicts_oldest(self, tmp_path: Path) -> None:
+        p = tmp_path / "v.mp4"
+        # 64×48 RGBA uint8 = 12 288 bytes/frame; with a 30 000-byte
+        # budget the cache fits 2 frames + a sliver, so a 3rd read
+        # must evict the 1st (LRU policy).
+        _make_indexed_video(p, n_frames=8)
+        with VideoSource(p, cache_budget_bytes=30_000) as src:
+            src.frame_at_time(0.0 / 24)
+            src.frame_at_time(1.0 / 24)
+            src.frame_at_time(2.0 / 24)
+            stats = src.cache_stats()
+            assert stats["bytes"] <= 30_000
+            # Cache shouldn't have grown past the budget.
+            assert stats["frames"] <= 3
+
+    def test_close_clears_cache(self, tmp_path: Path) -> None:
+        p = tmp_path / "v.mp4"
+        _make_indexed_video(p, n_frames=4)
+        src = VideoSource(p)
+        try:
+            src.frame_at_time(0.0)
+            assert src.cache_stats()["frames"] >= 1
+        finally:
+            src.close()
+        # Cache cleared on close — subsequent stats reads return 0.
+        assert src.cache_stats()["frames"] == 0
+        assert src.cache_stats()["bytes"] == 0
+
+
 def _frame_index(arr: np.ndarray) -> int:
     """Recover the frame index from its dominant grey level.
 

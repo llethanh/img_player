@@ -25,6 +25,8 @@ re-decoding the same frame on every paint event.
 from __future__ import annotations
 
 import logging
+import threading
+from collections import OrderedDict
 from fractions import Fraction
 from pathlib import Path
 
@@ -35,6 +37,15 @@ from img_player.media.video_probe import VideoMetadata, probe_video
 log = logging.getLogger(__name__)
 
 
+# Default RAM budget for the per-source frame cache. Tunable via
+# ``Preferences.video_cache_budget_mb``. 2 GB fits ~140 frames at
+# 1440p RGBA uint8, ~256 frames at 1080p, ~1000 frames at 720p
+# — enough for the common VFX dailies clip (<60 s) to fit entirely
+# in RAM once warmed, matching the OpenRV "play through once,
+# scrub is instant" UX.
+DEFAULT_VIDEO_CACHE_BUDGET_BYTES: int = 2 * 1024 * 1024 * 1024
+
+
 class VideoSource:
     """Open a video file once, answer ``frame_at_time(t)`` queries.
 
@@ -43,11 +54,29 @@ class VideoSource:
     ``frame_at_time`` after close raises.
     """
 
-    def __init__(self, path: Path | str) -> None:
+    def __init__(
+        self,
+        path: Path | str,
+        *,
+        cache_budget_bytes: int = DEFAULT_VIDEO_CACHE_BUDGET_BYTES,
+    ) -> None:
         self._path = Path(path)
         self._meta = probe_video(self._path)
         if not self._meta.has_video:
             raise ValueError(f"No video stream in {self._path}")
+        # --- RAM frame cache --------------------------------------
+        # OpenRV-style: every successfully decoded frame goes into an
+        # LRU cache keyed by integer frame index. Re-visits (= scrub
+        # backward, loop playback, A/B compare) hit cache and skip
+        # the seek-then-decode-forward cost entirely. Bounded by a
+        # configurable budget; oldest frames get evicted first.
+        #
+        # Thread-safety: holds an RLock so a future prefetch worker
+        # can write to the cache while the foreground decoder reads.
+        self._frame_cache: OrderedDict[int, np.ndarray] = OrderedDict()
+        self._frame_cache_bytes: int = 0
+        self._frame_cache_budget: int = max(0, int(cache_budget_bytes))
+        self._cache_lock = threading.RLock()
 
         # Imported lazily so module import is light — same pattern as
         # in ``video_probe`` for headless / non-video code paths.
@@ -155,6 +184,23 @@ class VideoSource:
             # (≤ duration - 1/fps) is reachable.
             t = min(t, max(0.0, self._meta.duration_seconds - 1e-9))
 
+        # --- RAM cache lookup ------------------------------------
+        # Compute the target frame index and check the LRU cache
+        # before doing any seek / decode work. A hit is ~free
+        # (dict lookup + ndarray return), a miss costs only a
+        # second-of-microseconds extra over the legacy single-frame
+        # cache. The cache fills as the user plays through the
+        # video; subsequent re-passes (loop, scrub-back, A/B
+        # compare) become instant.
+        target_idx = int(round(t * float(self.fps)))
+        cached = self._cache_get(target_idx)
+        if cached is not None:
+            # Keep the legacy single-frame cache in sync so other
+            # code paths that read ``_last_frame`` still work.
+            self._last_pts = target_idx / float(self.fps)
+            self._last_frame = cached
+            return cached
+
         # Cache hit: same display interval as the last decoded frame.
         # The "interval" check uses 1/fps as the upper bound — within
         # that window, the same frame is the correct answer.
@@ -194,6 +240,7 @@ class VideoSource:
             target_frame = frame.to_ndarray(format="rgba")
             self._last_pts = pts
             self._last_frame = target_frame
+            self._cache_put(int(round(pts * float(self.fps))), target_frame)
             return target_frame
 
         # Precise path: only seek when the request lands before the
@@ -260,6 +307,7 @@ class VideoSource:
                 target_frame = frame.to_ndarray(format="rgba")
                 self._last_pts = pts
                 self._last_frame = target_frame
+                self._cache_put(int(round(pts * float(self.fps))), target_frame)
                 return target_frame
             if pts > t + interval:
                 # Overshot — the right frame was before this one and
@@ -271,11 +319,22 @@ class VideoSource:
                     target_frame = frame.to_ndarray(format="rgba")
                     self._last_pts = pts
                     self._last_frame = target_frame
+                    self._cache_put(int(round(pts * float(self.fps))), target_frame)
                     return target_frame
                 self._seek_to(t)
                 retried = True
                 continue
-            # pts < t — keep decoding forward until we bracket the target.
+            # pts < t — keep decoding forward until we bracket the
+            # target. The frame we're about to discard cost us the
+            # decode work already; lazy-convert + cache it so a
+            # later forward step (= playback) finds it ready.
+            passing_idx = int(round(pts * float(self.fps)))
+            with self._cache_lock:
+                if passing_idx not in self._frame_cache:
+                    # Only convert + store if it isn't already there
+                    # — avoids re-allocating on a re-traversed range.
+                    passing_arr = frame.to_ndarray(format="rgba")
+                    self._cache_put(passing_idx, passing_arr)
 
     def set_fast_seek(self, enabled: bool) -> None:
         """Toggle the keyframe-only scrub shortcut. See ``_fast_seek``
@@ -319,6 +378,63 @@ class VideoSource:
             self._container = None  # type: ignore[assignment]
             self._last_frame = None
             self._last_pts = None
+            # Drop the RAM cache too — closing typically means we're
+            # about to swap layers or shut down. Holding onto a
+            # couple of GB of decoded frames for a video the user
+            # no longer cares about would defeat the rest of the
+            # cache budget.
+            with self._cache_lock:
+                self._frame_cache.clear()
+                self._frame_cache_bytes = 0
+
+    # ------------------------------------------------------------------
+    # RAM frame cache
+    # ------------------------------------------------------------------
+
+    def _cache_get(self, idx: int) -> np.ndarray | None:
+        """LRU-bump + lookup. Returns ``None`` on miss."""
+        if self._frame_cache_budget <= 0:
+            return None
+        with self._cache_lock:
+            arr = self._frame_cache.get(idx)
+            if arr is not None:
+                # Move to end = most-recently used.
+                self._frame_cache.move_to_end(idx)
+            return arr
+
+    def _cache_put(self, idx: int, arr: np.ndarray) -> None:
+        """Store ``arr`` for ``idx``. Idempotent (re-puts bump LRU
+        and don't double-count budget). Evicts the oldest entries
+        when the new total would exceed budget."""
+        if self._frame_cache_budget <= 0 or arr is None:
+            return
+        nbytes = int(arr.nbytes)
+        with self._cache_lock:
+            existing = self._frame_cache.get(idx)
+            if existing is not None:
+                # Re-put with same data — just bump LRU position.
+                self._frame_cache.move_to_end(idx)
+                return
+            self._frame_cache[idx] = arr
+            self._frame_cache_bytes += nbytes
+            # Evict from the front (= least-recently used) until
+            # we're back under budget.
+            while (
+                self._frame_cache_bytes > self._frame_cache_budget
+                and len(self._frame_cache) > 1
+            ):
+                _, dropped = self._frame_cache.popitem(last=False)
+                self._frame_cache_bytes -= int(dropped.nbytes)
+
+    def cache_stats(self) -> dict[str, int]:
+        """``{frames: N, bytes: B, budget: BUDGET}`` — for UI / debug.
+        Cheap, doesn't fault any work."""
+        with self._cache_lock:
+            return {
+                "frames": len(self._frame_cache),
+                "bytes": self._frame_cache_bytes,
+                "budget": self._frame_cache_budget,
+            }
 
     def __enter__(self) -> VideoSource:
         return self
