@@ -58,9 +58,21 @@ class _ProgressLabel(QLabel):  # type: ignore[misc]
         self._fraction: float = -1.0
 
     def set_fraction(self, fraction: float) -> None:
+        """Store the new fill fraction.
+
+        Does NOT trigger ``self.update()`` — the parent :class:`_ChannelRow`
+        owns the paint cycle (it draws the orange / blue cache bars on
+        its own surface and Qt composites this transparent label on
+        top in the same cycle). Triggering an independent label
+        update would race with the row's paint and flash the label's
+        rect each tick — visible as a flicker on the channel menu
+        while the cache is filling. The row's ``update()`` after
+        calling this method already propagates a repaint to its
+        children, so the label is redrawn coherently with the bars
+        beneath it.
+        """
         if fraction != self._fraction:
             self._fraction = fraction
-            self.update()
 
     def paintEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         super().paintEvent(event)
@@ -137,7 +149,16 @@ class _ChannelRow(QFrame):  # type: ignore[misc]
     def set_progress(self, cached: int, total: int) -> None:
         """Update the row's cache-fill fraction. ``total <= 0`` resets
         to "no data" (= paints nothing). Called by the menu's polling
-        loop while it's visible."""
+        loop while it's visible.
+
+        Tooltip + label fraction are pushed in the same gated branch
+        as the row's ``update()``: re-setting the tooltip and the
+        child fraction on every tick (even when nothing changed) was
+        wasted work, and the child ``set_fraction`` used to call its
+        own ``update()`` independently — which raced with the row's
+        paint and flashed the label rect every tick. See
+        :meth:`_ProgressLabel.set_fraction`.
+        """
         if total <= 0:
             if self._fraction != -1.0:
                 self._fraction = -1.0
@@ -145,14 +166,15 @@ class _ChannelRow(QFrame):  # type: ignore[misc]
                 self.update()
             return
         new_fraction = max(0.0, min(1.0, cached / total))
-        if new_fraction != self._fraction:
-            self._fraction = new_fraction
-            self._label.set_fraction(new_fraction)
-            self.update()
+        if new_fraction == self._fraction:
+            return
+        self._fraction = new_fraction
+        self._label.set_fraction(new_fraction)
         self._label.setToolTip(
             f"Channels: {', '.join(self._original_channels)}\n"
             f"Cached: {cached} / {total} frames"
         )
+        self.update()
 
     def set_disk_progress(self, disk_cached: int, total: int) -> None:
         """Update the row's on-disk fill fraction (blue tier). Polled

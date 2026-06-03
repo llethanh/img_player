@@ -15,7 +15,11 @@ from __future__ import annotations
 import pytest
 
 from img_player.sequence.channels import ChannelGroup, ChannelSelection
-from img_player.ui.channel_menu import ChannelMenu
+from img_player.ui.channel_menu import (
+    ChannelMenu,
+    _ChannelRow,
+    _ProgressLabel,
+)
 
 
 @pytest.fixture
@@ -130,3 +134,65 @@ class TestEmpty:
             ChannelGroup(label="OnlyOne", channels=("R", "G", "B")),
         ])
         assert menu.active_label == "OnlyOne"
+
+
+class TestProgressNoFlicker:
+    """The cache-fill bar paints on the row's surface; the label is a
+    transparent child sitting on top. Before this contract was
+    pinned, ``_ProgressLabel.set_fraction`` called its own
+    ``update()`` independently of the row — so each timer tick
+    scheduled two separate paint events that Qt could (and did)
+    process out of order, flashing the label rect every tick while
+    the cache was filling. The user reported "elle a tendance a
+    clignoter".
+
+    Fix: the label stores the fraction but does NOT trigger its own
+    repaint. The row's ``update()`` (after writing the new fraction
+    onto both itself and the label) propagates a single coherent
+    paint cycle to both widgets. Pin both halves of the contract
+    below."""
+
+    def test_label_set_fraction_does_not_schedule_update(
+        self, qtbot,
+    ) -> None:
+        label = _ProgressLabel("RGB")
+        qtbot.addWidget(label)
+        calls: list[None] = []
+        label.update = lambda *_a, **_kw: calls.append(None)  # type: ignore[method-assign]
+        label.set_fraction(0.5)
+        assert calls == [], (
+            "_ProgressLabel.set_fraction must not call update() — "
+            "the parent row owns the paint cycle; an independent "
+            "label update races with the row's bar paint and "
+            "flashes the label rect each tick."
+        )
+        # But the fraction WAS stored — pin the data contract too.
+        assert label._fraction == pytest.approx(0.5)  # noqa: SLF001
+
+    def test_row_set_progress_updates_once_per_change(
+        self, qtbot,
+    ) -> None:
+        # set_progress on a row should call its own update() exactly
+        # once when the fraction changes — and zero times when it
+        # doesn't. The label's set_fraction is invoked too so the
+        # value is in sync, but it must not trigger its own update.
+        row = _ChannelRow(
+            ChannelGroup(label="RGB", channels=("R", "G", "B")),
+        )
+        qtbot.addWidget(row)
+        row_calls: list[None] = []
+        label_calls: list[None] = []
+        row.update = lambda *_a, **_kw: row_calls.append(None)  # type: ignore[method-assign]
+        row._label.update = lambda *_a, **_kw: label_calls.append(None)  # type: ignore[method-assign]
+        # First tick — fraction changes (-1.0 → 0.5) → ONE row update.
+        row.set_progress(50, 100)
+        assert len(row_calls) == 1
+        assert label_calls == []
+        # Same fraction → NO additional update (guarded by the
+        # ``new_fraction == self._fraction`` early-return).
+        row.set_progress(50, 100)
+        assert len(row_calls) == 1
+        # Fraction changes again → one more update.
+        row.set_progress(75, 100)
+        assert len(row_calls) == 2
+        assert label_calls == []
