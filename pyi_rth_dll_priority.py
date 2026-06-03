@@ -117,6 +117,21 @@ _PRELOAD_CHAIN: tuple[str, ...] = (
     "aom.dll",
     "SvtAv1Enc.dll",
     "x265.dll",
+    # SDL — conda-forge ships ``SDL2.dll`` as the ``sdl2-compat``
+    # shim that runtime-loads ``SDL3.dll`` via ``LoadLibrary`` by
+    # bare name. Windows' default DLL search order doesn't cover our
+    # ``_internal/`` directory for unqualified name lookups, so the
+    # shim's load fails and FFmpeg's avdevice surfaces a "Failed
+    # loading SDL3 library." MessageBox at startup (the moment
+    # ``import av`` cascades into avdevice-61.dll). Pre-loading
+    # SDL3 by absolute path here registers it in the loader cache
+    # so the shim's subsequent ``LoadLibrary("SDL3.dll")`` returns
+    # our in-memory handle. Loading SDL2 right after ensures the
+    # shim itself is also our copy (defensive — Windows would find
+    # it via PATH anyway because we prepended _internal/, but
+    # explicit > implicit on a startup popup-class bug).
+    "SDL3.dll",
+    "SDL2.dll",
     # OIIO itself, last
     "OpenImageIO_Util.dll",
     "OpenImageIO.dll",
