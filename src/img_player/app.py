@@ -5109,6 +5109,42 @@ class ImgPlayerApp:
         cache_ratio = stats.bytes_used / max(1, stats.bytes_budget)
         ram_gb = stats.bytes_used / 1024**3
         ram_budget_gb = stats.bytes_budget / 1024**3
+        # Video layers don't go through MasterFrameCache — their
+        # frames live in the per-source VideoSource RAM cache filled
+        # by the v1.8.2 prefetch worker. Sum each visible video
+        # layer's cached frame count + RAM bytes into the readout so
+        # the user sees "cache N/total" + "RAM x.x GB" actually
+        # reflect the video cache state (otherwise both would read
+        # zero on a pure-video stack and the user would think the
+        # prefetch isn't running).
+        video_frames_cached = 0
+        video_bytes_cached = 0
+        for layer in self._layer_stack.layers():
+            if not getattr(layer, "is_video", False):
+                continue
+            decoder = getattr(self._video_sources, "_decoders", {}).get(
+                layer.id,
+            )
+            if decoder is None:
+                continue
+            source = getattr(decoder, "_source", None)
+            if source is None:
+                continue
+            try:
+                vstats = source.cache_stats()
+            except Exception:  # noqa: BLE001
+                continue
+            video_frames_cached += int(vstats.get("frames", 0))
+            video_bytes_cached += int(vstats.get("bytes", 0))
+        if video_frames_cached > 0:
+            # Add video cache to the displayed numbers. Use the same
+            # cache_total (= seq.frame_count = video frame count) so
+            # the "N / total" readout is meaningful.
+            stats_frames = int(stats.frames_cached) + video_frames_cached
+            ram_gb_total = ram_gb + video_bytes_cached / 1024**3
+        else:
+            stats_frames = int(stats.frames_cached)
+            ram_gb_total = ram_gb
         # Current free system RAM — reported alongside cache RAM so
         # the user can tell whether the headroom they see is the cache
         # being well below its budget, or the OS itself running tight.
@@ -5124,12 +5160,12 @@ class ImgPlayerApp:
 
         self._window.status_right.setText(
             format_perf_html(
-                cache_n=stats.frames_cached,
+                cache_n=stats_frames,
                 cache_total=cache_total,
                 cache_ratio=cache_ratio,
                 fps_effective=eff,
                 fps_target=state.fps,
-                ram_gb=ram_gb,
+                ram_gb=ram_gb_total,
                 ram_budget_gb=ram_budget_gb,
                 sys_avail_gb=sys_avail_gb,
             )
