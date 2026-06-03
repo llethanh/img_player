@@ -128,6 +128,13 @@
       <h3>Annotations</h3>
       <p>Pen / eraser / 7-color palette / per-frame undo. Persistent strokes — <em>and</em> a Google-Meet-style ghost mode that auto-fades.</p>
     </a>
+    <a href="#burnins" class="feature-card">
+      <div class="icon">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="3" rx="0.5"/><rect x="3" y="17" width="18" height="3" rx="0.5"/><line x1="6" y1="5.5" x2="9" y2="5.5"/><line x1="15" y1="5.5" x2="18" y2="5.5"/><line x1="6" y1="18.5" x2="9" y2="18.5"/><line x1="15" y1="18.5" x2="18" y2="18.5"/></svg>
+      </div>
+      <h3>Burnins</h3>
+      <p>Top &amp; bottom info bars composited over the image — sequence, master &amp; layer frame, timecode, user, date. Full editor, per-element typography, team-shared template library. HiDPI-aware, follows pan / zoom.</p>
+    </a>
     <a href="#comments" class="feature-card">
       <div class="icon">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
@@ -460,6 +467,57 @@
       </div>
 
       <img src="screenshots/annotation.gif" alt="Annotation pen drawing strokes live on a frame, with per-frame undo and color palette" class="mockup-shot" style="flex: 1 1 480px; min-width: 320px; max-width: 100%; height: auto; border-radius: var(--radius); border: 1px solid var(--border); transform: scale(1.2); transform-origin: left center;">
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ Burnins -->
+<section id="burnins">
+  <div class="feature-detail">
+    <div class="copy">
+      <h2>Composited <span class="accent">info bars</span> over the image.</h2>
+      <p>
+        Reviewer needs to know what shot, what frame, who's looking — without
+        squinting at the chrome. <b>Burnins</b> are top &amp; bottom ribbons baked
+        right over the picture, following pan / zoom / letterbox like they belong
+        there. <b>Ctrl+B</b> toggles them on / off. Pillow rasterises the text,
+        alpha-composited at native source resolution so what plays back looks the
+        same as what an export would carry.
+      </p>
+      <ul>
+        <li><b>Full template editor</b> — live preview canvas, element tree, drag-friendly
+            properties. Click an element on the canvas to select it in the tree.</li>
+        <li><b>Per-element typography</b> — anchor (left / center / right), X &amp; Y offset,
+            font family dropdown, size, weight (regular / bold), color, opacity slider.</li>
+        <li><b>Tokens</b>: <code>{sequence}</code>, <code>{frame}</code>,
+            <code>{frame_total}</code>, <code>{layer_frame}</code>,
+            <code>{layer_frame_total}</code>, <code>{timecode}</code>,
+            <code>{fps}</code>, <code>{resolution}</code>,
+            <code>{layer_name}</code>, <code>{session_name}</code>,
+            <code>{date}</code>, <code>{user}</code>. Both master timeline frame
+            <em>and</em> the layer's on-disk source frame ship in the default preset
+            so reviewers and compositors quote the same numbers.</li>
+        <li><b>Team-shared template library</b> — point Flick at a network folder and
+            everyone on the project sees the same templates. Precedence is
+            <em>local user → shared team → builtin</em>: any local copy wins over
+            the team library without changing what the rest of the team sees.
+            <em>Save As</em> asks where to land ("Shared (team)" or
+            "Local (this machine)") when a shared dir is configured.</li>
+        <li><b>HiDPI &amp; resolution-aware rasterisation</b> — supersampled to
+            <code>max(displayed_rect, source_image) × devicePixelRatio</code> and
+            downscaled by Qt for display. Crisp glyphs on 125 % / 150 % / 200 %
+            Windows scaling, sharp text even when the viewport is zoomed below
+            source resolution.</li>
+        <li><b>Builtin <code>default</code> preset</b> — cream JetBrains Mono Bold over
+            an orange ribbon, 4 % bar height, sequence + master &amp; layer frame
+            counters on top, user / date + resolution / fps on the bottom. The
+            player's house style.</li>
+        <li><b>Mode-aware suppression</b> — automatically off in contact sheet and
+            in compare mode so grids and side-by-side comps stay clean.</li>
+      </ul>
+    </div>
+    <div class="mockup">
+      <img src="screenshots/burninsEditor.png" alt="Burnin template editor — orange ribbon top and bottom bars over a transparent canvas, element tree on the right, Shared library folder picker at the top" class="mockup-shot">
     </div>
   </div>
 </section>
