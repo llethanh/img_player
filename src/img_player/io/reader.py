@@ -371,7 +371,23 @@ def _read_exr_pyopenexr(
         joined = "".join(requested)
         if joined in ch_dict:
             return np.asarray(ch_dict[joined].pixels, dtype=numpy_dtype)
-        # Fall back to per-channel access.
+        # Slice-from-grouped fast path: if every requested name is a
+        # contiguous prefix of a grouped key (e.g. ``["R","G","B"]``
+        # requested but the file groups them as ``"RGBA"``), take a
+        # plain numpy slice of the grouped array. Zero per-plane
+        # allocation, just a view + dtype cast at the end.
+        for group_key in ("RGBA", "RGB"):
+            if group_key in ch_dict and len(requested) <= len(group_key):
+                if all(
+                    i < len(group_key) and group_key[i] == name
+                    for i, name in enumerate(requested)
+                ):
+                    grouped = np.asarray(
+                        ch_dict[group_key].pixels, dtype=numpy_dtype,
+                    )
+                    return np.ascontiguousarray(grouped[..., :len(requested)])
+        # Fall back to per-channel access (each channel as its own
+        # array, then stack). Slower but handles arbitrary picks.
         return _stack_individual(ch_dict, requested, numpy_dtype)
 
 
