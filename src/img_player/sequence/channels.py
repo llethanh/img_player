@@ -103,16 +103,32 @@ def group_channels(raw: Iterable[str]) -> list[ChannelGroup]:
     groups: list[ChannelGroup] = []
 
     # 1. Root RGB(A) — the beauty pass.
+    #
+    # When the file ships an alpha channel we expose **both** an
+    # ``RGB`` and an ``RGBA`` group, with ``RGB`` first so it
+    # becomes the default selection. Reason: on EXR-with-zips
+    # (common Maya / Arnold output), the alpha channel sits in
+    # different compressed chunks than R/G/B and reading it forces
+    # the decoder through ~8× more I/O for what is almost always a
+    # uniform 1.0 mask on opaque renders. Measured on a 1920×900
+    # 158-channel CHARS pass over a 10 Gbps SMB share:
+    # * RGB-only serial read   :  ~96 ms / frame
+    # * RGBA  serial read      : ~816 ms / frame  (= 8.5× slower)
+    # ``RGBA`` stays exposed for the explicit-compositing case
+    # (alpha actually matters): stacks with transparency, sprite
+    # PNG sequences, alpha-aware contact-sheet bakes, etc. Pre-1.8.2
+    # sessions persisted as ``"RGBA"`` still round-trip — the group
+    # is still in the list, just no longer the default.
     bare_lower = {b.lower(): b for b in bare_channels}
     if all(s in bare_lower for s in _RGB_SUBS):
-        chans = tuple(bare_lower[s] for s in _RGB_SUBS)
+        rgb_chans = tuple(bare_lower[s] for s in _RGB_SUBS)
+        groups.append(ChannelGroup("RGB", rgb_chans))
+        consumed = set(rgb_chans)
         if "a" in bare_lower:
-            chans = (*chans, bare_lower["a"])
-            groups.append(ChannelGroup("RGBA", chans))
-        else:
-            groups.append(ChannelGroup("RGB", chans))
+            rgba_chans = (*rgb_chans, bare_lower["a"])
+            groups.append(ChannelGroup("RGBA", rgba_chans))
+            consumed.add(bare_lower["a"])
         # Mark these as "consumed" so they don't reappear later.
-        consumed = set(chans)
         bare_channels = [b for b in bare_channels if b not in consumed]
 
     # 2. RGB-shaped layers (albedo, diffuse, specular…).

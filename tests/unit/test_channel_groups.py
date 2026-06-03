@@ -16,9 +16,16 @@ class TestRgbBeauty:
         assert groups[0].channels == ("R", "G", "B")
 
     def test_rgba(self) -> None:
+        # When alpha is present we expose BOTH groups: "RGB" as the
+        # default (skip the alpha plane — ~8× faster cold-decode on
+        # AOV-heavy EXR ``zips``) and "RGBA" as the explicit choice
+        # for users who actually need compositing alpha. RGB comes
+        # first so it's the default selection. See
+        # :func:`group_channels` for the rationale.
         groups = group_channels(["R", "G", "B", "A"])
-        assert _labels(groups) == ["RGBA"]
-        assert groups[0].channels == ("R", "G", "B", "A")
+        assert _labels(groups) == ["RGB", "RGBA"]
+        assert groups[0].channels == ("R", "G", "B")
+        assert groups[1].channels == ("R", "G", "B", "A")
 
 
 class TestLayerGrouping:
@@ -26,8 +33,10 @@ class TestLayerGrouping:
         groups = group_channels(
             ["R", "G", "B", "A", "albedo.R", "albedo.G", "albedo.B"]
         )
-        # RGBA first, then albedo as a single composite entry.
-        assert _labels(groups) == ["RGBA", "albedo"]
+        # RGB (default), RGBA (alpha-opt-in), then albedo as a single
+        # composite entry. See :func:`group_channels` for why RGB
+        # leads over RGBA.
+        assert _labels(groups) == ["RGB", "RGBA", "albedo"]
         albedo = next(g for g in groups if g.label == "albedo")
         assert albedo.channels == ("albedo.R", "albedo.G", "albedo.B")
 
@@ -83,8 +92,11 @@ class TestRealWorldExr:
         ]
         groups = group_channels(raw)
         labels = _labels(groups)
-        # The beauty pass is first.
-        assert labels[0] == "RGBA"
+        # The beauty pass is first. RGB-only is now the default
+        # (cold-decode win on AOV-heavy zips EXR), RGBA stays
+        # exposed right after for the explicit-alpha case.
+        assert labels[0] == "RGB"
+        assert labels[1] == "RGBA"
         # Then the RGB-shaped layers in their original order.
         assert labels.index("diffuse") < labels.index("specular")
         assert labels.index("specular") < labels.index("albedo")

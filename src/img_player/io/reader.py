@@ -255,6 +255,19 @@ def _resolve_channels(
     available: list[str], requested: Sequence[str] | None, path: Path
 ) -> list[str]:
     if requested is None:
+        # Prefer R/G/B (3 channels) over R/G/B/A (4 channels) when both
+        # available — alpha is almost always uniform 1.0 on opaque
+        # renders and reading it forces the EXR ``zips`` decoder
+        # through ~8× more I/O on AOV-heavy files. See the matching
+        # group-builder rationale in ``sequence/channels.py`` for the
+        # measured numbers. Callers that need alpha (compositing,
+        # straight-alpha layers, sprite PNGs) pass an explicit
+        # ``requested`` selection — the group dispatcher does that
+        # whenever the user picks the ``RGBA`` group from the
+        # channel menu.
+        rgb = [c for c in ("R", "G", "B") if c in available]
+        if len(rgb) == 3:
+            return rgb
         preferred = [c for c in ("R", "G", "B", "A") if c in available]
         if preferred:
             return preferred
