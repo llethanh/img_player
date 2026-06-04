@@ -136,47 +136,39 @@ except ImportError:
 # the codec backends, libOpenColorIO, expat, yaml-cpp, etc.
 oiio_bins = collect_dynamic_libs("OpenImageIO")
 ocio_bins = collect_dynamic_libs("PyOpenColorIO")
-# Same conda-forge layout trap as PyAV / PySide6 below: under
-# miniforge Windows, ``OpenImageIO.cp311-…pyd`` ships without the
-# native libs it links against (``OpenImageIO.dll``,
-# ``OpenImageIO_Util.dll``, ``Imath-*.dll``, ``OpenEXR-*.dll`` …) —
-# they live in ``$CONDA_PREFIX\Library\bin\``. PyInstaller's
-# ``collect_dynamic_libs`` only walks the package directory, so the
-# bundle ships the Python binding without its C++ runtime →
-# ``ImportError: DLL load failed while importing OpenImageIO`` the
-# moment ``__main__`` boots. Mirror the av_bins / pyside_bins
-# pattern: enumerate the known prefixes and pull them ourselves.
-import sys as _sys_for_oiio
-_oiio_extra_bins: list[tuple[str, str]] = []
-_conda_bin_for_oiio = Path(_sys_for_oiio.prefix) / "Library" / "bin"
-if _conda_bin_for_oiio.is_dir():
-    _oiio_dll_prefixes = (
-        "openimageio",
-        "openimageio_util",
-        "imath",
-        "openexr",
-        "openexrcore",
-        "ilmthread",
-        "iex",
-        # OIIO links a wide set of codec backends on conda-forge.
-        # Most overlap with pyside_bins (libpng / libjpeg / tiff),
-        # but the OIIO-specific ones live here so the bundle stays
-        # self-contained even if the Qt DLL list shrinks later.
-        "libheif",
-        "libde265",
-        "libraw",
-        "libwebpdemux",
-        "libwebpmux",
-        "openjp2",
-        "jasper",
-        "lz4",
-        "snappy",
-    )
-    for _f in _conda_bin_for_oiio.glob("*.dll"):
-        _name = _f.name.lower()
-        if any(_name.startswith(p.lower()) for p in _oiio_dll_prefixes):
-            _oiio_extra_bins.append((str(_f), "."))
-oiio_bins = oiio_bins + _oiio_extra_bins
+# HISTORICAL NOTE — kept here as a warning for future me:
+#
+# An earlier version of this spec mirrored the conda-forge
+# ``$CONDA_PREFIX\Library\bin\`` directory directly into the bundle
+# root (the ``_oiio_extra_bins`` block) to fix an
+# ``ImportError: DLL load failed while importing OpenImageIO`` that
+# fired the moment ``__main__`` booted. At that time conda's
+# OpenImageIO Python package shipped a bare ``.pyd`` linked to the
+# UNVERSIONED libs in ``Library/bin/`` (``OpenImageIO.dll``,
+# ``Iex.dll``, ``Imath.dll``, ``OpenEXR.dll``, etc.) — so the spec
+# had to hand-pull those.
+#
+# As of conda-forge 2026-Q2 the package layout switched: the .pyd
+# now links to VERSIONED filenames (``Iex_v_3_3_5_OpenImageIO_v3_1.dll``,
+# ``OpenEXR_v_3_3_5_OpenImageIO_v3_1.dll``, etc.) that ship in
+# ``Lib/site-packages/OpenImageIO/bin/``, and the package's
+# ``__init__.py`` does ``os.add_dll_directory("bin")`` so Windows
+# finds them at import time. ``collect_dynamic_libs("OpenImageIO")``
+# already picks those up.
+#
+# Mirroring ``Library/bin/`` into the bundle root in addition to
+# that creates a NAME-COLLISION TRAP: Windows resolves the .pyd's
+# bare references first via its application directory (= the bundle
+# root = ``_internal/``), finds the unversioned ``OpenImageIO.dll``,
+# loads it — and that DLL was built against a different runtime
+# than the .pyd expects, so the symbol lookup fails with
+# ``La procédure spécifiée est introuvable``. v1.8.4's first build
+# shipped this bug; removing the conda mirror fixes it.
+#
+# If a future conda layout change brings the unversioned scheme
+# back, expect a fresh import failure right here and re-introduce
+# a targeted copy (filtered to ONLY the prefixes actually needed).
+# Don't blanket-mirror ``Library/bin/`` — that's the trap.
 # PyAV (conda-forge build) does NOT ship FFmpeg next to the ``av``
 # package — the DLLs live in the conda env's ``Library/bin/`` and
 # ``collect_dynamic_libs("av")`` returns nothing. We have to grab
