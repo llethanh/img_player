@@ -717,6 +717,20 @@ _TEMPLATES: dict[str, str] = {
         '<path d="M2.5 2.5 L13.5 13.5" stroke-width="2"/>'
         "</svg>"
     ),
+    # Settings gear — eight-pronged cog around a central circle.
+    # Used by the status-bar's bottom-right Preferences shortcut.
+    "settings": (
+        '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="none" '
+        'stroke="{color}" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">'
+        # Outer gear silhouette — 8 teeth on a 5.6 px ring.
+        '<path d="M8 1.5 L9 3.2 L11 3 L11.6 4.8 L13.5 5.4 L13.2 7.4'
+        ' L14.5 9 L13.2 10.6 L13.5 12.6 L11.6 13.2 L11 15 L9 14.8'
+        ' L8 16.5 L7 14.8 L5 15 L4.4 13.2 L2.5 12.6 L2.8 10.6'
+        ' L1.5 9 L2.8 7.4 L2.5 5.4 L4.4 4.8 L5 3 L7 3.2 Z"/>'
+        # Hub circle.
+        '<circle cx="8" cy="8" r="2.2"/>'
+        "</svg>"
+    ),
 }
 
 

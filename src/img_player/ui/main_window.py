@@ -468,6 +468,10 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         # Keep a typed handle so the new helpers (set_session_dot,
         # set_perf_html) can be reached without a sub-widget walk.
         self._status_bar_widget = sb
+        # Status-bar gear button → existing Preferences dialog entry
+        # point. Same code path as File → Open Preferences… and
+        # Ctrl+,. Adds a permanent visible discovery hook.
+        sb.preferences_clicked.connect(self._open_preferences)
 
     def set_selected_layers(self, text: str) -> None:
         """Update the middle status-bar widget — the focused layer

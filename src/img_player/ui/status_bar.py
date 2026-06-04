@@ -24,16 +24,18 @@ working without a refactor on the call sites.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPainter
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QSizePolicy,
     QStatusBar,
+    QToolButton,
     QWidget,
 )
 
+from img_player.ui.icons import make_icon
 from img_player.ui.theme import F, G, H, S
 
 
@@ -111,6 +113,12 @@ class StatusBar(QStatusBar):  # type: ignore[misc]
     """
 
     HEIGHT = G.CTRL_BUTTON_H - 2  # 26 px per brief §10
+
+    # Emitted when the user clicks the gear button on the right edge
+    # of the status bar. MainWindow connects this to
+    # ``_open_preferences`` so the keyboard shortcut (Ctrl+,) and the
+    # File menu entry have a third, always-visible discovery path.
+    preferences_clicked = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -238,6 +246,42 @@ class StatusBar(QStatusBar):  # type: ignore[misc]
         self.status_right.setFont(F.mono(F.SIZE_MONO_LABEL))
         self.status_right.setStyleSheet(f"color: {H.T_SEC};")
         layout.addWidget(self.status_right, 0)
+
+        # ---- Preferences gear (far right) ------------------------------
+        # Discoverability hook: the menu entry (File → Open Preferences…)
+        # and the shortcut (Ctrl+,) are easy to miss; a visible gear
+        # sitting permanently in the corner makes the dialog one click
+        # away no matter which mode the app is in. ``QToolButton`` (not
+        # ``QPushButton``) so the visual matches the other icon-only
+        # buttons elsewhere in the chrome (no border, transparent
+        # background, hover tint via QSS).
+        self._prefs_btn = QToolButton(self)
+        self._prefs_btn.setObjectName("statusBarPrefsBtn")
+        self._prefs_btn.setIcon(make_icon("settings", color=H.T_SEC))
+        self._prefs_btn.setIconSize(self._prefs_btn.iconSize() * 0.85)
+        self._prefs_btn.setToolTip(
+            "Open Preferences (Ctrl+,)\n"
+            "Video cache budget, OCIO config, recent paths, "
+            "and other app-wide settings."
+        )
+        self._prefs_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._prefs_btn.setStyleSheet(
+            f"QToolButton#statusBarPrefsBtn {{"
+            f"  background-color: transparent;"
+            f"  border: none;"
+            f"  padding: 2px 4px;"
+            f"}}"
+            f"QToolButton#statusBarPrefsBtn:hover {{"
+            f"  background-color: {H.ACC_TINT_10};"
+            f"  border-radius: {G.RADIUS_SM}px;"
+            f"}}"
+        )
+        # Forward the click through the public signal so MainWindow
+        # owns the dispatch (= the place that already knows how to
+        # construct the dialog with the right Preferences / OCIO
+        # reload callback / disk-cache handle).
+        self._prefs_btn.clicked.connect(self.preferences_clicked.emit)
+        layout.addWidget(self._prefs_btn, 0)
 
     # ------------------------------------------------------------------ Public API
 
