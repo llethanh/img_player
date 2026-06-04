@@ -989,13 +989,20 @@ class Preferences:
     @property
     def video_cache_budget_gb(self) -> int:
         """RAM budget per VideoSource — the per-video-layer LRU
-        cache that holds **float32 RGBA** decoded frames and is fed
+        cache that holds **uint8 RGBA** decoded frames and is fed
         by the background prefetch worker. Default 8 GB matches the
         image-sequence cache budget. Per-frame footprint at common
-        resolutions: 14 MB (720p), 32 MB (1080p), 58 MB (1440p),
-        130 MB (4K). Multiply by the number of concurrent video
+        resolutions: 3.5 MB (720p), 8 MB (1080p), 14 MB (1440p),
+        32 MB (4K). Multiply by the number of concurrent video
         layers to estimate total RAM use; the OS reclaims it when
-        a layer closes."""
+        a layer closes.
+
+        At the 8 GB default that caches ~2280 frames at 720p, ~1020
+        at 1080p, ~570 at 1440p, or ~256 at 4K (= 38, 17, 9.5,
+        4.3 seconds at 60 fps respectively). The setting takes
+        effect at the next video open; restarting Flick is not
+        required, but already-open video layers keep their
+        previously-allocated budget until closed."""
         return max(0, _layered_int("video_cache.budget_gb", 8))
 
     @video_cache_budget_gb.setter

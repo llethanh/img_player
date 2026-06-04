@@ -623,6 +623,150 @@ class _ColorManagementPage(QWidget):
             return ocio.Config.CreateFromBuiltinConfig(DEFAULT_BUILTIN_URI)
 
 
+class _VideoCachePage(QWidget):
+    """Video cache settings — per-layer RAM budget for decoded
+    video frames.
+
+    Each open video layer maintains its own background-prefetch RAM
+    cache holding decoded uint8 RGBA frames. The budget here is the
+    soft upper bound for **one** such layer; a compare stack of N
+    video layers can use up to N × budget GB. The OS reclaims the
+    RAM on layer close. Setting takes effect for the next video
+    layer opened (already-running layers keep their previous
+    budget until closed).
+
+    Per-frame footprint at common resolutions:
+
+        720p (1280×720)   : 3.5 MB   ->  ~2280 frames in 8 GB
+        1080p (1920×1080) : 8.0 MB   ->  ~1020 frames in 8 GB
+        1440p (2560×1440) : 14.4 MB  ->  ~570 frames in 8 GB
+        4K (3840×2160)    : 31.6 MB  ->  ~256 frames in 8 GB
+
+    At 60 fps these convert to 38 s / 17 s / 9.5 s / 4.3 s of
+    instantly scrubbable buffer respectively. Crank the budget when
+    reviewing long takes / fast scrub-back workflows; lower it on
+    RAM-constrained machines or when running many concurrent video
+    layers.
+    """
+
+    def __init__(
+        self,
+        prefs: Preferences,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._prefs = prefs
+        self._initial_budget_gb = prefs.video_cache_budget_gb
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+
+        title = QLabel("Video cache")
+        title.setStyleSheet("font-size: 14px; font-weight: 600;")
+        layout.addWidget(title)
+
+        intro = QLabel(
+            "RAM budget for each open video layer's decoded-frame "
+            "cache. The background prefetch worker fills this cache "
+            "ahead of the playhead so playback hits decoded frames "
+            "instead of re-decoding on every tick — the gating "
+            "factor for cached 60 fps playback. Higher = more "
+            "frames kept in RAM = longer instant-scrub window."
+        )
+        intro.setWordWrap(True)
+        intro.setStyleSheet("color: #aaa;")
+        layout.addWidget(intro)
+
+        # ---- Budget -----------------------------------------------------
+        layout.addWidget(self._make_subtitle("Per-layer RAM budget"))
+
+        budget_row = QHBoxLayout()
+        self._budget_spin = QSpinBox()
+        # 0 = disable the LRU cache entirely (every frame is a
+        # cold seek+decode). Useful for diagnostics; not a useful
+        # day-to-day setting. 256 GB is the soft ceiling — most
+        # users with this much spare RAM should be cranking other
+        # things first (OS, swap, image sequence cache).
+        self._budget_spin.setRange(0, 256)
+        self._budget_spin.setSuffix(" GB per video layer")
+        self._budget_spin.setSpecialValueText(
+            "0 — disable cache",
+        )
+        self._budget_spin.setValue(self._initial_budget_gb)
+        budget_row.addWidget(self._budget_spin)
+        budget_row.addStretch(1)
+        layout.addLayout(budget_row)
+
+        # Density preview — tells the user what their chosen budget
+        # buys at each common resolution so the trade-off is
+        # visible without doing the math (8 GB / 14.4 MB =
+        # ~570 frames at 1440p is a non-obvious number).
+        self._density_label = QLabel()
+        self._density_label.setWordWrap(True)
+        self._density_label.setStyleSheet(
+            "color: #888; font-size: 11px;",
+        )
+        layout.addWidget(self._density_label)
+        # Refresh on every value change so the user sees the
+        # budget -> frames math update live as they spin.
+        self._budget_spin.valueChanged.connect(
+            self._refresh_density_label,
+        )
+        self._refresh_density_label(self._initial_budget_gb)
+
+        layout.addStretch(1)
+
+    def _make_subtitle(self, text: str) -> QLabel:
+        lbl = QLabel(text)
+        lbl.setStyleSheet("font-weight: 600; margin-top: 6px;")
+        return lbl
+
+    def _refresh_density_label(self, value: int) -> None:
+        if value <= 0:
+            self._density_label.setText(
+                "<i>Cache disabled — every frame requires a "
+                "fresh seek + decode (~10–30 ms on AV1 1440p). "
+                "Cached playback is impossible in this mode.</i>"
+            )
+            return
+        b = float(value)
+        # uint8 RGBA per-frame footprint in MB at each resolution.
+        per_frame_mb = {
+            "720p":  3.5,
+            "1080p": 8.0,
+            "1440p": 14.4,
+            "4K":    31.6,
+        }
+        rows = []
+        for label, mb in per_frame_mb.items():
+            frames = int((b * 1024.0) / mb)
+            secs_60 = frames / 60.0
+            rows.append(
+                f"<b>{label}</b>: ~{frames} frames "
+                f"(= {secs_60:.1f} s @ 60 fps)"
+            )
+        self._density_label.setText(
+            f"At {value} GB per layer, the cache holds:<br>"
+            + " · ".join(rows)
+            + "<br><br><i>Setting takes effect for the next "
+            "video layer opened.</i>"
+        )
+
+    def apply(self) -> bool:
+        """Persist the new budget. Returns ``True`` when the value
+        changed (used by the parent dialog to decide whether to
+        show a restart-hint dialog — though for the video cache the
+        new value is picked up on next ``video_open``, no restart
+        needed)."""
+        new_budget = int(self._budget_spin.value())
+        if new_budget == self._initial_budget_gb:
+            return False
+        self._prefs.video_cache_budget_gb = new_budget
+        self._initial_budget_gb = new_budget
+        return True
+
+
 class _DiskCachePage(QWidget):
     """Disk-cache settings — enable/disable, location, budget, clear.
 
@@ -1095,6 +1239,10 @@ class PreferencesDialog(QDialog):
         self._add_section(
             "Color Management",
             _ColorManagementPage(prefs, on_reload=on_reload, parent=self),
+        )
+        self._add_section(
+            "Video cache",
+            _VideoCachePage(prefs, parent=self),
         )
         self._add_section(
             "Disk cache",
