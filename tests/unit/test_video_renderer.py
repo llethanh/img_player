@@ -37,19 +37,19 @@ def _make_video(path: Path, *, n_frames: int = 24, fps: int = 24,
     container.close()
 
 
-def test_decode_at_returns_rgba_float32(tmp_path: Path) -> None:
+def test_decode_at_returns_rgba_uint8(tmp_path: Path) -> None:
     p = tmp_path / "v.mp4"
     _make_video(p)
     mgr = VideoSourceManager()
     try:
         rgba = mgr.decode_at("layer-1", p, 0.0)
+        # v1.8.3 viewport refactor: decode_at returns uint8 RGBA;
+        # the GPU normalizes on upload via GL_UNSIGNED_BYTE so the
+        # main thread skips the ~16 ms cast that was capping cached
+        # 60 fps playback at 30 fps.
         assert rgba.shape == (48, 64, 4)
-        assert rgba.dtype == np.float32
-        # Alpha is always 1.0 for opaque video.
-        assert np.allclose(rgba[:, :, 3], 1.0)
-        # uint8 / 255 → values in [0, 1].
-        assert 0.0 <= float(rgba[:, :, :3].min())
-        assert float(rgba[:, :, :3].max()) <= 1.0
+        assert rgba.dtype == np.uint8
+        assert int(rgba[:, :, 3].min()) == 255
     finally:
         mgr.shutdown()
 

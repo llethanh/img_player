@@ -543,10 +543,19 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
     # ------------------------------------------------------------------ Public API
 
     def set_frame(self, pixels: np.ndarray) -> None:
-        """Upload a new frame. Non-blocking in the Qt main thread."""
+        """Upload a new frame. Non-blocking in the Qt main thread.
+
+        Accepts float32 / float16 (HDR-friendly path for EXR + image
+        sequences) **or** uint8 (fast path for video — the cache stores
+        uint8 RGBA and the GPU normalizes on upload via
+        ``GL_UNSIGNED_BYTE``, skipping the expensive main-thread
+        cast that was capping cached 60 fps playback at 30 fps).
+        Any other dtype (legacy int16, int32, etc.) is promoted to
+        float32 for the existing float path.
+        """
         if pixels.ndim != 3 or pixels.shape[2] not in (3, 4):
             raise ValueError(f"Expected HxWx3 or HxWx4, got shape {pixels.shape}")
-        if pixels.dtype not in (np.float16, np.float32):
+        if pixels.dtype not in (np.uint8, np.float16, np.float32):
             pixels = pixels.astype(np.float32, copy=False)
         self._pending_frame = np.ascontiguousarray(pixels)
         self.update()
@@ -568,7 +577,7 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
         """
         if pixels.ndim != 3 or pixels.shape[2] not in (3, 4):
             raise ValueError(f"Expected HxWx3 or HxWx4, got shape {pixels.shape}")
-        if pixels.dtype not in (np.float16, np.float32):
+        if pixels.dtype not in (np.uint8, np.float16, np.float32):
             pixels = pixels.astype(np.float32, copy=False)
         self._pending_compare_b = np.ascontiguousarray(pixels)
         self.update()
@@ -1292,9 +1301,30 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
             # image→widget centring offset — the overlay needs to know.
             self.transform_changed.emit()
         gl_format = GL.GL_RGBA if channels == 4 else GL.GL_RGB
-        gl_type = GL.GL_HALF_FLOAT if pixels.dtype == np.float16 else GL.GL_FLOAT
+        # GL pixel type from the incoming dtype.
+        #
+        # uint8 path (v1.8.3 viewport fast path for video): the cache
+        # stores uint8 RGBA in [0, 255]; we upload it directly with
+        # ``GL_UNSIGNED_BYTE`` and let the driver auto-normalize to
+        # [0, 1] before storing into the GL_RGBA16F internal format.
+        # That skips the main-thread ``np.multiply(uint8, 1/255,
+        # dtype=float32)`` cast — ~16 ms saved per frame on 1440p,
+        # which is exactly what was busting the 60 fps tick budget.
+        # Plus 75 % less PCIe bandwidth on the upload (15 MB vs 60
+        # MB for 1440p RGBA).
+        #
+        # The float32 / float16 paths are bit-for-bit identical to
+        # the pre-v1.8.3 behaviour so EXR / image-sequence layers
+        # are unaffected.
+        if pixels.dtype == np.uint8:
+            gl_type = GL.GL_UNSIGNED_BYTE
+        elif pixels.dtype == np.float16:
+            gl_type = GL.GL_HALF_FLOAT
+        else:
+            gl_type = GL.GL_FLOAT
         # Always use 16F internal storage — plenty of precision for display,
-        # halves VRAM compared to RGBA32F.
+        # halves VRAM compared to RGBA32F, and lets the driver normalize
+        # uint8 inputs into the same texture format the shader expects.
         internal = GL.GL_RGBA16F if channels == 4 else GL.GL_RGB16F
 
         GL.glPixelStorei(GL.GL_UNPACK_ALIGNMENT, 1)
@@ -1391,7 +1421,12 @@ class GLViewport(QOpenGLWidget):  # type: ignore[misc]
         """
         height, width, channels = pixels.shape
         gl_format = GL.GL_RGBA if channels == 4 else GL.GL_RGB
-        gl_type = GL.GL_HALF_FLOAT if pixels.dtype == np.float16 else GL.GL_FLOAT
+        if pixels.dtype == np.uint8:
+            gl_type = GL.GL_UNSIGNED_BYTE
+        elif pixels.dtype == np.float16:
+            gl_type = GL.GL_HALF_FLOAT
+        else:
+            gl_type = GL.GL_FLOAT
         internal = GL.GL_RGBA16F if channels == 4 else GL.GL_RGB16F
 
         GL.glPixelStorei(GL.GL_UNPACK_ALIGNMENT, 1)

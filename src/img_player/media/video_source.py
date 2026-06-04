@@ -79,30 +79,27 @@ log = logging.getLogger(__name__)
 # Default RAM budget for the per-source frame cache. Tunable via
 # ``Preferences.video_cache_budget_gb`` and the App constructor.
 #
-# Cached frames are stored as **float32 RGBA** in [0, 1] range —
-# the same format the viewport's GL texture upload pipeline expects.
-# Storing float32 (instead of the more compact uint8 we tried in
-# v1.8.2) means cache hits are TRULY zero-cost on the main thread:
-# no ``np.multiply(uint8, 1/255, dtype=float32)`` cast (the ~16 ms
-# cast on 1440p was exactly the thing pushing cached playback over
-# the 16.67 ms 60 fps tick budget and locking it at 30 fps).
+# Cached frames are stored as **uint8 RGBA** in [0, 255] range —
+# v1.8.3 added a viewport upload path that accepts uint8 directly
+# via ``GL_UNSIGNED_BYTE`` and lets the GPU driver normalize into
+# the GL_RGBA16F texture format the shader expects. That means:
+#   * NO main-thread ``np.multiply(uint8, 1/255, dtype=float32)``
+#     cast — the ~16 ms cast that pushed cached 60 fps playback
+#     over the 16.67 ms tick budget on 1440p is gone
+#   * 4× more frames cached per GB than the v1.8.2 float32 storage
+#   * 75 % less PCIe upload bandwidth per frame (15 MB vs 60 MB
+#     on 1440p) — the texture upload itself fits comfortably under
+#     the vsync window again
 #
-# Trade-off: 4× more memory per cached frame than uint8 would use:
+# Density numbers (uint8 RGBA):
+#     1440p  = 2560×1440×4 = 14.4 MB   →  ~570 frames in 8 GB
+#     1080p  = 1920×1080×4 =  8.0 MB   →  ~1020 frames in 8 GB
+#     720p   =  1280×720×4 =  3.5 MB   →  ~2280 frames in 8 GB
 #
-#   float32 RGBA per-frame footprint:
-#     1440p  = 2560×1440×4×4 = 58.6 MB   →  ~140 frames in 8 GB
-#     1080p  = 1920×1080×4×4 = 33.2 MB   →  ~247 frames in 8 GB
-#     720p   = 1280× 720×4×4 = 14.7 MB   →  ~556 frames in 8 GB
-#
-# On a 51 GB machine the user can crank ``video_cache.budget_gb``
-# to 32 in ``flick.toml`` to land closer to OpenRV's 2000-ish
-# cached frames (at 32 GB: ~560 frames @ 1440p = ~9 s, ~990 @
-# 1080p, ~2220 @ 720p). A full-density uint8 cache + main-thread
-# cast was tried and lost on the 60 fps cap; the dense uint8
-# approach can come back later as part of a viewport refactor that
-# uploads ``GL_RGBA8`` textures and normalises in the shader,
-# avoiding the cast entirely (= best of both worlds — see issue
-# tracker "viewport uint8 fast path").
+# Matches OpenRV's FBCache density at the same budget. On a 32 GB
+# budget (tunable via flick.toml) this caches ~2280 1440p frames =
+# 38 s of 60 fps content — at parity with the OpenRV screenshots the
+# user benchmarked against early in v1.8.x.
 #
 # NOTE: budget is **per VideoSource** (one per video layer). A 3-clip
 # compare stack at the default budget uses up to 24 GB total.
@@ -110,19 +107,19 @@ DEFAULT_VIDEO_CACHE_BUDGET_BYTES: int = 8 * 1024 * 1024 * 1024
 
 
 def _frame_to_rgba_f32(frame: object) -> np.ndarray:
-    """Decode a PyAV ``VideoFrame`` to ``(H, W, 4)`` float32 RGBA in
-    [0, 1].
+    """Decode a PyAV ``VideoFrame`` to ``(H, W, 4)`` **uint8** RGBA.
 
-    Extracted so every call site in this module (the foreground
-    decoder + the prefetch worker + the precise/fast-seek branches)
-    does the same fused ``np.multiply(arr_u8, 1/255, dtype=float32)``
-    cast — no chance of half of them storing uint8 while the other
-    half stores float32. The cache stores float32 so cache hits
-    return ready-to-upload arrays with zero main-thread work — see
-    the module-level budget preamble for the trade-off math.
+    Despite the historical ``_f32`` suffix in the name (kept to avoid
+    breaking imports), this returns **uint8 RGBA in [0, 255]** since
+    v1.8.3. The cast to float32 was the per-frame work that pushed
+    cached 60 fps playback over the 16.67 ms tick budget; the viewport
+    now uploads uint8 directly via ``GL_UNSIGNED_BYTE`` and lets the
+    driver normalize into the GL_RGBA16F internal format. The cache
+    thus stores uint8 (~14 MB / 1440p frame), giving 4× the OpenRV-
+    parity density of the previous float32 storage at no quality loss
+    on display-referred content.
     """
-    arr_u8 = frame.to_ndarray(format="rgba")  # type: ignore[attr-defined]
-    return np.multiply(arr_u8, np.float32(1.0 / 255.0), dtype=np.float32)
+    return frame.to_ndarray(format="rgba")  # type: ignore[attr-defined]
 
 
 class VideoSource:
