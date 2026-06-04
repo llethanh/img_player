@@ -94,3 +94,43 @@ def test_shutdown_closes_all(tmp_path: Path) -> None:
     assert len(mgr._sources) == 2
     mgr.shutdown()
     assert len(mgr._sources) == 0
+
+
+def test_cache_budget_provider_is_resolved_per_open(tmp_path: Path) -> None:
+    """Pin the v1.8.3 contract: when a callable provider is passed at
+    manager construction, it is re-resolved on every get_or_open so
+    a Preferences-dialog tweak between layers takes effect without
+    restarting the app.
+    """
+    p1 = tmp_path / "a.mp4"
+    p2 = tmp_path / "b.mp4"
+    _make_video(p1)
+    _make_video(p2)
+
+    # Mutable budget — would be backed by Preferences.video_cache_budget_gb
+    # in the live app; here it's just a single-element list so the test
+    # can change it between opens.
+    box = [1_000_000]  # 1 MB initial
+
+    def provider() -> int:
+        return box[0]
+
+    mgr = VideoSourceManager(cache_budget_provider=provider)
+    try:
+        dec1 = mgr.get_or_open("a", p1)
+        # First open snapped the initial 1 MB.
+        assert dec1._source._frame_cache_budget == 1_000_000  # type: ignore[attr-defined]
+
+        # User opens Preferences, cranks budget to 5 MB, closes dialog,
+        # then opens a second layer.
+        box[0] = 5_000_000
+        dec2 = mgr.get_or_open("b", p2)
+        # Second open MUST see the new value, not stay at 1 MB.
+        assert dec2._source._frame_cache_budget == 5_000_000  # type: ignore[attr-defined]
+
+        # And the first layer keeps its original budget — already-open
+        # decoders aren't retroactively resized (would be confusing
+        # and require evicting on the fly).
+        assert dec1._source._frame_cache_budget == 1_000_000  # type: ignore[attr-defined]
+    finally:
+        mgr.shutdown()

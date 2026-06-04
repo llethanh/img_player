@@ -18,6 +18,7 @@ time out at 500 ms — see :class:`_ThreadedDecoder` docstring).
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -115,16 +116,55 @@ class VideoSourceManager:
     worker.
     """
 
-    def __init__(self, *, source_cache_budget_bytes: int | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        source_cache_budget_bytes: int | None = None,
+        cache_budget_provider: Callable[[], int | None] | None = None,
+    ) -> None:
         self._decoders: dict[str, _ThreadedDecoder] = {}
         # Per-source LRU cache budget plumbed into every
         # ``_ThreadedDecoder`` we open. None = use VideoSource's
-        # default (8 GB). The App configures this from
-        # ``Preferences.video_cache_budget_gb`` at boot.
+        # default (8 GB).
+        #
+        # Two configuration modes:
+        #   * ``source_cache_budget_bytes`` — fixed value, locked at
+        #     construction. Used by tests and any caller that doesn't
+        #     need live tuning.
+        #   * ``cache_budget_provider`` — callable resolved on every
+        #     ``get_or_open`` call. The App uses this to read the
+        #     live ``Preferences.video_cache_budget_gb`` so a change
+        #     in the Preferences dialog applies the next time the
+        #     user opens a video layer (no restart required).
+        #
+        # If both are provided the provider wins; if neither, the
+        # source falls back to its module-level default.
         self._source_cache_budget_bytes: int | None = source_cache_budget_bytes
+        self._cache_budget_provider: Callable[[], int | None] | None = (
+            cache_budget_provider
+        )
         # Latched scrub state — new decoders opened mid-scrub inherit
         # the flag so they don't decode-forward on their first frame.
         self._fast_seek: bool = False
+
+    def _resolve_cache_budget(self) -> int | None:
+        """Return the cache budget that the next open should use.
+
+        Reads the live provider if set, otherwise the value latched at
+        construction. Defensive against a misbehaving provider:
+        anything raising falls back to the latched value rather than
+        propagating into a video open failure.
+        """
+        if self._cache_budget_provider is not None:
+            try:
+                return self._cache_budget_provider()
+            except Exception:  # noqa: BLE001 — defensive
+                log.exception(
+                    "[video] cache_budget_provider raised; "
+                    "falling back to latched value %r",
+                    self._source_cache_budget_bytes,
+                )
+        return self._source_cache_budget_bytes
 
     # Backwards-compat alias used by tests written against the old
     # ``_sources`` attribute name. New code should use ``_decoders``.
@@ -145,12 +185,18 @@ class VideoSourceManager:
         if absent. Distinct ``layer_id``s map to distinct decoders
         even if they point at the same file (independent per-layer
         scrub / play state).
+
+        On open the cache budget is **re-resolved from the live
+        provider** (if one was passed at manager construction), so a
+        Preferences-dialog tweak to ``video_cache_budget_gb`` lands
+        the next time the user opens a video layer — no restart
+        needed.
         """
         dec = self._decoders.get(layer_id)
         if dec is None:
             dec = _ThreadedDecoder(
                 path,
-                cache_budget_bytes=self._source_cache_budget_bytes,
+                cache_budget_bytes=self._resolve_cache_budget(),
             )
             # New decoders inherit the manager's scrub state so the
             # first frame request after a layer add during an active

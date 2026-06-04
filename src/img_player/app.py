@@ -367,12 +367,22 @@ class ImgPlayerApp:
         # the 8 GB default and have a 30 s 1440p clip fit end-to-end
         # in cache. Multiplied by the number of concurrent video
         # layers; the OS reclaims on layer close.
-        video_cache_budget = (
-            int(self._prefs.video_cache_budget_gb) * (1024 ** 3)
-        )
+        #
+        # Wire as a provider (callable resolved on each open) rather
+        # than a fixed int so a Preferences-dialog tweak picks up the
+        # next time the user opens a video layer — without it, the
+        # change would only land on app restart (= surprising UX,
+        # especially given the dialog hints at "takes effect on next
+        # video open"). The lambda re-reads from the live prefs each
+        # call.
+        def _video_cache_budget_provider() -> int | None:
+            gb = int(self._prefs.video_cache_budget_gb)
+            if gb <= 0:
+                return None  # cache disabled
+            return gb * (1024 ** 3)
+
         self._video_sources = VideoSourceManager(
-            source_cache_budget_bytes=video_cache_budget
-            if video_cache_budget > 0 else None,
+            cache_budget_provider=_video_cache_budget_provider,
         )
         # Persistent audio output (sounddevice + feeder thread). Stays
         # open from boot through shutdown — option (b) of the design:
