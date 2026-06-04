@@ -44,6 +44,35 @@
 
     <article class="release">
       <div class="release-meta">
+        <span class="ver">v1.8.4</span>
+        <span class="date">2026-06-04</span>
+        <span class="tagline">True 60 fps cached video playback (1440p AV1), 3× faster network EXR cold reads, Preferences shortcut in the status bar.</span>
+      </div>
+      <div class="release-body">
+        <h4>Performance — 60 fps cached video, finally</h4>
+        <ul>
+          <li class="perf"><strong>Cached playback on 1440p AV1 now sustains 60 fps</strong>, up from a hard 30 fps cap. Took nine rounds of in-app instrumentation to pin down the cause: the per-frame <code>uint8 → float32</code> cast was eating ~16 ms on the main thread, which combined with the 16.7 ms vsync window meant every tick missed its DWM composit slot and got bumped to the next refresh = half-rate playback. Fixed by uploading <code>uint8</code> RGBA straight to the texture (<code>GL_UNSIGNED_BYTE</code>, with the driver normalising into the existing <code>GL_RGBA16F</code> internal format) — the shader sees the same normalised samples it always did, no shader change, but the cast moves from the CPU to the GPU's free conversion path. The main-thread per-frame cost drops from 16 ms to <code>~0.03 ms</code> (= a dict lookup); the vsync window is suddenly easy to hit.</li>
+          <li class="perf"><strong>Video cache back to <code>uint8</code> storage — OpenRV-density parity restored.</strong> The v1.8.2 round had moved the cache to <code>float32</code> to amortise the cast cost; with the cast now gone, <code>uint8</code> is the natural storage (it's what swscale emits, what the GPU consumes after normalisation, and is 4× more compact). Concrete: at the 8 GB default budget the cache holds ~570 1440p frames (9.5 s @ 60 fps); cranked to 32 GB via the new Preferences page you get ~2280 1440p frames — matching the OpenRV screenshots you might have been benchmarking against.</li>
+          <li class="perf"><strong>Vsync disabled at both the Qt surface format and the WGL driver level</strong>. <code>QSurfaceFormat::setDefaultFormat()</code> with <code>setSwapInterval(0)</code> is installed BEFORE <code>QApplication</code> is constructed (Qt copies the default into every new context); <code>initializeGL</code> then calls <code>wglSwapIntervalEXT(0)</code> directly on the active WGL context as a belt-and-suspenders. The actual swap interval is logged at boot so you can confirm the disable landed (and tell whether NVIDIA Control Panel is forcing it back on globally).</li>
+          <li class="perf"><strong>Network EXR cold reads are ~3× faster</strong>. A new local staging cache copies network-resident EXRs to <code>%LOCALAPPDATA%\FlickPlayer\staging\</code> on first access; subsequent reads come from local NVMe rather than SMB. Combined with a smart-dispatch path that uses PyOpenEXR for network sources (~30% faster than OIIO over SMB) and OIIO for local files (still the right tool there), cold-decode wall time on a 4K project drops from ~190 ms to ~63 ms per frame.</li>
+        </ul>
+        <h4>Cache</h4>
+        <ul>
+          <li class="fix"><strong>Cache eviction is now playhead-aware</strong>, not LRU-by-recency. Symptom that surfaced this: a screenshot showing a "donut" in the cache bar — segments behind and ahead of the playhead, but a hole at the playhead. Root cause: LRU bumped each frame as the main thread read it, so prefetched-ahead frames slowly slid to the LRU tail and got evicted right under the playhead. New policy scores each cached frame by <em>distance from the live playback position</em> (with a 60-frame "scrub-back" floor behind), so the budget always fills with the frames the user will actually need next. O(n) per eviction but at ~500 cached frames and ~1 eviction per put it's well under 100 µs.</li>
+          <li class="perf"><strong>Sliding-window video prefetch</strong>. The prefetch thread now follows the playhead via a <code>notify_playback_position</code> hook fired on every <code>decode_at</code> call — when the user seeks, the prefetcher re-seeks its own container to the new position and resumes filling forward. The throttle wait inside the prefetch loop dropped from 50 ms to 5 ms; at 60 fps the previous 50 ms meant we missed 3 playback frames per check and progressively fell behind, surfacing as the "cache stops at frame 500" report.</li>
+          <li class="fix"><strong>Decode-timeout black flickers are gone</strong>. The per-layer <code>_ThreadedDecoder</code> worker (a v1.5 design) was decoding into its own 32-frame dict cache in parallel with the source-level prefetch — both ran <code>frame_at_time</code> against the same PyAV container's seek state and contended. When the worker fell behind, the main thread blocked on a 500 ms <code>sync_done.wait</code>; on timeout, <code>decode_at</code> returned a 1×1 black ndarray that the viewport stretched to fill = a visible black flash. Stripped the now-redundant worker layer; <code>decode_at</code> proxies straight through to <code>VideoSource.frame_at_time</code>.</li>
+        </ul>
+        <h4>UI</h4>
+        <ul>
+          <li class="new"><strong>⚙ Preferences shortcut in the status bar bottom-right</strong>. A new gear button forwards to the existing Preferences dialog — same dialog the File menu and <kbd>Ctrl</kbd>+<kbd>,</kbd> already opened, just always visible. The gear glyph itself was hand-recomputed from <code>R · (cos θ, sin θ)</code> at θ = k · 22.5° for 8-tooth rotational symmetry, with the hub circle cut from the same path via <code>fill-rule="evenodd"</code> so it sits exactly on the visual centre.</li>
+          <li class="new"><strong>New <em>Video cache</em> section in Preferences</strong>. Per-layer RAM budget with a live density preview that converts your chosen GB number into frames + seconds at 60 fps for 720p / 1080p / 1440p / 4K — no more reaching for a calculator. Changes are picked up the next time you open a video layer (no app restart needed — the manager re-reads the prefs via a callback on every <code>get_or_open</code>).</li>
+          <li class="fix"><strong>Removed the orphan "⋯ Contact sheet settings" button</strong> that floated next to the layer panel header with a dead empty menu. The widget had been created with <code>self</code> as parent but never added to any layout (so Qt rendered it at position (0, 0) of the transport bar), and its menu had been emptied in an earlier refactor when contact-sheet settings moved into the <code>ContactSheetBand</code> toolbar above the viewer. The real settings are still reachable there.</li>
+        </ul>
+      </div>
+    </article>
+
+    <article class="release">
+      <div class="release-meta">
         <span class="ver">v1.8.1</span>
         <span class="date">2026-06-03</span>
         <span class="tagline">WebM playback, Save Frame As fixed on videos, three boot-stability fixes for the bundle.</span>

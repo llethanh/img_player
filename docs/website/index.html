@@ -47,8 +47,8 @@
   <div class="ctas">
     <a
       class="btn btn-primary"
-      href="https://github.com/llethanh/FlickPlayer/releases/download/v1.8.1/FlickPlayer_v1.8.1.zip"
-    >Download for Windows — v1.8.1</a>
+      href="https://github.com/llethanh/FlickPlayer/releases/download/v1.8.4/FlickPlayer_v1.8.4.zip"
+    >Download for Windows — v1.8.4</a>
     <a class="btn btn-ghost" href="#features">See features →</a>
   </div>
   <p class="dl-note" style="margin-top: var(--s-sm); font-size: 0.9em; opacity: 0.6;">
@@ -743,17 +743,24 @@
 <section id="changelog" class="changelog-teaser">
   <h2>What's <span class="accent">new</span>.</h2>
   <p class="lede">
-    Latest release: <strong>v1.8.1</strong> — <strong>.webm video
-    playback</strong> (VP8/VP9/AV1 + Opus/Vorbis), <em>Save Frame As</em>
-    now captures the right frame on video sources (was always saving
-    frame 1), and three boot-stability fixes for the standalone bundle
-    (missing <code>sqlite3.dll</code>, missing PyAV Cython submodules,
-    and SDL3 preload so the avdevice startup popup is gone). Builds on
-    <strong>v1.8.0</strong>'s burnins (composited info bars + editor +
-    team-shared template library), and on <strong>v1.7.x</strong>'s
-    video colorspace auto-detect + coloured cache tiers (blue = disk,
-    orange = RAM). The full history — every public release, what
-    changed, why it changed — lives on its own page.
+    Latest release: <strong>v1.8.4</strong> — <strong>true 60 fps
+    cached video playback</strong>. The viewport now uploads
+    <code>uint8</code> RGBA directly and lets the GPU normalise on
+    upload, killing the per-frame cast that was capping cached
+    playback at 30 fps on 1440p AV1; combined with a vsync-disabled
+    swap chain and a playhead-aware cache eviction policy (no more
+    "donut around the playhead" while playing), 60 fps reviews
+    finally feel like 60 fps. Bonus: the cache is back to
+    <code>uint8</code> storage, so the OpenRV-density parity (~2280
+    cached 1440p frames at a 32 GB budget) returns at zero
+    main-thread cost. Network EXR cold reads land 3× faster via
+    the new local staging cache and the smart PyOpenEXR /
+    OpenImageIO dispatch. New <strong>⚙ Preferences</strong> shortcut
+    in the status-bar bottom-right, with a fresh Video-cache page
+    that surfaces the per-layer RAM budget (live density preview).
+    Builds on <strong>v1.8.1</strong>'s WebM video playback and
+    bundle-stability fixes. The full history — every public
+    release, what changed, why it changed — lives on its own page.
   </p>
   <p style="margin-top: var(--s-md);">
     <a class="btn btn-primary" href="changelog.html">Read the full changelog →</a>
@@ -763,7 +770,7 @@
 <!-- ============================================================ Footer -->
 <footer id="download">
   <p>
-    <strong>Flick Player</strong> · open-source VFX sequence viewer · <a href="https://github.com/llethanh/FlickPlayer/releases/download/v1.8.1/FlickPlayer_v1.8.1.zip">Download v1.8.1</a> · <a href="https://github.com/llethanh/FlickPlayer">GitHub</a> · <a href="changelog.html">Changelog</a>
+    <strong>Flick Player</strong> · open-source VFX sequence viewer · <a href="https://github.com/llethanh/FlickPlayer/releases/download/v1.8.4/FlickPlayer_v1.8.4.zip">Download v1.8.4</a> · <a href="https://github.com/llethanh/FlickPlayer">GitHub</a> · <a href="changelog.html">Changelog</a>
   </p>
   <p style="margin-top: var(--s-sm);">
     Built with PySide6, OpenColorIO, OpenImageIO and PyAV. Designed for Windows.
