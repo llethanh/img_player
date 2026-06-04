@@ -717,18 +717,30 @@ _TEMPLATES: dict[str, str] = {
         '<path d="M2.5 2.5 L13.5 13.5" stroke-width="2"/>'
         "</svg>"
     ),
-    # Settings gear — eight-pronged cog around a central circle.
-    # Used by the status-bar's bottom-right Preferences shortcut.
+    # Settings gear — 8-tooth cog with a circular hub cut out via
+    # ``fill-rule="evenodd"``. Used by the status-bar's bottom-right
+    # Preferences shortcut.
+    #
+    # Geometry — eight teeth evenly spaced 45° apart, outer radius
+    # 7 px (tooth tip) and inner radius 5 px (tooth root). Each tooth
+    # spans 22.5° at the outer radius, with a matching 22.5° gap at
+    # the inner radius between teeth (= 50 % duty cycle for a clean
+    # rotational symmetry). The hub circle has radius 2.5 px centred
+    # at (8, 8), giving a balanced 2.5 px ring between hub and
+    # tooth root. All 32 silhouette points were computed at design
+    # time from R * (cos θ, sin θ) at θ = k * 22.5° (k = 0..15
+    # alternating outer/inner) to avoid the hand-drawn asymmetry the
+    # v1.8.3 first cut had.
     "settings": (
-        '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="none" '
-        'stroke="{color}" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">'
-        # Outer gear silhouette — 8 teeth on a 5.6 px ring.
-        '<path d="M8 1.5 L9 3.2 L11 3 L11.6 4.8 L13.5 5.4 L13.2 7.4'
-        ' L14.5 9 L13.2 10.6 L13.5 12.6 L11.6 13.2 L11 15 L9 14.8'
-        ' L8 16.5 L7 14.8 L5 15 L4.4 13.2 L2.5 12.6 L2.8 10.6'
-        ' L1.5 9 L2.8 7.4 L2.5 5.4 L4.4 4.8 L5 3 L7 3.2 Z"/>'
-        # Hub circle.
-        '<circle cx="8" cy="8" r="2.2"/>'
+        '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">'
+        '<path fill="{color}" fill-rule="evenodd" d="'
+        'M14.9,6.6 L14.9,9.4 L12.9,9 L12.2,10.8 L13.8,11.9 L11.9,13.8'
+        ' L10.8,12.2 L9,12.9 L9.4,14.9 L6.6,14.9 L7,12.9 L5.2,12.2'
+        ' L4.1,13.8 L2.2,11.9 L3.8,10.8 L3.1,9 L1.1,9.4 L1.1,6.6'
+        ' L3.1,7 L3.8,5.2 L2.2,4.1 L4.1,2.2 L5.2,3.8 L7,3.1 L6.6,1.1'
+        ' L9.4,1.1 L9,3.1 L10.8,3.8 L11.9,2.2 L13.8,4.1 L12.2,5.2'
+        ' L12.9,7 Z '
+        'M10.5,8 A2.5,2.5 0 1,1 5.5,8 A2.5,2.5 0 1,1 10.5,8 Z"/>'
         "</svg>"
     ),
 }
