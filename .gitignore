@@ -59,6 +59,17 @@ tests/fixtures/large/
 .agents/
 
 # Graphify knowledge-graph output (generated via /graphify).
-# Huge: graph.json hits ~7 MB on Flick's 8000+ node corpus. Re-buildable
-# on any clone — no need to ship it with the source tree.
-graphify-out/
+# We DO commit the user-facing artifacts (graph.html, graph.json,
+# GRAPH_REPORT.md, manifest.json, cost.json, labels) so a fresh
+# clone has the architecture map ready without re-running graphify.
+# We exclude the internal extraction cache + machine-local interpreter
+# paths — those have no value across machines.
+graphify-out/cache/
+graphify-out/.graphify_python
+graphify-out/.graphify_root
+graphify-out/.graphify_detect.json
+graphify-out/.graphify_extract.json
+graphify-out/.graphify_ast.json
+graphify-out/.graphify_semantic.json
+graphify-out/.graphify_analysis.json
+graphify-out/.graphify_chunk_*.json

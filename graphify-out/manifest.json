@@ -1,0 +1,1497 @@
+{
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\docs\\branding\\generate_icon.py": {
+    "mtime": 1777994109.002,
+    "ast_hash": "02eb0e6c7eae8ae5c954dd1886a69971",
+    "semantic_hash": "02eb0e6c7eae8ae5c954dd1886a69971"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\perf\\baseline.json": {
+    "mtime": 1777214124.76,
+    "ast_hash": "d97563e0a06da85fbf33927f4783ac26",
+    "semantic_hash": "d97563e0a06da85fbf33927f4783ac26"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\perf\\baseline_igpu_780m.json": {
+    "mtime": 1777240624.84,
+    "ast_hash": "8778e46da318a7e2837c3112ca020490",
+    "semantic_hash": "8778e46da318a7e2837c3112ca020490"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\perf\\baseline_rtx5070.json": {
+    "mtime": 1777239788.945,
+    "ast_hash": "5f12be0aec0ee742e5f9a7d771fc3484",
+    "semantic_hash": "5f12be0aec0ee742e5f9a7d771fc3484"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\perf\\baseline_rtx5070_postreboot.json": {
+    "mtime": 1777289794.392,
+    "ast_hash": "0e60824854c3c54c9b8ef4901dd31af7",
+    "semantic_hash": "0e60824854c3c54c9b8ef4901dd31af7"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\perf\\contact_sheet_nonreg.json": {
+    "mtime": 1778773511.192,
+    "ast_hash": "df482854ac76e67d1cf2c9f809511dd4",
+    "semantic_hash": "df482854ac76e67d1cf2c9f809511dd4"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\perf\\contact_sheet_play_test.json": {
+    "mtime": 1779233533.594,
+    "ast_hash": "809bc36b100d483dd133fa27d9f7c27c",
+    "semantic_hash": "809bc36b100d483dd133fa27d9f7c27c"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\perf\\optim_full.json": {
+    "mtime": 1777214124.772,
+    "ast_hash": "b1554a2c010ca248724603eafb26ca28",
+    "semantic_hash": "b1554a2c010ca248724603eafb26ca28"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\perf\\optim_full_2gb.json": {
+    "mtime": 1777214124.785,
+    "ast_hash": "b7273bb9d6a3c403370e70d036165156",
+    "semantic_hash": "b7273bb9d6a3c403370e70d036165156"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\perf\\optim_gc.json": {
+    "mtime": 1777214124.798,
+    "ast_hash": "79adc7202471af0599b1243a1593b51a",
+    "semantic_hash": "79adc7202471af0599b1243a1593b51a"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\perf\\optim_oiio_t1.json": {
+    "mtime": 1777214124.811,
+    "ast_hash": "41ac1ee602a0bc3feb7e8868655a5797",
+    "semantic_hash": "41ac1ee602a0bc3feb7e8868655a5797"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\perf\\optim_oiio_threads.json": {
+    "mtime": 1777214124.825,
+    "ast_hash": "bbeaf3f12664c304af1cfedfdaa52bb3",
+    "semantic_hash": "bbeaf3f12664c304af1cfedfdaa52bb3"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\perf\\optim_pbo.json": {
+    "mtime": 1777214124.837,
+    "ast_hash": "0253e447fdc55ad41427f752a5fd0cdf",
+    "semantic_hash": "0253e447fdc55ad41427f752a5fd0cdf"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\perf\\postopti_slice2_autotune_unknown.json": {
+    "mtime": 1777289794.668,
+    "ast_hash": "804cd755ddf263c8368e66559a0b3841",
+    "semantic_hash": "804cd755ddf263c8368e66559a0b3841"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\perf\\postopti_slice2_overrides_match_baseline.json": {
+    "mtime": 1777289794.587,
+    "ast_hash": "c42a1dd45becb8e687104f5ee8656559",
+    "semantic_hash": "c42a1dd45becb8e687104f5ee8656559"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\perf\\postopti_slice3_runtime_check.json": {
+    "mtime": 1777289794.666,
+    "ast_hash": "63ecb73133d16be471d5bc871049f658",
+    "semantic_hash": "63ecb73133d16be471d5bc871049f658"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\perf\\postopti_slice4_autotune_no_pbo.json": {
+    "mtime": 1777289795.061,
+    "ast_hash": "8b11a391025a0b1b145b615979e389a2",
+    "semantic_hash": "8b11a391025a0b1b145b615979e389a2"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\perf\\postopti_slice4_autotune_pbo.json": {
+    "mtime": 1777289795.338,
+    "ast_hash": "69c95183247cd2fe1af82b131d00ec31",
+    "semantic_hash": "69c95183247cd2fe1af82b131d00ec31"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\perf\\postopti_slice4_clean_no_pbo.json": {
+    "mtime": 1777289795.454,
+    "ast_hash": "57eb748e4ec625f5e8bfeece855809a5",
+    "semantic_hash": "57eb748e4ec625f5e8bfeece855809a5"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\perf\\postopti_slice4_clean_pbo.json": {
+    "mtime": 1777289795.574,
+    "ast_hash": "fc9e102f591003dc422532662a9b1ba7",
+    "semantic_hash": "fc9e102f591003dc422532662a9b1ba7"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\perf\\postopti_slice4_clean_pbo_oiio1.json": {
+    "mtime": 1777289795.815,
+    "ast_hash": "0d7a5535706d1dc3c0ad6b054b155372",
+    "semantic_hash": "0d7a5535706d1dc3c0ad6b054b155372"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\perf\\postopti_slice4_fix_oiio_formula.json": {
+    "mtime": 1777289795.828,
+    "ast_hash": "20c87bc2885c7c825b9418c403b802dc",
+    "semantic_hash": "20c87bc2885c7c825b9418c403b802dc"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\perf\\postopti_slice5_runtime_monitor.json": {
+    "mtime": 1777289795.875,
+    "ast_hash": "0f0ea76b7fbe6a9f3df3953f192d4aef",
+    "semantic_hash": "0f0ea76b7fbe6a9f3df3953f192d4aef"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\perf\\postopti_slice6_final_run1.json": {
+    "mtime": 1777289795.917,
+    "ast_hash": "d0febd74141d8136fc61d743c94ff78b",
+    "semantic_hash": "d0febd74141d8136fc61d743c94ff78b"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\perf\\postopti_slice6_final_run2.json": {
+    "mtime": 1777289795.82,
+    "ast_hash": "3a07dd5ea6fa4fe85d8ed6688edf91b2",
+    "semantic_hash": "3a07dd5ea6fa4fe85d8ed6688edf91b2"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\perf\\test_igpu.json": {
+    "mtime": 1777285096.236,
+    "ast_hash": "9b01a1986a66b374779576b2a6222614",
+    "semantic_hash": "9b01a1986a66b374779576b2a6222614"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\perf\\tier1_baseline.json": {
+    "mtime": 1778764013.195,
+    "ast_hash": "b13a3ab96ae0e480f8e2f3a0ee4f6d40",
+    "semantic_hash": "b13a3ab96ae0e480f8e2f3a0ee4f6d40"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\perf\\tier1_cold_baseline.json": {
+    "mtime": 1778765130.109,
+    "ast_hash": "e761ef5748234548b802108e63fb8733",
+    "semantic_hash": "e761ef5748234548b802108e63fb8733"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\perf\\tier1_cold_post.json": {
+    "mtime": 1778766729.337,
+    "ast_hash": "32db0128f9db0953ef7e6a745fc2523d",
+    "semantic_hash": "32db0128f9db0953ef7e6a745fc2523d"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\perf\\tier1_post.json": {
+    "mtime": 1778764585.075,
+    "ast_hash": "52d6fca6d65d1cf29191fbdfaf91d558",
+    "semantic_hash": "52d6fca6d65d1cf29191fbdfaf91d558"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\perf\\tier2_final_post.json": {
+    "mtime": 1778769664.49,
+    "ast_hash": "c90bdfc76021536057ab2e2f91a72a6a",
+    "semantic_hash": "c90bdfc76021536057ab2e2f91a72a6a"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\perf\\tier2_post.json": {
+    "mtime": 1778767780.555,
+    "ast_hash": "21ea9f588d07311219bf985b5b327e50",
+    "semantic_hash": "21ea9f588d07311219bf985b5b327e50"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\perf\\tier3_baseline.json": {
+    "mtime": 1778760875.608,
+    "ast_hash": "9374f86ff44515af8909f7d2a46ac09d",
+    "semantic_hash": "9374f86ff44515af8909f7d2a46ac09d"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\perf\\tier3_post.json": {
+    "mtime": 1778763695.273,
+    "ast_hash": "d2cfd2ac4d32972d77c52be69fe1d120",
+    "semantic_hash": "d2cfd2ac4d32972d77c52be69fe1d120"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\perf\\variance_run1.json": {
+    "mtime": 1777289794.646,
+    "ast_hash": "5a70a795408b9df0b34de2d42e1e4345",
+    "semantic_hash": "5a70a795408b9df0b34de2d42e1e4345"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\perf\\variance_run2.json": {
+    "mtime": 1777289794.461,
+    "ast_hash": "911659190f3beb466a32b842adf8d553",
+    "semantic_hash": "911659190f3beb466a32b842adf8d553"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\perf\\variance_run3.json": {
+    "mtime": 1777289795.912,
+    "ast_hash": "86101adb120c90e95724ccf0ee33f347",
+    "semantic_hash": "86101adb120c90e95724ccf0ee33f347"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\pyi_rth_dll_priority.py": {
+    "mtime": 1780477182.734,
+    "ast_hash": "5e0b98e56f4d35d74dabc3edb7619048",
+    "semantic_hash": "5e0b98e56f4d35d74dabc3edb7619048"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\scripts\\headless_player.py": {
+    "mtime": 1777026274.628,
+    "ast_hash": "3459b216829dcd2f45fd1ad25f84d309",
+    "semantic_hash": "3459b216829dcd2f45fd1ad25f84d309"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\scripts\\ram_eater.py": {
+    "mtime": 1777289797.468,
+    "ast_hash": "225fa8e7f2822440f9837a22b8dc3179",
+    "semantic_hash": "225fa8e7f2822440f9837a22b8dc3179"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\scripts\\show_frame.py": {
+    "mtime": 1777028085.513,
+    "ast_hash": "6d08c1577af17ba3442b72c56409fc59",
+    "semantic_hash": "6d08c1577af17ba3442b72c56409fc59"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\__init__.py": {
+    "mtime": 1780571236.061,
+    "ast_hash": "3a22ecee71001a954b339b7845b27b2e",
+    "semantic_hash": "3a22ecee71001a954b339b7845b27b2e"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\__main__.py": {
+    "mtime": 1780565634.894,
+    "ast_hash": "243f225eff4b81044656578cec4c3d6b",
+    "semantic_hash": "243f225eff4b81044656578cec4c3d6b"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\_value_coerce.py": {
+    "mtime": 1778761077.025,
+    "ast_hash": "73cadec2d937ce1cdd3b6e548223d7b6",
+    "semantic_hash": "73cadec2d937ce1cdd3b6e548223d7b6"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\annotate\\__init__.py": {
+    "mtime": 1777954566.899,
+    "ast_hash": "d8f1939c7ab47fe1c6f9bcc4e2b6ff2f",
+    "semantic_hash": "d8f1939c7ab47fe1c6f9bcc4e2b6ff2f"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\annotate\\ephemeral.py": {
+    "mtime": 1777954566.774,
+    "ast_hash": "f681458e2dc20415e12718f35358c0e6",
+    "semantic_hash": "f681458e2dc20415e12718f35358c0e6"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\annotate\\overlay.py": {
+    "mtime": 1778060697.238,
+    "ast_hash": "91793f729f78f645bf7d1a96c3805796",
+    "semantic_hash": "91793f729f78f645bf7d1a96c3805796"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\annotate\\persistence.py": {
+    "mtime": 1778872363.693,
+    "ast_hash": "2b56ec0eca04cf0d2db817aad2637a70",
+    "semantic_hash": "2b56ec0eca04cf0d2db817aad2637a70"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\annotate\\store.py": {
+    "mtime": 1778871439.94,
+    "ast_hash": "5d4f6bfdc8e1eee85ab08240ffd23ffe",
+    "semantic_hash": "5d4f6bfdc8e1eee85ab08240ffd23ffe"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\annotate\\stroke.py": {
+    "mtime": 1777303782.866,
+    "ast_hash": "3a3cc933a28e0930877d212964f93984",
+    "semantic_hash": "3a3cc933a28e0930877d212964f93984"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\annotate\\toolbar.py": {
+    "mtime": 1778178493.082,
+    "ast_hash": "8e13cf1d38adeffc6a6a2f50ded6bca8",
+    "semantic_hash": "8e13cf1d38adeffc6a6a2f50ded6bca8"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\app.py": {
+    "mtime": 1780569925.963,
+    "ast_hash": "fd9a0a756a37b0f718343b7f06b577f6",
+    "semantic_hash": "fd9a0a756a37b0f718343b7f06b577f6"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\app_paths.py": {
+    "mtime": 1780507523.892,
+    "ast_hash": "0f04315dcfe1ad5ec1a4016b16dbc685",
+    "semantic_hash": "0f04315dcfe1ad5ec1a4016b16dbc685"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\bench\\__init__.py": {
+    "mtime": 1777214135.272,
+    "ast_hash": "68eedcb987d4443d92afa6ea41c58996",
+    "semantic_hash": "68eedcb987d4443d92afa6ea41c58996"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\bench\\recorder.py": {
+    "mtime": 1777954567.109,
+    "ast_hash": "12ed2f1970acf4308f96590992637d8d",
+    "semantic_hash": "12ed2f1970acf4308f96590992637d8d"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\bench\\runner.py": {
+    "mtime": 1777289792.911,
+    "ast_hash": "50c11eca3b6d194ca37886a5d4ab6549",
+    "semantic_hash": "50c11eca3b6d194ca37886a5d4ab6549"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\bench\\summarize.py": {
+    "mtime": 1778178493.357,
+    "ast_hash": "daabd05d713e2d407b2c5e9da5e82be6",
+    "semantic_hash": "daabd05d713e2d407b2c5e9da5e82be6"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\burnins\\__init__.py": {
+    "mtime": 1780334014.865,
+    "ast_hash": "4c93d76e2bd08a4e53db03b11a528062",
+    "semantic_hash": "4c93d76e2bd08a4e53db03b11a528062"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\burnins\\builtins.py": {
+    "mtime": 1780390514.204,
+    "ast_hash": "154f2eb05b03133a29f25c18ead2e8c6",
+    "semantic_hash": "154f2eb05b03133a29f25c18ead2e8c6"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\burnins\\model.py": {
+    "mtime": 1780334063.973,
+    "ast_hash": "0987560ab00fe1e041e6a503ec828360",
+    "semantic_hash": "0987560ab00fe1e041e6a503ec828360"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\burnins\\renderer.py": {
+    "mtime": 1780341800.531,
+    "ast_hash": "4827f105c63ce491eaa820222d810f20",
+    "semantic_hash": "4827f105c63ce491eaa820222d810f20"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\burnins\\storage.py": {
+    "mtime": 1780390659.478,
+    "ast_hash": "6fa84edbc1c4bf59dfc36c5b264e1752",
+    "semantic_hash": "6fa84edbc1c4bf59dfc36c5b264e1752"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\cache\\__init__.py": {
+    "mtime": 1776988834.505,
+    "ast_hash": "5a4caebaa1fd1cb08f032fa2308447c9",
+    "semantic_hash": "5a4caebaa1fd1cb08f032fa2308447c9"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\cache\\_common.py": {
+    "mtime": 1778767012.534,
+    "ast_hash": "4b8e4832dfc65d303683a2f3f743cc13",
+    "semantic_hash": "4b8e4832dfc65d303683a2f3f743cc13"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\cache\\disk_cache.py": {
+    "mtime": 1779270665.773,
+    "ast_hash": "8675acd6382bae8ad6cd100bc59bfe0e",
+    "semantic_hash": "8675acd6382bae8ad6cd100bc59bfe0e"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\cache\\frame_cache.py": {
+    "mtime": 1779267049.101,
+    "ast_hash": "5075a31480885c5667c2309ea0232838",
+    "semantic_hash": "5075a31480885c5667c2309ea0232838"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\cache\\master_frame_cache.py": {
+    "mtime": 1779271374.66,
+    "ast_hash": "55782e7f15dd069fbe6d80cb646e66b8",
+    "semantic_hash": "55782e7f15dd069fbe6d80cb646e66b8"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\cache\\missing_frame.py": {
+    "mtime": 1779233533.636,
+    "ast_hash": "d75f4974ed767d599b2a5a71dbfc4134",
+    "semantic_hash": "d75f4974ed767d599b2a5a71dbfc4134"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\cache\\missing_placeholder.py": {
+    "mtime": 1778585787.29,
+    "ast_hash": "3c0455dd50e7d465f46a39a049e8e8e1",
+    "semantic_hash": "3c0455dd50e7d465f46a39a049e8e8e1"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\cache\\network_staging.py": {
+    "mtime": 1780507866.052,
+    "ast_hash": "622b1bc2a59a30a5e7c8803d22d2c582",
+    "semantic_hash": "622b1bc2a59a30a5e7c8803d22d2c582"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\cache\\source_key.py": {
+    "mtime": 1778761866.993,
+    "ast_hash": "3b9a11f0fb5a99078a861ed323fc0958",
+    "semantic_hash": "3b9a11f0fb5a99078a861ed323fc0958"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\cache\\worker_pool.py": {
+    "mtime": 1778767168.307,
+    "ast_hash": "5ec11cd4a09451866ff2a82b0ada0a9c",
+    "semantic_hash": "5ec11cd4a09451866ff2a82b0ada0a9c"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\channel_handler.py": {
+    "mtime": 1778060697.263,
+    "ast_hash": "b36442e458adc5d30897412398bb32d6",
+    "semantic_hash": "b36442e458adc5d30897412398bb32d6"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\color\\__init__.py": {
+    "mtime": 1776988834.528,
+    "ast_hash": "f32be4686eccbe7b11b1c938deef109b",
+    "semantic_hash": "f32be4686eccbe7b11b1c938deef109b"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\color\\auto_detect.py": {
+    "mtime": 1779730156.209,
+    "ast_hash": "823d28e2517649dbd2a0f221209465b7",
+    "semantic_hash": "823d28e2517649dbd2a0f221209465b7"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\color\\gpu_processor.py": {
+    "mtime": 1778765170.096,
+    "ast_hash": "fb185460d371e2caed54b9158a208366",
+    "semantic_hash": "fb185460d371e2caed54b9158a208366"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\color\\ocio_manager.py": {
+    "mtime": 1778762010.649,
+    "ast_hash": "720f05f825de4ed068a74d673f78a046",
+    "semantic_hash": "720f05f825de4ed068a74d673f78a046"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\comment\\__init__.py": {
+    "mtime": 1777319315.911,
+    "ast_hash": "b33290ca54a6f3cf60d464fd4974fbde",
+    "semantic_hash": "b33290ca54a6f3cf60d464fd4974fbde"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\comment\\comment.py": {
+    "mtime": 1777954567.717,
+    "ast_hash": "72fd88c25b0860b03ba8716cf3d83e9f",
+    "semantic_hash": "72fd88c25b0860b03ba8716cf3d83e9f"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\comment\\persistence.py": {
+    "mtime": 1778872379.093,
+    "ast_hash": "9f07ec23c185fa418841ab2ef0337a2e",
+    "semantic_hash": "9f07ec23c185fa418841ab2ef0337a2e"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\comment\\store.py": {
+    "mtime": 1778871699.454,
+    "ast_hash": "5db65b02dbed34e089e5bf08d92f5615",
+    "semantic_hash": "5db65b02dbed34e089e5bf08d92f5615"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\compare\\__init__.py": {
+    "mtime": 1778060697.272,
+    "ast_hash": "1daef5ae309e6d96a9feef177925eb49",
+    "semantic_hash": "1daef5ae309e6d96a9feef177925eb49"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\compare\\compose.py": {
+    "mtime": 1778762025.761,
+    "ast_hash": "10a25fdec43a63b71e46364e06000d8f",
+    "semantic_hash": "10a25fdec43a63b71e46364e06000d8f"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\compare\\decode.py": {
+    "mtime": 1778060697.283,
+    "ast_hash": "2cca4301aa215d58380f8adec3124fe3",
+    "semantic_hash": "2cca4301aa215d58380f8adec3124fe3"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\compare\\state.py": {
+    "mtime": 1778178493.319,
+    "ast_hash": "ccfdb6ce6837849fe1230705f46d08f6",
+    "semantic_hash": "ccfdb6ce6837849fe1230705f46d08f6"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\compare_handler.py": {
+    "mtime": 1778584192.669,
+    "ast_hash": "9e2c376d621f879f7f0e8abe613c3a64",
+    "semantic_hash": "9e2c376d621f879f7f0e8abe613c3a64"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\contact_sheet\\__init__.py": {
+    "mtime": 1778772912.295,
+    "ast_hash": "38ec72712df2ff5761edf8416c9c830f",
+    "semantic_hash": "38ec72712df2ff5761edf8416c9c830f"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\contact_sheet\\compose.py": {
+    "mtime": 1780342838.211,
+    "ast_hash": "9008087177d86d3a51c370e99f6c18d1",
+    "semantic_hash": "9008087177d86d3a51c370e99f6c18d1"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\contact_sheet\\decoder.py": {
+    "mtime": 1778777794.501,
+    "ast_hash": "33dc5cbb659dcd5e226d12fa73943734",
+    "semantic_hash": "33dc5cbb659dcd5e226d12fa73943734"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\contact_sheet\\state.py": {
+    "mtime": 1779193941.594,
+    "ast_hash": "256ef917cf800c38ccd469af6d03d954",
+    "semantic_hash": "256ef917cf800c38ccd469af6d03d954"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\export\\__init__.py": {
+    "mtime": 1777928225.652,
+    "ast_hash": "bd5fb61a146739baf5532ac857fd6a90",
+    "semantic_hash": "bd5fb61a146739baf5532ac857fd6a90"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\export\\dialog.py": {
+    "mtime": 1778178493.704,
+    "ast_hash": "3bd5323c165f153e4eb60c2a32a57862",
+    "semantic_hash": "3bd5323c165f153e4eb60c2a32a57862"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\export\\engine.py": {
+    "mtime": 1778180587.161,
+    "ast_hash": "9fe03ae808ac402b6c6201db339f943c",
+    "semantic_hash": "9fe03ae808ac402b6c6201db339f943c"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\export\\progress_dialog.py": {
+    "mtime": 1778180587.206,
+    "ast_hash": "c9debaaaa413ae7a78cb9908e9a19758",
+    "semantic_hash": "c9debaaaa413ae7a78cb9908e9a19758"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\export\\renderer.py": {
+    "mtime": 1778178493.634,
+    "ast_hash": "256362f3b670ec020510056ce8601859",
+    "semantic_hash": "256362f3b670ec020510056ce8601859"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\export\\settings.py": {
+    "mtime": 1778761940.97,
+    "ast_hash": "1a8c046a7bdca7a7540d56ef9a65957f",
+    "semantic_hash": "1a8c046a7bdca7a7540d56ef9a65957f"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\export\\stroke_painter.py": {
+    "mtime": 1777928225.714,
+    "ast_hash": "040b2d887f6c87a6c815007a0a651c84",
+    "semantic_hash": "040b2d887f6c87a6c815007a0a651c84"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\export\\worker.py": {
+    "mtime": 1777928225.723,
+    "ast_hash": "e7066c8e92b3b53e39d45554bcfdc114",
+    "semantic_hash": "e7066c8e92b3b53e39d45554bcfdc114"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\export\\writers\\__init__.py": {
+    "mtime": 1777928225.74,
+    "ast_hash": "2dffa53401ba08b41a0388cad3a6560f",
+    "semantic_hash": "2dffa53401ba08b41a0388cad3a6560f"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\export\\writers\\base.py": {
+    "mtime": 1777928225.75,
+    "ast_hash": "34fc0fa8c5e47ae2d5025e4138fcaaab",
+    "semantic_hash": "34fc0fa8c5e47ae2d5025e4138fcaaab"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\export\\writers\\image_seq.py": {
+    "mtime": 1777928225.761,
+    "ast_hash": "f50e8b2a7abd9a33bb213f435575c4d7",
+    "semantic_hash": "f50e8b2a7abd9a33bb213f435575c4d7"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\export\\writers\\video.py": {
+    "mtime": 1778761902.78,
+    "ast_hash": "72c22afc9caa5cde0e44ee12e3c7f314",
+    "semantic_hash": "72c22afc9caa5cde0e44ee12e3c7f314"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\export_handler.py": {
+    "mtime": 1778180587.216,
+    "ast_hash": "36be11977656341e2deea71709fb5a3c",
+    "semantic_hash": "36be11977656341e2deea71709fb5a3c"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\io\\__init__.py": {
+    "mtime": 1776988834.549,
+    "ast_hash": "6d7f2f174766fe6f8954625cc9d63650",
+    "semantic_hash": "6d7f2f174766fe6f8954625cc9d63650"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\io\\formats.py": {
+    "mtime": 1778762081.458,
+    "ast_hash": "881d5fe9130f9a0d109ad980fe9e7a0b",
+    "semantic_hash": "881d5fe9130f9a0d109ad980fe9e7a0b"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\io\\reader.py": {
+    "mtime": 1780508153.058,
+    "ast_hash": "ff7f9c6bd17feb76cbdcfa456041857a",
+    "semantic_hash": "ff7f9c6bd17feb76cbdcfa456041857a"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\layers\\__init__.py": {
+    "mtime": 1777928225.804,
+    "ast_hash": "8bd8e9c25de77903559095858582407f",
+    "semantic_hash": "8bd8e9c25de77903559095858582407f"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\layers\\models.py": {
+    "mtime": 1778762074.728,
+    "ast_hash": "be85ea9020418762d7ed081e9c88b3b1",
+    "semantic_hash": "be85ea9020418762d7ed081e9c88b3b1"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\layers\\session.py": {
+    "mtime": 1778767369.588,
+    "ast_hash": "587ea1dc4b4f97ff12a7b6d63c3d99df",
+    "semantic_hash": "587ea1dc4b4f97ff12a7b6d63c3d99df"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\layers\\stack.py": {
+    "mtime": 1778762067.581,
+    "ast_hash": "651d21b31a6ab54ca0818506fe938928",
+    "semantic_hash": "651d21b31a6ab54ca0818506fe938928"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\media\\__init__.py": {
+    "mtime": 1777954566.588,
+    "ast_hash": "75ac275794b9c6d05eb408f2ebbd51ea",
+    "semantic_hash": "75ac275794b9c6d05eb408f2ebbd51ea"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\media\\audio_output.py": {
+    "mtime": 1778761978.998,
+    "ast_hash": "d73997792c368e3c5e43ccef1ee8015d",
+    "semantic_hash": "d73997792c368e3c5e43ccef1ee8015d"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\media\\audio_source.py": {
+    "mtime": 1777993886.708,
+    "ast_hash": "59839f30e6be629a06eaab43dc202db8",
+    "semantic_hash": "59839f30e6be629a06eaab43dc202db8"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\media\\video_probe.py": {
+    "mtime": 1780476076.748,
+    "ast_hash": "f0dc1e453522c2aaf8c3132297b91c04",
+    "semantic_hash": "f0dc1e453522c2aaf8c3132297b91c04"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\media\\video_renderer.py": {
+    "mtime": 1780569925.976,
+    "ast_hash": "f1e517129f03260cac6fe288853f0778",
+    "semantic_hash": "f1e517129f03260cac6fe288853f0778"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\media\\video_source.py": {
+    "mtime": 1780566772.166,
+    "ast_hash": "af6a8c9598e97286606ca2af14942ac6",
+    "semantic_hash": "af6a8c9598e97286606ca2af14942ac6"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\media_handler.py": {
+    "mtime": 1779730011.123,
+    "ast_hash": "054f238b6b3c2492f69d1974cc0339d4",
+    "semantic_hash": "054f238b6b3c2492f69d1974cc0339d4"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\perf\\__init__.py": {
+    "mtime": 1777289796.103,
+    "ast_hash": "3b03267567ccefe34280eddaf9832ebc",
+    "semantic_hash": "3b03267567ccefe34280eddaf9832ebc"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\perf\\calibration.py": {
+    "mtime": 1778673005.713,
+    "ast_hash": "0073dd77d2262279acaccfc1d2ff7dc0",
+    "semantic_hash": "0073dd77d2262279acaccfc1d2ff7dc0"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\perf\\hardware.py": {
+    "mtime": 1777289796.244,
+    "ast_hash": "d7b335dae5346110728ed6af9ff88907",
+    "semantic_hash": "d7b335dae5346110728ed6af9ff88907"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\perf\\runtime_monitor.py": {
+    "mtime": 1777954568.21,
+    "ast_hash": "9f9b9dfb2aecae55adb3ff869132788e",
+    "semantic_hash": "9f9b9dfb2aecae55adb3ff869132788e"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\perf\\runtime_state.py": {
+    "mtime": 1777289796.359,
+    "ast_hash": "460453a4fb71f8cd1b56783d0613ed9f",
+    "semantic_hash": "460453a4fb71f8cd1b56783d0613ed9f"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\player\\__init__.py": {
+    "mtime": 1776988834.569,
+    "ast_hash": "c397114021ece9fdae649dd82cf1b3b0",
+    "semantic_hash": "c397114021ece9fdae649dd82cf1b3b0"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\player\\controller.py": {
+    "mtime": 1780565634.933,
+    "ast_hash": "3ee8d57cd693736f83ffb27410829f71",
+    "semantic_hash": "3ee8d57cd693736f83ffb27410829f71"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\player\\state.py": {
+    "mtime": 1777026281.731,
+    "ast_hash": "164be7c5a4f74d7322794677c6ed78a5",
+    "semantic_hash": "164be7c5a4f74d7322794677c6ed78a5"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\preferences.py": {
+    "mtime": 1780569219.712,
+    "ast_hash": "6aaef6a6480648d3588ac9305761ff1f",
+    "semantic_hash": "6aaef6a6480648d3588ac9305761ff1f"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\render\\__init__.py": {
+    "mtime": 1776988834.589,
+    "ast_hash": "af6d14d408ef484e949cb72c61474454",
+    "semantic_hash": "af6d14d408ef484e949cb72c61474454"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\render\\gl_viewport.py": {
+    "mtime": 1780565634.942,
+    "ast_hash": "6b0cc54a7482a8a5392461af99cbae5c",
+    "semantic_hash": "6b0cc54a7482a8a5392461af99cbae5c"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\render\\shaders\\__init__.py": {
+    "mtime": 1777028085.673,
+    "ast_hash": "e4877d2119f555dbd332e186259e1235",
+    "semantic_hash": "e4877d2119f555dbd332e186259e1235"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\save_frame_handler.py": {
+    "mtime": 1780476651.484,
+    "ast_hash": "baec4c08dfbbfe9a2cf9e710c366da0f",
+    "semantic_hash": "baec4c08dfbbfe9a2cf9e710c366da0f"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\scan_handler.py": {
+    "mtime": 1779195697.175,
+    "ast_hash": "17bdc809fd12c635638de0442e1f32c2",
+    "semantic_hash": "17bdc809fd12c635638de0442e1f32c2"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\sequence\\__init__.py": {
+    "mtime": 1776988834.618,
+    "ast_hash": "00125e2f0a401e5df6097abcce45c2e4",
+    "semantic_hash": "00125e2f0a401e5df6097abcce45c2e4"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\sequence\\channels.py": {
+    "mtime": 1780502848.734,
+    "ast_hash": "18cf8a833817e60ea07a56bbe06f5406",
+    "semantic_hash": "18cf8a833817e60ea07a56bbe06f5406"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\sequence\\models.py": {
+    "mtime": 1777928239.978,
+    "ast_hash": "f896722bb688ec353edd96c212d32b2a",
+    "semantic_hash": "f896722bb688ec353edd96c212d32b2a"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\sequence\\scanner.py": {
+    "mtime": 1778767328.611,
+    "ast_hash": "20d9b016d73bc245efb27ec17d5bc3f9",
+    "semantic_hash": "20d9b016d73bc245efb27ec17d5bc3f9"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\sequence\\source_watcher.py": {
+    "mtime": 1778610888.433,
+    "ast_hash": "01a560da590304ec7cb1203d34341955",
+    "semantic_hash": "01a560da590304ec7cb1203d34341955"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\site_config.py": {
+    "mtime": 1778669183.574,
+    "ast_hash": "becf5b56dfe49fa1c595153e570551e4",
+    "semantic_hash": "becf5b56dfe49fa1c595153e570551e4"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\splash.py": {
+    "mtime": 1778587647.737,
+    "ast_hash": "4cfd470f0ee221d13a4fb6c7ed650879",
+    "semantic_hash": "4cfd470f0ee221d13a4fb6c7ed650879"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\ui\\__init__.py": {
+    "mtime": 1776988834.639,
+    "ast_hash": "ac06f1d74d54b5c8b92e7122426d6ce6",
+    "semantic_hash": "ac06f1d74d54b5c8b92e7122426d6ce6"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\ui\\brackets_overlay.py": {
+    "mtime": 1777223527.456,
+    "ast_hash": "87450d2f57ddcc109a70a6ad338264c3",
+    "semantic_hash": "87450d2f57ddcc109a70a6ad338264c3"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\ui\\burnin_editor.py": {
+    "mtime": 1780390911.293,
+    "ast_hash": "e49c764c4cbbed3dcc2dffa356161fd0",
+    "semantic_hash": "e49c764c4cbbed3dcc2dffa356161fd0"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\ui\\burnin_overlay.py": {
+    "mtime": 1780389038.737,
+    "ast_hash": "a84edd9a83ab134633559ae9aaefe886",
+    "semantic_hash": "a84edd9a83ab134633559ae9aaefe886"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\ui\\channel_menu.py": {
+    "mtime": 1780499289.192,
+    "ast_hash": "bebf0c135d719a9b60d788142d7546eb",
+    "semantic_hash": "bebf0c135d719a9b60d788142d7546eb"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\ui\\channel_panel.py": {
+    "mtime": 1777223527.439,
+    "ast_hash": "390ab6f66d7e978db4e2597ef4cb6fa8",
+    "semantic_hash": "390ab6f66d7e978db4e2597ef4cb6fa8"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\ui\\color_panel.py": {
+    "mtime": 1779730719.619,
+    "ast_hash": "1196ee0a48a1b20d8c2b95afada85225",
+    "semantic_hash": "1196ee0a48a1b20d8c2b95afada85225"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\ui\\comment_panel.py": {
+    "mtime": 1777319316.005,
+    "ast_hash": "f8f1e78d5c0360b8ce15e2d6695357e0",
+    "semantic_hash": "f8f1e78d5c0360b8ce15e2d6695357e0"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\ui\\compare_band.py": {
+    "mtime": 1779233533.652,
+    "ast_hash": "d03a20d749402bf848c89c0ca1040c5d",
+    "semantic_hash": "d03a20d749402bf848c89c0ca1040c5d"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\ui\\compare_labels_overlay.py": {
+    "mtime": 1778584232.403,
+    "ast_hash": "0d94507d84a0fa1988aacdab95ba597a",
+    "semantic_hash": "0d94507d84a0fa1988aacdab95ba597a"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\ui\\contact_sheet_band.py": {
+    "mtime": 1779233533.66,
+    "ast_hash": "7004c1499b013fbdc59e10d6ffc0e04c",
+    "semantic_hash": "7004c1499b013fbdc59e10d6ffc0e04c"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\ui\\drop_action_dialog.py": {
+    "mtime": 1777954568.671,
+    "ast_hash": "550f0adc74230859ceda456e9e7ed3d3",
+    "semantic_hash": "550f0adc74230859ceda456e9e7ed3d3"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\ui\\drop_zone.py": {
+    "mtime": 1777954568.686,
+    "ast_hash": "999f9de04234304e86a35342cb5c9c24",
+    "semantic_hash": "999f9de04234304e86a35342cb5c9c24"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\ui\\flush_indicator.py": {
+    "mtime": 1778609856.872,
+    "ast_hash": "8948eb6bf58417755ad707a5970b4a3a",
+    "semantic_hash": "8948eb6bf58417755ad707a5970b4a3a"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\ui\\frame_display.py": {
+    "mtime": 1777235943.898,
+    "ast_hash": "22d2b09d396f7da179cae328e1615fc1",
+    "semantic_hash": "22d2b09d396f7da179cae328e1615fc1"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\ui\\header_strip.py": {
+    "mtime": 1779233533.667,
+    "ast_hash": "b0b59c91615193b17bf21234a86d1ceb",
+    "semantic_hash": "b0b59c91615193b17bf21234a86d1ceb"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\ui\\icons.py": {
+    "mtime": 1780568889.158,
+    "ast_hash": "9fe07f3ee8af063ee2423453f238920c",
+    "semantic_hash": "9fe07f3ee8af063ee2423453f238920c"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\ui\\layer_bar.py": {
+    "mtime": 1778060697.483,
+    "ast_hash": "9c3ac5b88ec746107d1bf3f25fe4e2ff",
+    "semantic_hash": "9c3ac5b88ec746107d1bf3f25fe4e2ff"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\ui\\layer_panel.py": {
+    "mtime": 1780476101.693,
+    "ast_hash": "d89391154a9e6682e376685e5abb47ae",
+    "semantic_hash": "d89391154a9e6682e376685e5abb47ae"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\ui\\main_window.py": {
+    "mtime": 1780568187.823,
+    "ast_hash": "4c21376e5bb427e5d80845aee2c110eb",
+    "semantic_hash": "4c21376e5bb427e5d80845aee2c110eb"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\ui\\preferences_dialog.py": {
+    "mtime": 1780569219.722,
+    "ast_hash": "71765f3dc843a9c82c3feaed772ac51e",
+    "semantic_hash": "71765f3dc843a9c82c3feaed772ac51e"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\ui\\save_frame_dialog.py": {
+    "mtime": 1778785646.276,
+    "ast_hash": "6025f803e98cdc902f14610b3638a6eb",
+    "semantic_hash": "6025f803e98cdc902f14610b3638a6eb"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\ui\\sequence_picker.py": {
+    "mtime": 1778586918.634,
+    "ast_hash": "f353bd441402d7a15ff81f22515a757e",
+    "semantic_hash": "f353bd441402d7a15ff81f22515a757e"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\ui\\shortcuts_dialog.py": {
+    "mtime": 1778178495.009,
+    "ast_hash": "73e1d437dc630b81b93832479ed66134",
+    "semantic_hash": "73e1d437dc630b81b93832479ed66134"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\ui\\status_bar.py": {
+    "mtime": 1780568187.832,
+    "ast_hash": "8da0b5318a97b0f389e2eb611f6fe897",
+    "semantic_hash": "8da0b5318a97b0f389e2eb611f6fe897"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\ui\\status_format.py": {
+    "mtime": 1778160597.657,
+    "ast_hash": "ba15f5300944b8925124773eaade3f39",
+    "semantic_hash": "ba15f5300944b8925124773eaade3f39"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\ui\\theme.py": {
+    "mtime": 1779271047.267,
+    "ast_hash": "1492bd1101e8b9e362f442d5c63e7a48",
+    "semantic_hash": "1492bd1101e8b9e362f442d5c63e7a48"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\ui\\timeline.py": {
+    "mtime": 1779271174.149,
+    "ast_hash": "c453ed2d23b88fc60eba14ac934b48ae",
+    "semantic_hash": "c453ed2d23b88fc60eba14ac934b48ae"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\ui\\transport.py": {
+    "mtime": 1780568546.7,
+    "ast_hash": "170b90e0738c402122b0e1a5733d93f6",
+    "semantic_hash": "170b90e0738c402122b0e1a5733d93f6"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\ui\\viewer_widget.py": {
+    "mtime": 1780335815.138,
+    "ast_hash": "552e0dfd18b249b4dab74ad7beff5862",
+    "semantic_hash": "552e0dfd18b249b4dab74ad7beff5862"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\user_prefs.py": {
+    "mtime": 1778672961.704,
+    "ast_hash": "7ecf897846b300fc592ec4ba6dc27442",
+    "semantic_hash": "7ecf897846b300fc592ec4ba6dc27442"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\__init__.py": {
+    "mtime": 1776988844.714,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\conftest.py": {
+    "mtime": 1778761738.708,
+    "ast_hash": "594e31c2bb24e77d1daadc7a15fafc87",
+    "semantic_hash": "594e31c2bb24e77d1daadc7a15fafc87"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\integration\\__init__.py": {
+    "mtime": 1776988834.693,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\integration\\test_controller.py": {
+    "mtime": 1778769137.849,
+    "ast_hash": "b56ea371a8851f016aa476a7e64bda6d",
+    "semantic_hash": "b56ea371a8851f016aa476a7e64bda6d"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\integration\\test_disk_cache_integration.py": {
+    "mtime": 1778616289.444,
+    "ast_hash": "f880d80eaa90a3aa42b1ed1b016f9ea9",
+    "semantic_hash": "f880d80eaa90a3aa42b1ed1b016f9ea9"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\__init__.py": {
+    "mtime": 1776988846.287,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_annotation_overlay_math.py": {
+    "mtime": 1777954569.711,
+    "ast_hash": "df76b1a40a97685a34677efec25897ef",
+    "semantic_hash": "df76b1a40a97685a34677efec25897ef"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_annotation_persistence.py": {
+    "mtime": 1778872568.967,
+    "ast_hash": "7882df1ae9b5d6713992ce388b6e1dbe",
+    "semantic_hash": "7882df1ae9b5d6713992ce388b6e1dbe"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_annotation_store.py": {
+    "mtime": 1778871582.627,
+    "ast_hash": "5c1991ce8cfbfe392179fffd7fcfe4bd",
+    "semantic_hash": "5c1991ce8cfbfe392179fffd7fcfe4bd"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_annotation_stroke.py": {
+    "mtime": 1777303782.892,
+    "ast_hash": "725f15bc18974f260f27665d1f2d7d8c",
+    "semantic_hash": "725f15bc18974f260f27665d1f2d7d8c"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_annotation_timeline_transport.py": {
+    "mtime": 1777954569.764,
+    "ast_hash": "379e6764d6f244461561d054c5968295",
+    "semantic_hash": "379e6764d6f244461561d054c5968295"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_annotation_toolbar.py": {
+    "mtime": 1777954569.789,
+    "ast_hash": "429e81a97a60c197132dd8f13b43e496",
+    "semantic_hash": "429e81a97a60c197132dd8f13b43e496"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_app_paths.py": {
+    "mtime": 1778673083.109,
+    "ast_hash": "c282b4208c5362cb84471a665741b5cd",
+    "semantic_hash": "c282b4208c5362cb84471a665741b5cd"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_audio_output.py": {
+    "mtime": 1777954565.625,
+    "ast_hash": "0e4b8f12a0683ae832c515564156e297",
+    "semantic_hash": "0e4b8f12a0683ae832c515564156e297"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_audio_source.py": {
+    "mtime": 1777928226.306,
+    "ast_hash": "7216c5848e73427bd2da59898d9358aa",
+    "semantic_hash": "7216c5848e73427bd2da59898d9358aa"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_auto_detect.py": {
+    "mtime": 1779730070.623,
+    "ast_hash": "15fff2e8fc01615d195d56ada8f31968",
+    "semantic_hash": "15fff2e8fc01615d195d56ada8f31968"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_brackets_overlay.py": {
+    "mtime": 1777223527.997,
+    "ast_hash": "b743985dfa2aa1c2915aec858c56bb29",
+    "semantic_hash": "b743985dfa2aa1c2915aec858c56bb29"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_burnin_contact_sheet.py": {
+    "mtime": 1780388850.518,
+    "ast_hash": "b8d0a445763802cfd19d3a1a04919a73",
+    "semantic_hash": "b8d0a445763802cfd19d3a1a04919a73"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_burnin_editor.py": {
+    "mtime": 1780390976.674,
+    "ast_hash": "4fd8e19ddf2555e14081d486f909c2e1",
+    "semantic_hash": "4fd8e19ddf2555e14081d486f909c2e1"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_burnin_model.py": {
+    "mtime": 1780388898.895,
+    "ast_hash": "1d711d7091b32d08a922d3cb2f017f8f",
+    "semantic_hash": "1d711d7091b32d08a922d3cb2f017f8f"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_burnin_overlay.py": {
+    "mtime": 1780389158.236,
+    "ast_hash": "0f7e550e8067187291cc97a54260ba10",
+    "semantic_hash": "0f7e550e8067187291cc97a54260ba10"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_burnin_renderer.py": {
+    "mtime": 1780388846.562,
+    "ast_hash": "7de654e0e9a907768bb17889a8049aac",
+    "semantic_hash": "7de654e0e9a907768bb17889a8049aac"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_burnin_storage.py": {
+    "mtime": 1780391068.105,
+    "ast_hash": "00d90416703c990f0d5d49af2f0f9741",
+    "semantic_hash": "00d90416703c990f0d5d49af2f0f9741"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_calibration.py": {
+    "mtime": 1777291940.258,
+    "ast_hash": "fc112e917fd494fd61667fbceb8b6f12",
+    "semantic_hash": "fc112e917fd494fd61667fbceb8b6f12"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_channel_groups.py": {
+    "mtime": 1780502938.803,
+    "ast_hash": "2d570bebf23825ba88afa9a7d8ec5888",
+    "semantic_hash": "2d570bebf23825ba88afa9a7d8ec5888"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_channel_menu.py": {
+    "mtime": 1780499365.641,
+    "ast_hash": "91177626ab9b9dc701b3695bf620209b",
+    "semantic_hash": "91177626ab9b9dc701b3695bf620209b"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_channel_selection.py": {
+    "mtime": 1778060697.565,
+    "ast_hash": "6673b94a4af4c8ba585ad0408bc4a129",
+    "semantic_hash": "6673b94a4af4c8ba585ad0408bc4a129"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_cli_overrides.py": {
+    "mtime": 1777928241.321,
+    "ast_hash": "5c81605e8d2dca77c86d43652c0e97da",
+    "semantic_hash": "5c81605e8d2dca77c86d43652c0e97da"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_comment.py": {
+    "mtime": 1777954565.766,
+    "ast_hash": "ae7df6c084d5c0926a8e6c67355f19df",
+    "semantic_hash": "ae7df6c084d5c0926a8e6c67355f19df"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_comment_persistence.py": {
+    "mtime": 1778872613.201,
+    "ast_hash": "54da1e194dd74a1c84d7d07fca3c0e9e",
+    "semantic_hash": "54da1e194dd74a1c84d7d07fca3c0e9e"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_comment_store.py": {
+    "mtime": 1778871824.322,
+    "ast_hash": "c28a523038ef93875abd17bbfb9746fc",
+    "semantic_hash": "c28a523038ef93875abd17bbfb9746fc"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_compare.py": {
+    "mtime": 1778105807.729,
+    "ast_hash": "1dcc4f03e23372f6932aab20b0dee9ae",
+    "semantic_hash": "1dcc4f03e23372f6932aab20b0dee9ae"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_contact_sheet_state.py": {
+    "mtime": 1778787234.235,
+    "ast_hash": "91cc59a7bb3f6fccd24a27228f2aa6e6",
+    "semantic_hash": "91cc59a7bb3f6fccd24a27228f2aa6e6"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_controller_fps.py": {
+    "mtime": 1777223528.002,
+    "ast_hash": "04c65480bcb1933010e8255fe3590fcb",
+    "semantic_hash": "04c65480bcb1933010e8255fe3590fcb"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_controller_fps_signals.py": {
+    "mtime": 1777289797.228,
+    "ast_hash": "282821b456f0e0b651275204e4f6b28a",
+    "semantic_hash": "282821b456f0e0b651275204e4f6b28a"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_controller_play_direction.py": {
+    "mtime": 1777225768.096,
+    "ast_hash": "21beb7f32e828a4c961601c7b4e23a7b",
+    "semantic_hash": "21beb7f32e828a4c961601c7b4e23a7b"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_controller_prefetch.py": {
+    "mtime": 1777954569.841,
+    "ast_hash": "8cfb1470cc6a1e560b12b49426f6d4b7",
+    "semantic_hash": "8cfb1470cc6a1e560b12b49426f6d4b7"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_disk_cache.py": {
+    "mtime": 1778661370.628,
+    "ast_hash": "510205ddbc0deddb7df8fe4801d02257",
+    "semantic_hash": "510205ddbc0deddb7df8fe4801d02257"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_ephemeral_alpha.py": {
+    "mtime": 1777928226.364,
+    "ast_hash": "9115fb86b81d8c87671457dcab41e026",
+    "semantic_hash": "9115fb86b81d8c87671457dcab41e026"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_ephemeral_manager.py": {
+    "mtime": 1777954569.947,
+    "ast_hash": "6b3376725235b3325a947c8214841d73",
+    "semantic_hash": "6b3376725235b3325a947c8214841d73"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_export_dialog.py": {
+    "mtime": 1777928226.383,
+    "ast_hash": "02cdbb5b4e05d8a38464d6876fd0ec7f",
+    "semantic_hash": "02cdbb5b4e05d8a38464d6876fd0ec7f"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_export_engine.py": {
+    "mtime": 1778180587.112,
+    "ast_hash": "b68e20a773df8e906ff3af8d986634ad",
+    "semantic_hash": "b68e20a773df8e906ff3af8d986634ad"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_export_renderer.py": {
+    "mtime": 1777928226.402,
+    "ast_hash": "f9b696916389243e2422d2479e16258f",
+    "semantic_hash": "f9b696916389243e2422d2479e16258f"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_export_settings.py": {
+    "mtime": 1777954570.279,
+    "ast_hash": "9eb99a63167828cb1e125b5709aebf41",
+    "semantic_hash": "9eb99a63167828cb1e125b5709aebf41"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_export_writers.py": {
+    "mtime": 1777928226.424,
+    "ast_hash": "d1c9f8019ddfa69960367e4cef7d4671",
+    "semantic_hash": "d1c9f8019ddfa69960367e4cef7d4671"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_formats.py": {
+    "mtime": 1777024072.594,
+    "ast_hash": "3411c44350fed719b79bf2a48242f27b",
+    "semantic_hash": "3411c44350fed719b79bf2a48242f27b"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_frame_cache.py": {
+    "mtime": 1777237080.614,
+    "ast_hash": "64e781a716a2145bdca5ec5eff98fac2",
+    "semantic_hash": "64e781a716a2145bdca5ec5eff98fac2"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_frame_display.py": {
+    "mtime": 1777235943.863,
+    "ast_hash": "6ff68f50525ba44f2aa125f2102130e5",
+    "semantic_hash": "6ff68f50525ba44f2aa125f2102130e5"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_gpu_processor.py": {
+    "mtime": 1777028085.635,
+    "ast_hash": "ca8ecfcff23a526b57be6cb134276e2a",
+    "semantic_hash": "ca8ecfcff23a526b57be6cb134276e2a"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_hw_profile.py": {
+    "mtime": 1777289797.269,
+    "ast_hash": "d5d3da3ec001d3993bb28f2f44d9ac9c",
+    "semantic_hash": "d5d3da3ec001d3993bb28f2f44d9ac9c"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_icons.py": {
+    "mtime": 1777223528.068,
+    "ast_hash": "efaff30d1992cb633147e3e65c6ec6dc",
+    "semantic_hash": "efaff30d1992cb633147e3e65c6ec6dc"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_layer_bar_geometry.py": {
+    "mtime": 1777954570.42,
+    "ast_hash": "adb98e585d294fd37d03f735eb5fd79d",
+    "semantic_hash": "adb98e585d294fd37d03f735eb5fd79d"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_layer_basics.py": {
+    "mtime": 1777954570.523,
+    "ast_hash": "c387040782593d4cf02bc1fabf9aae14",
+    "semantic_hash": "c387040782593d4cf02bc1fabf9aae14"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_layer_panel.py": {
+    "mtime": 1778769190.109,
+    "ast_hash": "bc7a6744b3b02f3c467be8518e983a98",
+    "semantic_hash": "bc7a6744b3b02f3c467be8518e983a98"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_layer_panel_audio.py": {
+    "mtime": 1777928226.47,
+    "ast_hash": "0c95bfdc91ea799f6ef4ece6875a35cc",
+    "semantic_hash": "0c95bfdc91ea799f6ef4ece6875a35cc"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_layer_stack.py": {
+    "mtime": 1777954570.701,
+    "ast_hash": "e4908c4bbfa0cccdfeff2ad7cc2c5473",
+    "semantic_hash": "e4908c4bbfa0cccdfeff2ad7cc2c5473"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_layer_still.py": {
+    "mtime": 1778060697.616,
+    "ast_hash": "538d22233c34d4770c2552d0d523c6e2",
+    "semantic_hash": "538d22233c34d4770c2552d0d523c6e2"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_layer_video.py": {
+    "mtime": 1777954570.56,
+    "ast_hash": "8f46d15acc74803a8e37f7e08c84d44d",
+    "semantic_hash": "8f46d15acc74803a8e37f7e08c84d44d"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_main_window_burnin_menu.py": {
+    "mtime": 1780388974.047,
+    "ast_hash": "a945079f6300dfb5e3a664ffa5ac2f1c",
+    "semantic_hash": "a945079f6300dfb5e3a664ffa5ac2f1c"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_main_window_status_bar.py": {
+    "mtime": 1777450895.726,
+    "ast_hash": "591b5b127ba3c8726d2bd2cc98a482e3",
+    "semantic_hash": "591b5b127ba3c8726d2bd2cc98a482e3"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_master_frame_cache.py": {
+    "mtime": 1778769008.903,
+    "ast_hash": "855def7f90b8244d1460a53dad915a28",
+    "semantic_hash": "855def7f90b8244d1460a53dad915a28"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_missing_frames.py": {
+    "mtime": 1777954570.766,
+    "ast_hash": "78795b13fb2cc81ecf8e5e62a845ea07",
+    "semantic_hash": "78795b13fb2cc81ecf8e5e62a845ea07"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_network_staging.py": {
+    "mtime": 1780507831.445,
+    "ast_hash": "a28328d44c112a289b3618597371dd98",
+    "semantic_hash": "a28328d44c112a289b3618597371dd98"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_ocio_manager.py": {
+    "mtime": 1777028085.549,
+    "ast_hash": "61315134ee87bda63a736d4252a7613a",
+    "semantic_hash": "61315134ee87bda63a736d4252a7613a"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_overlay_ephemeral.py": {
+    "mtime": 1777954570.966,
+    "ast_hash": "37257d6de7fedc4e7fc0321e63032ed5",
+    "semantic_hash": "37257d6de7fedc4e7fc0321e63032ed5"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_pbo_ring.py": {
+    "mtime": 1777289797.39,
+    "ast_hash": "5d311693644612bb7798ee2e8aa5e18f",
+    "semantic_hash": "5d311693644612bb7798ee2e8aa5e18f"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_preferences_ephemeral.py": {
+    "mtime": 1777928226.562,
+    "ast_hash": "3527e2d2c528ac955a9d18e65f87e9a0",
+    "semantic_hash": "3527e2d2c528ac955a9d18e65f87e9a0"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_reader.py": {
+    "mtime": 1777043800.839,
+    "ast_hash": "b725bdc807b064ae717e2f1cf07383b2",
+    "semantic_hash": "b725bdc807b064ae717e2f1cf07383b2"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_runtime_monitor.py": {
+    "mtime": 1777289797.402,
+    "ast_hash": "1b4c4f21b275375bdddc384c6dc0a21c",
+    "semantic_hash": "1b4c4f21b275375bdddc384c6dc0a21c"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_runtime_state.py": {
+    "mtime": 1777289797.394,
+    "ast_hash": "c34288327282e29bcd2303c2408eed52",
+    "semantic_hash": "c34288327282e29bcd2303c2408eed52"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_save_frame.py": {
+    "mtime": 1778785656.966,
+    "ast_hash": "81f1c881ba1d22a9793a44b3413b3d01",
+    "semantic_hash": "81f1c881ba1d22a9793a44b3413b3d01"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_scanner.py": {
+    "mtime": 1778060697.676,
+    "ast_hash": "01206f974a26714327f5a2311f1e9961",
+    "semantic_hash": "01206f974a26714327f5a2311f1e9961"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_site_config.py": {
+    "mtime": 1778674341.189,
+    "ast_hash": "fe29a6311c55d255efb3eb0208b8d6d6",
+    "semantic_hash": "fe29a6311c55d255efb3eb0208b8d6d6"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_smoke.py": {
+    "mtime": 1776988846.428,
+    "ast_hash": "a33887278ac3123b7040cc9a2bf51de9",
+    "semantic_hash": "a33887278ac3123b7040cc9a2bf51de9"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_source_watcher.py": {
+    "mtime": 1778615392.702,
+    "ast_hash": "4dd49ef35acca589f9e44ccb58f91667",
+    "semantic_hash": "4dd49ef35acca589f9e44ccb58f91667"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_status_format.py": {
+    "mtime": 1777954570.978,
+    "ast_hash": "5331752a18b80d77fc7fecc05e6fd768",
+    "semantic_hash": "5331752a18b80d77fc7fecc05e6fd768"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_toolbar_ephemeral.py": {
+    "mtime": 1777928226.603,
+    "ast_hash": "1a450fd32dc0b993bb80a9dfa273260a",
+    "semantic_hash": "1a450fd32dc0b993bb80a9dfa273260a"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_user_prefs.py": {
+    "mtime": 1778674894.033,
+    "ast_hash": "46a9cab4fae0200fc3122302e3e807dc",
+    "semantic_hash": "46a9cab4fae0200fc3122302e3e807dc"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_video_probe.py": {
+    "mtime": 1780476162.049,
+    "ast_hash": "0f3142530abcc57ae53265dd0dff21b7",
+    "semantic_hash": "0f3142530abcc57ae53265dd0dff21b7"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_video_renderer.py": {
+    "mtime": 1780569925.995,
+    "ast_hash": "18adf518d115b027d7f71f01e3951455",
+    "semantic_hash": "18adf518d115b027d7f71f01e3951455"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_video_source.py": {
+    "mtime": 1780566831.757,
+    "ast_hash": "2fcbc2dc1e32e49e61769f34ede2c617",
+    "semantic_hash": "2fcbc2dc1e32e49e61769f34ede2c617"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_worker_pool.py": {
+    "mtime": 1778769212.629,
+    "ast_hash": "ab93e31435559ea2b4f233c7853e231a",
+    "semantic_hash": "ab93e31435559ea2b4f233c7853e231a"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tests\\unit\\test_zoom_anchor.py": {
+    "mtime": 1777290555.208,
+    "ast_hash": "1c04782675482dc485b9a87d9290e747",
+    "semantic_hash": "1c04782675482dc485b9a87d9290e747"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\tools\\regen_splash.py": {
+    "mtime": 1778587620.068,
+    "ast_hash": "f2e390c91fbb0ca181065acc84335422",
+    "semantic_hash": "f2e390c91fbb0ca181065acc84335422"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\AGENTS.md": {
+    "mtime": 1780410217.006,
+    "ast_hash": "13b9342d28ece314f4640ea5b4e2c0d6",
+    "semantic_hash": "13b9342d28ece314f4640ea5b4e2c0d6"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\BUILD.md": {
+    "mtime": 1780410199.618,
+    "ast_hash": "0a96964f9fe85843675c80ff3fa9acb8",
+    "semantic_hash": "0a96964f9fe85843675c80ff3fa9acb8"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\CLAUDE.md": {
+    "mtime": 1780410207.375,
+    "ast_hash": "a0d82584533f5afe5f38c373b4fe9556",
+    "semantic_hash": "a0d82584533f5afe5f38c373b4fe9556"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\README.md": {
+    "mtime": 1776988846.2,
+    "ast_hash": "cd4acc562496b8c89b7926f8ccbe9c21",
+    "semantic_hash": "cd4acc562496b8c89b7926f8ccbe9c21"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\docs\\branding\\PHILOSOPHY.md": {
+    "mtime": 1777993091.334,
+    "ast_hash": "a1e5c74dac56bac68e5f82a85950cde3",
+    "semantic_hash": "a1e5c74dac56bac68e5f82a85950cde3"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\docs\\disk_cache_roadmap.md": {
+    "mtime": 1778613623.692,
+    "ast_hash": "b053852fbf0b123e91c1012e6126d304",
+    "semantic_hash": "b053852fbf0b123e91c1012e6126d304"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\docs\\plans\\2026-04-24-img-player-v1-plan.md": {
+    "mtime": 1776989613.169,
+    "ast_hash": "571d8abf2ff52b04c42e8859c21afc9f",
+    "semantic_hash": "571d8abf2ff52b04c42e8859c21afc9f"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\docs\\plans\\2026-04-26-ui-reskin-charter-plan.md": {
+    "mtime": 1777222602.81,
+    "ast_hash": "e3aab7c749b5ae1016797bba1de4a79e",
+    "semantic_hash": "e3aab7c749b5ae1016797bba1de4a79e"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\docs\\plans\\2026-04-27-hw-adaptive-perf-plan.md": {
+    "mtime": 1777265944.637,
+    "ast_hash": "f1ca1eb7f1dbe8e6715d82307c4712e4",
+    "semantic_hash": "f1ca1eb7f1dbe8e6715d82307c4712e4"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\docs\\specs\\2026-04-24-img-player-v1-design.md": {
+    "mtime": 1776986939.188,
+    "ast_hash": "32196c469b4f96b95ea6335c3e3e791a",
+    "semantic_hash": "32196c469b4f96b95ea6335c3e3e791a"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\docs\\specs\\2026-04-26-hw-adaptive-perf-design.md": {
+    "mtime": 1777265336.009,
+    "ast_hash": "e2f33458a3f453c6c482eca4d7ada8be",
+    "semantic_hash": "e2f33458a3f453c6c482eca4d7ada8be"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\docs\\specs\\2026-04-26-ui-reskin-charter-design.md": {
+    "mtime": 1777222237.306,
+    "ast_hash": "b49675310404b6a138acfeb0973d8416",
+    "semantic_hash": "b49675310404b6a138acfeb0973d8416"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\docs\\specs\\2026-04-27-annotations-design.md": {
+    "mtime": 1777295166.53,
+    "ast_hash": "0b8e4b47e591158b5a2d92532bc2194a",
+    "semantic_hash": "0b8e4b47e591158b5a2d92532bc2194a"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\docs\\specs\\2026-04-28-ephemeral-annotations-design.md": {
+    "mtime": 1777928225.287,
+    "ast_hash": "ab396f9e74de82b4200e0e2a021144aa",
+    "semantic_hash": "ab396f9e74de82b4200e0e2a021144aa"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\docs\\specs\\2026-04-29-multi-layer-design.md": {
+    "mtime": 1777928225.298,
+    "ast_hash": "5cfdeb89f24ed128e6d45fc4035b3880",
+    "semantic_hash": "5cfdeb89f24ed128e6d45fc4035b3880"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\docs\\website\\changelog.html": {
+    "mtime": 1780571235.929,
+    "ast_hash": "64b839b5a2c008b9b2d55ad674a47162",
+    "semantic_hash": "64b839b5a2c008b9b2d55ad674a47162"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\docs\\website\\index.html": {
+    "mtime": 1780571235.986,
+    "ast_hash": "b223e9e16dd470bf4c4adaee3c4aacc6",
+    "semantic_hash": "b223e9e16dd470bf4c4adaee3c4aacc6"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\environment.yml": {
+    "mtime": 1778593644.72,
+    "ast_hash": "e8fff7bbf8843e47188ba3ef34dd4285",
+    "semantic_hash": "e8fff7bbf8843e47188ba3ef34dd4285"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\import_profile.txt": {
+    "mtime": 1779233533.587,
+    "ast_hash": "43f09239cbfb6ceb3e719d7fd3c75d9c",
+    "semantic_hash": "43f09239cbfb6ceb3e719d7fd3c75d9c"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\installer\\README.md": {
+    "mtime": 1777928225.388,
+    "ast_hash": "248516353341799c458d168d0cf13474",
+    "semantic_hash": "248516353341799c458d168d0cf13474"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\openrv-tech-reference.md": {
+    "mtime": 1777214135.378,
+    "ast_hash": "cf372a8f4f419c1cf420482e24fd8a2b",
+    "semantic_hash": "cf372a8f4f419c1cf420482e24fd8a2b"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\perf\\BASELINE.md": {
+    "mtime": 1777214124.722,
+    "ast_hash": "ccf4723252a744ed9bc88de925e9da7c",
+    "semantic_hash": "ccf4723252a744ed9bc88de925e9da7c"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\perf\\PBO_NOTES.md": {
+    "mtime": 1777214124.734,
+    "ast_hash": "68710ecb10bb24e24d36c95795d9790b",
+    "semantic_hash": "68710ecb10bb24e24d36c95795d9790b"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\perf\\README.md": {
+    "mtime": 1777214124.748,
+    "ast_hash": "f9c43d30b187e4407105da005f7e69da",
+    "semantic_hash": "f9c43d30b187e4407105da005f7e69da"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\ui_mockup.html": {
+    "mtime": 1777215283.451,
+    "ast_hash": "cdfaeb08cf6a783ae7cb466f4e5aa090",
+    "semantic_hash": "cdfaeb08cf6a783ae7cb466f4e5aa090"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\_real_menubar.png": {
+    "mtime": 1779233533.507,
+    "ast_hash": "debff75dbc45fb75d8b8808f2bb57cf6",
+    "semantic_hash": "debff75dbc45fb75d8b8808f2bb57cf6"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\assets\\icons_sheet02.png": {
+    "mtime": 1777928225.256,
+    "ast_hash": "450cf2e08cd8e30544d8a9a6823a48d1",
+    "semantic_hash": "450cf2e08cd8e30544d8a9a6823a48d1"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\assets\\icons_sheet03.png": {
+    "mtime": 1777928225.271,
+    "ast_hash": "fd69c7340fd40e72f9f729bff80c0770",
+    "semantic_hash": "fd69c7340fd40e72f9f729bff80c0770"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\docs\\branding\\flick_icon_1024.png": {
+    "mtime": 1777994116.819,
+    "ast_hash": "fcfb67bb590e51099c5e5aea2d8ccd06",
+    "semantic_hash": "fcfb67bb590e51099c5e5aea2d8ccd06"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\docs\\branding\\flick_icon_16.png": {
+    "mtime": 1777994116.873,
+    "ast_hash": "becabf6424d8b824d68ca24486ef47e7",
+    "semantic_hash": "becabf6424d8b824d68ca24486ef47e7"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\docs\\branding\\flick_icon_256.png": {
+    "mtime": 1777994116.842,
+    "ast_hash": "5bf12cdfbec0458707354dbe400370f0",
+    "semantic_hash": "5bf12cdfbec0458707354dbe400370f0"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\docs\\branding\\flick_icon_32.png": {
+    "mtime": 1777994116.863,
+    "ast_hash": "9b8331999f04ec3676409ef4093ed183",
+    "semantic_hash": "9b8331999f04ec3676409ef4093ed183"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\docs\\branding\\flick_icon_64.png": {
+    "mtime": 1777994116.853,
+    "ast_hash": "bf5224f73b9bfc7543b7e6ac0d973410",
+    "semantic_hash": "bf5224f73b9bfc7543b7e6ac0d973410"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\docs\\website\\screenshots\\annotation.gif": {
+    "mtime": 1778256527.724,
+    "ast_hash": "3990dbd4c38f0de8d4302842038b66ac",
+    "semantic_hash": "3990dbd4c38f0de8d4302842038b66ac"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\docs\\website\\screenshots\\burninsEditor.png": {
+    "mtime": 1780480941.711,
+    "ast_hash": "782842acbd3e93c3f5cd99af8ce5960b",
+    "semantic_hash": "782842acbd3e93c3f5cd99af8ce5960b"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\docs\\website\\screenshots\\cache channels.png": {
+    "mtime": 1778249884.288,
+    "ast_hash": "90481239a4120a0f3bacc5d56b326573",
+    "semantic_hash": "90481239a4120a0f3bacc5d56b326573"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\docs\\website\\screenshots\\color_management.png": {
+    "mtime": 1778250152.03,
+    "ast_hash": "87cef8ee5e75d7b1531d4a4760589748",
+    "semantic_hash": "87cef8ee5e75d7b1531d4a4760589748"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\docs\\website\\screenshots\\comment.png": {
+    "mtime": 1778250082.211,
+    "ast_hash": "8439f85d16eb0499c5323d7d6db4e2d5",
+    "semantic_hash": "8439f85d16eb0499c5323d7d6db4e2d5"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\docs\\website\\screenshots\\compare_tool.png": {
+    "mtime": 1778255470.825,
+    "ast_hash": "dfa32da8eb0eabc8e5b4076c499db16f",
+    "semantic_hash": "dfa32da8eb0eabc8e5b4076c499db16f"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\docs\\website\\screenshots\\contact sheet mode.png": {
+    "mtime": 1779284213.39,
+    "ast_hash": "6921ff0c38208c8c83c809062236c40f",
+    "semantic_hash": "6921ff0c38208c8c83c809062236c40f"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\docs\\website\\screenshots\\export_sequence.png": {
+    "mtime": 1778255507.258,
+    "ast_hash": "4bb14a08149bc8a46a76b9f116e17795",
+    "semantic_hash": "4bb14a08149bc8a46a76b9f116e17795"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\docs\\website\\screenshots\\hero.jpg": {
+    "mtime": 1778248485.727,
+    "ast_hash": "b018c3ae901c9e61186fc1365cfbb7d4",
+    "semantic_hash": "b018c3ae901c9e61186fc1365cfbb7d4"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\docs\\website\\screenshots\\hero.png": {
+    "mtime": 1779284073.434,
+    "ast_hash": "e99072befb51fa7b2b77ddbc09f16092",
+    "semantic_hash": "e99072befb51fa7b2b77ddbc09f16092"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\docs\\website\\screenshots\\save_frame_as.png": {
+    "mtime": 1778254968.038,
+    "ast_hash": "65926b189dd0d59b3e2a70b5df224d7f",
+    "semantic_hash": "65926b189dd0d59b3e2a70b5df224d7f"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\docs\\website\\screenshots\\timeline.png": {
+    "mtime": 1778249116.602,
+    "ast_hash": "3322f47d27df044487f854290a38975e",
+    "semantic_hash": "3322f47d27df044487f854290a38975e"
+  },
+  "G:\\Mon Drive\\_PERSO\\IA\\VibeCod\\img_player\\img_player_V001\\src\\img_player\\assets\\splash.png": {
+    "mtime": 1780571236.077,
+    "ast_hash": "0b284ef8c0043fcd67e60653a109bbdd",
+    "semantic_hash": "0b284ef8c0043fcd67e60653a109bbdd"
+  }
+}
